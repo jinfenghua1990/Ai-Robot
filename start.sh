@@ -1,9 +1,9 @@
 #!/bin/bash
 cd "$(dirname "$0")"
 echo "=== AIROBOT 启动 ==="
-# 1. 启动PostgreSQL
-docker compose up -d postgres
-sleep 3
+# 1. 确保PostgreSQL运行
+brew services start postgresql@16 2>/dev/null
+sleep 2
 # 2. 安装后端依赖
 cd backend && pip install -r requirements.txt -q
 # 3. 初始化数据库
