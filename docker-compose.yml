@@ -1,0 +1,15 @@
+version: '3.8'
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: airobot-db
+    environment:
+      POSTGRES_DB: airobot
+      POSTGRES_USER: airobot
+      POSTGRES_PASSWORD: airobot_dev_2026
+    ports:
+      - "5432:5432"
+    volumes:
+      - airobot_pgdata:/var/lib/postgresql/data
+volumes:
+  airobot_pgdata:
