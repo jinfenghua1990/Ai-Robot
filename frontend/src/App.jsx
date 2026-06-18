@@ -1,12 +1,10 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import Layout from './components/Layout';
-
-// 懒加载页面
-const HeatmapPage = () => <div>热力图页面（待实现）</div>;
-const RotationPage = () => <div>轮动图页面（待实现）</div>;
-const LifecyclePage = () => <div>生命周期页面（待实现）</div>;
-const MoneyFlowPage = () => <div>资金流页面（待实现）</div>;
-const ScreenerPage = () => <div>选股页面（待实现）</div>;
+import HeatmapPage from './pages/HeatmapPage';
+import RotationPage from './pages/RotationPage';
+import LifecyclePage from './pages/LifecyclePage';
+import MoneyFlowPage from './pages/MoneyFlowPage';
+import ScreenerPage from './pages/ScreenerPage';
 
 export default function App() {
   return (
