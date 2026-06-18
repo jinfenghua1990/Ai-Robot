@@ -141,46 +141,91 @@ def get_sector_list():
         return []
 
 
+def _get_moneyflow_data(trade_date):
+    """获取Tushare资金流向数据（内部函数，避免重复调用）
+    同时合并 daily 接口的 pct_chg 字段，用于涨幅/涨停判断
+    """
+    if not TUSHARE_AVAILABLE:
+        return None, None
+    try:
+        from config import TUSHARE_TOKEN
+        if not TUSHARE_TOKEN:
+            return None, None
+        ts.set_token(TUSHARE_TOKEN)
+        pro = ts.pro_api()
+        date_str = trade_date.replace('-', '') if isinstance(trade_date, str) else trade_date.strftime('%Y%m%d')
+        df = pro.moneyflow(trade_date=date_str)
+        if df is None or df.empty:
+            print(f'[tushare] moneyflow returned empty for {date_str}')
+            return None, None
+        # 获取日线行情（含 pct_chg 涨跌幅），合并到资金流向数据
+        try:
+            daily = pro.daily(trade_date=date_str)
+            if daily is not None and not daily.empty:
+                # 只取需要的列，避免重名冲突
+                daily_cols = ['ts_code']
+                if 'pct_chg' in daily.columns:
+                    daily_cols.append('pct_chg')
+                if 'close' in daily.columns:
+                    daily_cols.append('close')
+                df = df.merge(daily[daily_cols], on='ts_code', how='left')
+                # 统一重命名为 pct_change（代码中已使用的字段名）
+                if 'pct_chg' in df.columns:
+                    df = df.rename(columns={'pct_chg': 'pct_change'})
+                print(f'[tushare] merged daily data, pct_change available: {"pct_change" in df.columns}')
+        except Exception as e:
+            print(f'[tushare] daily merge warning: {e}')
+        # 获取股票基础信息（含行业）
+        stock_basic = pro.stock_basic(exchange='', list_status='L', fields='ts_code,name,industry')
+        if stock_basic is not None and not stock_basic.empty:
+            df = df.merge(stock_basic[['ts_code', 'industry']], on='ts_code', how='left')
+        return df, pro
+    except Exception as e:
+        print(f'[tushare] _get_moneyflow_data error: {e}')
+        return None, None
+
+
 def get_sector_money_flow(trade_date):
     """
-    获取板块资金流向数据
-    使用 Tushare 的 moneyflow_hsgt 或东方财富API
+    获取板块资金流向数据（按行业汇总个股资金流向）
     返回格式: [{'sector': 'AI', 'money_inflow': 100000, 'money_outflow': 50000, 'net_flow': 50000, ...}, ...]
     """
-    # 优先使用 Tushare 获取板块资金流向
-    if TUSHARE_AVAILABLE:
-        try:
-            from config import TUSHARE_TOKEN
-            if TUSHARE_TOKEN:
-                ts.set_token(TUSHARE_TOKEN)
-                pro = ts.pro_api()
-                # 获取个股资金流向，按板块汇总
-                date_str = trade_date.replace('-', '') if isinstance(trade_date, str) else trade_date.strftime('%Y%m%d')
-                df = pro.moneyflow(trade_date=date_str)
-                if df is not None and not df.empty:
-                    # 按行业汇总
-                    results = []
-                    # 获取个股所属行业
-                    stock_basic = pro.stock_basic(exchange='', list_status='L', fields='ts_code,industry')
-                    if stock_basic is not None:
-                        df = df.merge(stock_basic[['ts_code', 'industry']], on='ts_code', how='left')
-                        sector_group = df.groupby('industry').agg({
-                            'net_mf_amount': 'sum',
-                            'buy_elg_amount': 'sum',
-                            'sell_elg_amount': 'sum',
-                        }).reset_index()
-                        for _, row in sector_group.iterrows():
-                            if row['industry']:
-                                results.append({
-                                    'sector': row['industry'],
-                                    'net_flow': float(row['net_mf_amount'] or 0) / 10000,  # 转为万元
-                                    'money_inflow': float(row.get('buy_elg_amount', 0) or 0) / 10000,
-                                    'money_outflow': float(row.get('sell_elg_amount', 0) or 0) / 10000,
-                                })
-                    return results
-        except Exception as e:
-            print(f'[tushare] get_sector_money_flow error: {e}')
-    return []
+    df, _ = _get_moneyflow_data(trade_date)
+    if df is None:
+        return []
+    try:
+        # 按行业汇总
+        if 'industry' not in df.columns:
+            print('[tushare] No industry column in moneyflow data')
+            return []
+        # 过滤掉空行业
+        df_valid = df[df['industry'].notna() & (df['industry'] != '')]
+        if df_valid.empty:
+            print('[tushare] All stocks have empty industry')
+            return []
+        # 动态构建聚合字典，pct_change 可能不存在
+        agg_dict = {
+            'net_mf_amount': 'sum',
+            'buy_elg_amount': 'sum',
+            'sell_elg_amount': 'sum',
+        }
+        has_pct = 'pct_change' in df_valid.columns
+        if has_pct:
+            agg_dict['pct_change'] = 'mean'
+        sector_group = df_valid.groupby('industry').agg(agg_dict).reset_index()
+        results = []
+        for _, row in sector_group.iterrows():
+            results.append({
+                'sector': row['industry'],
+                'net_flow': float(row['net_mf_amount'] or 0) / 10000,  # 转为万元
+                'money_inflow': float(row.get('buy_elg_amount', 0) or 0) / 10000,
+                'money_outflow': float(row.get('sell_elg_amount', 0) or 0) / 10000,
+                'rise_ratio': float(row.get('pct_change', 0) or 0) if has_pct else 0.0,
+            })
+        return results
+    except Exception as e:
+        print(f'[tushare] get_sector_money_flow error: {e}')
+        return []
 
 
 def get_stock_money_flow(trade_date):
@@ -188,36 +233,31 @@ def get_stock_money_flow(trade_date):
     获取个股资金流向数据
     返回格式: [{'ts_code': '000001.SZ', 'sector': '银行', 'net_inflow': 1000, 'main_force_inflow': 500, ...}, ...]
     """
-    if TUSHARE_AVAILABLE:
-        try:
-            from config import TUSHARE_TOKEN
-            if TUSHARE_TOKEN:
-                ts.set_token(TUSHARE_TOKEN)
-                pro = ts.pro_api()
-                date_str = trade_date.replace('-', '') if isinstance(trade_date, str) else trade_date.strftime('%Y%m%d')
-                df = pro.moneyflow(trade_date=date_str)
-                if df is not None and not df.empty:
-                    stock_basic = pro.stock_basic(exchange='', list_status='L', fields='ts_code,industry')
-                    if stock_basic is not None:
-                        df = df.merge(stock_basic[['ts_code', 'industry']], on='ts_code', how='left')
-                    results = []
-                    for _, row in df.iterrows():
-                        results.append({
-                            'ts_code': row['ts_code'],
-                            'sector': row.get('industry', ''),
-                            'net_inflow': float(row.get('net_mf_amount', 0) or 0) / 10000,
-                            'main_force_inflow': float(row.get('buy_elg_amount', 0) or 0) / 10000,
-                            'retail_flow': float(row.get('buy_sm_amount', 0) or 0) / 10000 - float(row.get('sell_sm_amount', 0) or 0) / 10000,
-                            'price_chg': float(row.get('pct_change', 0) or 0),
-                        })
-                    return results
-        except Exception as e:
-            print(f'[tushare] get_stock_money_flow error: {e}')
-    return []
+    df, _ = _get_moneyflow_data(trade_date)
+    if df is None:
+        return []
+    try:
+        results = []
+        for _, row in df.iterrows():
+            results.append({
+                'ts_code': row['ts_code'],
+                'sector': row.get('industry', '') or '',
+                'net_inflow': float(row.get('net_mf_amount', 0) or 0) / 10000,
+                'main_force_inflow': float(row.get('buy_elg_amount', 0) or 0) / 10000,
+                'retail_flow': (float(row.get('buy_sm_amount', 0) or 0) - float(row.get('sell_sm_amount', 0) or 0)) / 10000,
+                'price_chg': float(row.get('pct_change', 0) or 0),
+            })
+        return results
+    except Exception as e:
+        print(f'[tushare] get_stock_money_flow error: {e}')
+        return []
 
 
 def get_limit_up_stocks(trade_date):
-    """获取涨停股列表"""
+    """
+    获取涨停股列表
+    优先使用 limit_list_d 接口，无权限时改用涨幅>=9.8%判断
+    """
     if TUSHARE_AVAILABLE:
         try:
             from config import TUSHARE_TOKEN
@@ -225,10 +265,22 @@ def get_limit_up_stocks(trade_date):
                 ts.set_token(TUSHARE_TOKEN)
                 pro = ts.pro_api()
                 date_str = trade_date.replace('-', '') if isinstance(trade_date, str) else trade_date.strftime('%Y%m%d')
-                # 获取当日涨停股
-                df = pro.limit_list_d(trade_date=date_str, limit_type='U')
-                if df is not None and not df.empty:
-                    return df['ts_code'].tolist()
+                # 尝试使用 limit_list_d 接口
+                try:
+                    df = pro.limit_list_d(trade_date=date_str, limit_type='U')
+                    if df is not None and not df.empty:
+                        return df['ts_code'].tolist()
+                except Exception:
+                    # limit_list_d 无权限，改用涨幅判断
+                    print('[tushare] limit_list_d no permission, using pct_change >= 9.8% instead')
+                    df, _ = _get_moneyflow_data(trade_date)
+                    if df is not None and not df.empty and 'pct_change' in df.columns:
+                        # 涨幅 >= 9.8% 视为涨停（科创板/创业板20%涨停也会被包含）
+                        limit_ups = df[df['pct_change'] >= 9.8]['ts_code'].tolist()
+                        return limit_ups
+                    else:
+                        print('[tushare] pct_change not available, cannot detect limit-up stocks')
+                        return []
         except Exception as e:
             print(f'[tushare] get_limit_up_stocks error: {e}')
     return []
