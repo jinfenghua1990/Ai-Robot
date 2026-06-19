@@ -7,6 +7,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from datetime import datetime, timedelta
 from db.connection import get_db
 from db.models import LeaderLifecycle, StockFlow
+from sqlalchemy import func
 
 
 STAGE_CONFIG = {
@@ -47,10 +48,14 @@ def update_lifecycle(trade_date):
             print(f'[lifecycle] No leader data for {trade_date}')
             return
         
-        # 获取前一日数据用于计算连板天数
+        # 获取前一交易日数据用于计算连板天数（查找DB中实际存在的最近交易日）
         trade_date_obj = datetime.strptime(trade_date, '%Y-%m-%d') if isinstance(trade_date, str) else trade_date
-        prev_date = (trade_date_obj - timedelta(days=1)).strftime('%Y-%m-%d')
-        prev_leaders = db.query(LeaderLifecycle).filter_by(trade_date=prev_date).all()
+        prev_date_row = db.query(func.max(LeaderLifecycle.trade_date)).filter(
+            LeaderLifecycle.trade_date < trade_date_obj.date()
+        ).scalar()
+        prev_leaders = []
+        if prev_date_row:
+            prev_leaders = db.query(LeaderLifecycle).filter_by(trade_date=prev_date_row).all()
         prev_map = {l.ts_code: l for l in prev_leaders}
         
         updated = 0
