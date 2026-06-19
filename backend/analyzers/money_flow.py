@@ -41,8 +41,8 @@ def calculate_money_flow_path(trade_date):
         for leader in leaders:
             if leader.sector:
                 if leader.sector not in leader_sectors:
-                    leader_sectors[leader.sector] = []
-                leader_sectors[leader.sector].append(leader.ts_code)
+                        leader_sectors[leader.sector] = []
+                leader_sectors[leader.sector].append({'ts_code': leader.ts_code, 'name': leader.name or ''})
         
         # 构建图数据
         nodes = []
@@ -74,8 +74,10 @@ def calculate_money_flow_path(trade_date):
             
             # 板块 → 龙头股
             if sector in leader_sectors:
-                for ts_code in leader_sectors[sector][:3]:
-                    nodes.append({'name': ts_code, 'category': 'leader'})
+                for leader_info in leader_sectors[sector][:3]:
+                    ts_code = leader_info['ts_code']
+                    display_name = leader_info['name'] or ts_code
+                    nodes.append({'name': ts_code, 'label': display_name, 'category': 'leader'})
                     links.append({
                         'source': sector,
                         'target': ts_code,
@@ -86,6 +88,7 @@ def calculate_money_flow_path(trade_date):
         top10 = sorted(stocks, key=lambda x: float(x.main_force_inflow or 0), reverse=True)[:10]
         top10_data = [{
             'ts_code': s.ts_code,
+            'name': s.name or '',
             'sector': s.sector,
             'main_force_inflow': float(s.main_force_inflow or 0),
             'price_chg': float(s.price_chg or 0),

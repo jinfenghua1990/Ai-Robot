@@ -19,8 +19,10 @@ export default function ScreenerPage() {
   const [backfilling, setBackfilling] = useState(false);
 
   useEffect(() => {
-    const today = new Date().toISOString().split('T')[0];
-    setSelectedDate(today);
+    fetch('/api/latest-date')
+      .then(r => r.json())
+      .then(d => { if (d.date) setSelectedDate(d.date); else setSelectedDate(new Date().toISOString().split('T')[0]); })
+      .catch(() => setSelectedDate(new Date().toISOString().split('T')[0]));
   }, []);
 
   useEffect(() => {
@@ -138,18 +140,28 @@ export default function ScreenerPage() {
               <thead>
                 <tr className="border-b" style={{ borderColor: 'var(--border-color)' }}>
                   <th className="text-left py-2 px-3 font-medium" style={{ color: 'var(--text-secondary)' }}>代码</th>
+                  <th className="text-left py-2 px-3 font-medium" style={{ color: 'var(--text-secondary)' }}>名称</th>
                   <th className="text-left py-2 px-3 font-medium" style={{ color: 'var(--text-secondary)' }}>板块</th>
                   <th className="text-center py-2 px-3 font-medium" style={{ color: 'var(--text-secondary)' }}>阶段</th>
                   <th className="text-right py-2 px-3 font-medium" style={{ color: 'var(--text-secondary)' }}>连板</th>
                   <th className="text-right py-2 px-3 font-medium" style={{ color: 'var(--text-secondary)' }}>主力流入(万)</th>
                   <th className="text-right py-2 px-3 font-medium" style={{ color: 'var(--text-secondary)' }}>涨跌幅</th>
                   <th className="text-right py-2 px-3 font-medium" style={{ color: 'var(--text-secondary)' }}>强度</th>
+                  {data?.strategy !== 'heat' && (
+                    <>
+                      <th className="text-right py-2 px-3 font-medium" style={{ color: 'var(--text-secondary)' }}>评分</th>
+                      <th className="text-right py-2 px-3 font-medium" style={{ color: 'var(--text-secondary)' }}>偏离%</th>
+                      <th className="text-right py-2 px-3 font-medium" style={{ color: 'var(--text-secondary)' }}>RSI</th>
+                      <th className="text-right py-2 px-3 font-medium" style={{ color: 'var(--text-secondary)' }}>20日涨幅%</th>
+                    </>
+                  )}
                 </tr>
               </thead>
               <tbody>
                 {data.stocks.map((stock, i) => (
                   <tr key={i} className="border-b hover:bg-opacity-50 transition-colors" style={{ borderColor: 'var(--border-light)' }}>
                     <td className="py-2 px-3 font-mono" style={{ color: 'var(--text-primary)' }}>{stock.ts_code}</td>
+                    <td className="py-2 px-3" style={{ color: 'var(--text-secondary)' }}>{stock.name || '-'}</td>
                     <td className="py-2 px-3" style={{ color: 'var(--text-secondary)' }}>{stock.sector || '-'}</td>
                     <td className="py-2 px-3 text-center">
                       <span className="inline-block px-2 py-0.5 rounded text-xs font-medium" style={{
@@ -167,6 +179,14 @@ export default function ScreenerPage() {
                       {stock.price_chg >= 0 ? '+' : ''}{stock.price_chg?.toFixed(2) || '0.00'}%
                     </td>
                     <td className="py-2 px-3 text-right font-mono" style={{ color: 'var(--text-secondary)' }}>{stock.strength?.toFixed(0) || 0}</td>
+                    {data?.strategy !== 'heat' && (
+                      <>
+                        <td className="py-2 px-3 text-right font-mono" style={{ color: 'var(--text-primary)' }}>{stock.score ?? '-'}</td>
+                        <td className="py-2 px-3 text-right font-mono" style={{ color: 'var(--text-secondary)' }}>{stock.deviation != null ? stock.deviation.toFixed(2) : '-'}</td>
+                        <td className="py-2 px-3 text-right font-mono" style={{ color: 'var(--text-secondary)' }}>{stock.rsi != null ? stock.rsi.toFixed(1) : '-'}</td>
+                        <td className="py-2 px-3 text-right font-mono" style={{ color: 'var(--text-secondary)' }}>{stock['20day_gain'] != null ? stock['20day_gain'].toFixed(2) : '-'}</td>
+                      </>
+                    )}
                   </tr>
                 ))}
               </tbody>

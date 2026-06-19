@@ -13,6 +13,9 @@ from contextlib import asynccontextmanager
 
 from api import heatmap, rotation, lifecycle, money_flow, screener
 from collectors.scheduler import start_scheduler, scheduler
+from db.connection import get_db
+from db.models import SectorFlow
+from sqlalchemy import func
 
 
 @asynccontextmanager
@@ -46,6 +49,19 @@ app.include_router(screener.router)
 @app.get("/api/health")
 async def health():
     return {"status": "ok", "service": "AIROBOT"}
+
+
+@app.get("/api/latest-date")
+async def latest_date():
+    """返回数据库中最新有数据的交易日期"""
+    db = next(get_db())
+    try:
+        result = db.query(func.max(SectorFlow.trade_date)).scalar()
+        if result:
+            return {"date": result.strftime('%Y-%m-%d')}
+        return {"date": None}
+    finally:
+        db.close()
 
 
 # 前端静态资源（构建后存在）

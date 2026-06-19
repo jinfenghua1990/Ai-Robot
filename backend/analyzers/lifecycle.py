@@ -60,7 +60,11 @@ def update_lifecycle(trade_date):
             
             change_rate = float(stock.price_chg or 0) if stock else 0
             main_force = float(stock.main_force_inflow or 0) if stock else 0
-            
+
+            # 补充股票名称（如果缺失）
+            if not leader.name and stock and stock.name:
+                leader.name = stock.name
+
             # 计算连板天数
             prev_leader = prev_map.get(leader.ts_code)
             if prev_leader:

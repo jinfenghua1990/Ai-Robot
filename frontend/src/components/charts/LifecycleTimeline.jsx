@@ -24,6 +24,7 @@ export default function LifecycleTimeline({ leaders }) {
             <div className="flex items-center justify-between mb-2">
               <div className="flex items-center gap-2">
                 <span className="font-mono text-sm font-medium" style={{ color: 'var(--text-primary)' }}>{leader.ts_code}</span>
+                {leader.name && <span className="text-sm" style={{ color: 'var(--text-secondary)' }}>{leader.name}</span>}
                 <span className="text-xs px-2 py-0.5 rounded" style={{ background: 'var(--bg-hover)', color: 'var(--text-secondary)' }}>{leader.sector || '未知'}</span>
               </div>
               <div className="flex items-center gap-3 text-xs" style={{ color: 'var(--text-secondary)' }}>

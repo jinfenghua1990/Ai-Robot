@@ -175,10 +175,10 @@ def _get_moneyflow_data(trade_date):
                 print(f'[tushare] merged daily data, pct_change available: {"pct_change" in df.columns}')
         except Exception as e:
             print(f'[tushare] daily merge warning: {e}')
-        # 获取股票基础信息（含行业）
+        # 获取股票基础信息（含行业、名称）
         stock_basic = pro.stock_basic(exchange='', list_status='L', fields='ts_code,name,industry')
         if stock_basic is not None and not stock_basic.empty:
-            df = df.merge(stock_basic[['ts_code', 'industry']], on='ts_code', how='left')
+            df = df.merge(stock_basic[['ts_code', 'name', 'industry']], on='ts_code', how='left')
         return df, pro
     except Exception as e:
         print(f'[tushare] _get_moneyflow_data error: {e}')
@@ -241,6 +241,7 @@ def get_stock_money_flow(trade_date):
         for _, row in df.iterrows():
             results.append({
                 'ts_code': row['ts_code'],
+                'name': row.get('name', '') or '',
                 'sector': row.get('industry', '') or '',
                 'net_inflow': float(row.get('net_mf_amount', 0) or 0) / 10000,
                 'main_force_inflow': float(row.get('buy_elg_amount', 0) or 0) / 10000,
@@ -341,10 +342,12 @@ def collect_daily_data(trade_date):
                 existing.retail_flow = sf.get('retail_flow')
                 existing.price_chg = sf.get('price_chg')
                 existing.sector = sf.get('sector')
+                existing.name = sf.get('name')
             else:
                 record = StockFlow(
                     trade_date=trade_date,
                     ts_code=sf['ts_code'],
+                    name=sf.get('name'),
                     sector=sf.get('sector'),
                     net_inflow=sf.get('net_inflow'),
                     main_force_inflow=sf.get('main_force_inflow'),
@@ -370,11 +373,13 @@ def collect_daily_data(trade_date):
             # 查找个股的板块信息
             stock = db.query(StockFlow).filter_by(trade_date=trade_date, ts_code=ts_code).first()
             sector = stock.sector if stock else None
+            stock_name = stock.name if stock else None
             existing = db.query(LeaderLifecycle).filter_by(trade_date=trade_date, ts_code=ts_code).first()
             if not existing:
                 record = LeaderLifecycle(
                     trade_date=trade_date,
                     ts_code=ts_code,
+                    name=stock_name,
                     sector=sector,
                     stage='启动',  # 涨停股初始阶段为"启动"
                     strength=20,

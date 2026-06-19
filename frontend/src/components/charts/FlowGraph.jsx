@@ -19,7 +19,7 @@ export default function FlowGraph({ data }) {
     name: n.name,
     symbolSize: CATEGORY_STYLES[n.category]?.size || 20,
     itemStyle: { color: CATEGORY_STYLES[n.category]?.color || '#94a3b8' },
-    label: { show: true, color: 'var(--text-primary)', fontSize: 11 },
+    label: { show: true, formatter: n.label || n.name, color: 'var(--text-primary)', fontSize: 11 },
     category: n.category,
   }));
 

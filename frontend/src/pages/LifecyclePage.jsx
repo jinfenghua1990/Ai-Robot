@@ -14,8 +14,10 @@ export default function LifecyclePage() {
   const [stageFilter, setStageFilter] = useState('全部');
 
   useEffect(() => {
-    const today = new Date().toISOString().split('T')[0];
-    setSelectedDate(today);
+    fetch('/api/latest-date')
+      .then(r => r.json())
+      .then(d => { if (d.date) setSelectedDate(d.date); else setSelectedDate(new Date().toISOString().split('T')[0]); })
+      .catch(() => setSelectedDate(new Date().toISOString().split('T')[0]));
   }, []);
 
   useEffect(() => {

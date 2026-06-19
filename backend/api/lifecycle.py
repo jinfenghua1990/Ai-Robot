@@ -19,6 +19,7 @@ async def get_lifecycle(date: str = Query(None), stage: str = Query(None)):
             'date': trade_date,
             'leaders': [{
                 'ts_code': l.ts_code,
+                'name': l.name or '',
                 'sector': l.sector,
                 'stage': l.stage,
                 'strength': float(l.strength or 0),
