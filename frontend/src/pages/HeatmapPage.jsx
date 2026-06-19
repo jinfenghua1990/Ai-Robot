@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import TreemapChart from '../components/charts/TreemapChart';
+import TrendLineChart from '../components/charts/TrendLineChart';
 
 export default function HeatmapPage() {
   const [data, setData] = useState(null);
@@ -140,6 +141,15 @@ export default function HeatmapPage() {
           <TreemapChart data={data} selectedDate={viewDate} />
         )}
       </div>
+
+      {topSectors.length > 0 && !loading && (
+        <div className="rounded-xl border p-4" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
+          <h3 className="text-sm font-medium mb-2" style={{ color: 'var(--text-secondary)' }}>
+            Top 10 板块热度趋势 <span className="text-xs ml-1" style={{ color: 'var(--text-muted)' }}>({data.dates[0].slice(5)} → {data.dates[data.dates.length-1].slice(5)})</span>
+          </h3>
+          <TrendLineChart data={data} topSectors={topSectors} />
+        </div>
+      )}
 
       {topSectors.length > 0 && (
         <div className="rounded-xl border p-4" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
