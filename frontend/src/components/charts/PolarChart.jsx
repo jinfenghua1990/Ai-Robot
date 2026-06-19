@@ -45,9 +45,11 @@ export default function PolarChart({ data, selectedDate }) {
 
   // 热度模式：按热度排序
   // 变化模式：按变化绝对值排序（最大变化在前）
-  const sorted = viewMode === 'heat'
+  // 只显示 Top 20，避免过多板块导致视觉混乱
+  const sorted = (viewMode === 'heat'
     ? [...allSectors].sort((a, b) => b.heat - a.heat)
-    : [...allSectors].sort((a, b) => Math.abs(b.trend) - Math.abs(a.trend));
+    : [...allSectors].sort((a, b) => Math.abs(b.trend) - Math.abs(a.trend))
+  ).slice(0, 20);
 
   const sectorNames = sorted.map(s => s.name);
 
