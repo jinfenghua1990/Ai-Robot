@@ -72,7 +72,7 @@ export default function SankeyChart({ data }) {
         lineStyle: {
           color: 'gradient',
           curveness: 0.5,
-          opacity: 0.5,
+          opacity: 0.25,
         },
       })),
       orient: 'horizontal',
@@ -88,10 +88,10 @@ export default function SankeyChart({ data }) {
           return `${node.name}\n${total.toFixed(0)}万`;
         },
       },
-      lineStyle: { color: 'gradient', curveness: 0.5, opacity: 0.5 },
-      emphasis: { focus: 'adjacency', lineStyle: { opacity: 0.9 } },
-      nodeGap: 12,
-      nodeWidth: 20,
+      lineStyle: { color: 'gradient', curveness: 0.5, opacity: 0.25 },
+      emphasis: { focus: 'adjacency', lineStyle: { opacity: 0.7 } },
+      nodeGap: 14,
+      nodeWidth: 12,
       layoutIterations: 32,
     }],
   };

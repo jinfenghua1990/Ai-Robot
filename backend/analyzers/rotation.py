@@ -63,16 +63,16 @@ def calculate_rotation(trade_date, lookback_days=5):
         nodes = []
         links = []
         
-        # 流出板块节点
+        # 流出板块节点（Top 10）
         for c in outflows[:10]:
             nodes.append({'name': c['sector'], 'category': 'outflow'})
         
-        # 流入板块节点
-        for c in inflows[:10]:
+        # 流入板块节点（Top 5，更聚焦）
+        for c in inflows[:5]:
             nodes.append({'name': c['sector'], 'category': 'inflow'})
         
-        # 生成链接：流出 → 流入
-        for out_c in outflows[:5]:
+        # 生成链接：流出Top10 → 流入Top5
+        for out_c in outflows[:10]:
             for in_c in inflows[:5]:
                 flow_value = min(abs(out_c['change']), in_c['change'])
                 if flow_value > 0:
@@ -85,9 +85,9 @@ def calculate_rotation(trade_date, lookback_days=5):
         # 生成轮动信号
         signals = []
         if inflows:
-            signals.append(f"资金流入: {', '.join([c['sector'] for c in inflows[:3]])}")
+            signals.append(f"资金流入: {', '.join([c['sector'] for c in inflows[:5]])}")
         if outflows:
-            signals.append(f"资金流出: {', '.join([c['sector'] for c in outflows[:3]])}")
+            signals.append(f"资金流出: {', '.join([c['sector'] for c in outflows[:5]])}")
         
         return {
             'nodes': nodes,
