@@ -388,6 +388,20 @@ def collect_daily_data(trade_date):
                 db.add(record)
         db.commit()
         print(f'[collect] Leader lifecycle saved')
+
+        # 4. 按板块统计涨停数，更新 SectorFlow.limit_up_count
+        sector_limit_counts = {}
+        for ts_code in limit_ups:
+            stock = db.query(StockFlow).filter_by(trade_date=trade_date, ts_code=ts_code).first()
+            if stock and stock.sector:
+                sector_limit_counts[stock.sector] = sector_limit_counts.get(stock.sector, 0) + 1
+
+        for sector_name, count in sector_limit_counts.items():
+            sf_record = db.query(SectorFlow).filter_by(trade_date=trade_date, sector=sector_name).first()
+            if sf_record:
+                sf_record.limit_up_count = count
+        db.commit()
+        print(f'[collect] Updated limit_up_count for {len(sector_limit_counts)} sectors')
     except Exception as e:
         db.rollback()
         print(f'[collect] Leader lifecycle error: {e}')

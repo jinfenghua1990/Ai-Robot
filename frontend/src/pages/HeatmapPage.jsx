@@ -6,6 +6,7 @@ export default function HeatmapPage() {
   const [loading, setLoading] = useState(true);
   const [selectedDate, setSelectedDate] = useState('');
   const [days, setDays] = useState(5);
+  const [topN, setTopN] = useState(30);
 
   useEffect(() => {
     fetch('/api/latest-date')
@@ -38,8 +39,20 @@ export default function HeatmapPage() {
           return { sector, heat: maxHeat };
         })
         .sort((a, b) => b.heat - a.heat)
-        .slice(0, 10)
     : [];
+
+  // 筛选 Top N 板块的热力图数据
+  const filteredData = data && topSectors.length > 0
+    ? (() => {
+        const topSectorNames = new Set(topSectors.slice(0, topN).map(s => s.sector));
+        const filteredSectors = topSectors.slice(0, topN).map(s => s.sector);
+        const sectorIndexMap = new Map(filteredSectors.map((s, i) => [s, i]));
+        const filteredValues = data.values
+          .filter(v => topSectorNames.has(data.sectors[v[1]]))
+          .map(v => [v[0], sectorIndexMap.get(data.sectors[v[1]]), v[2]]);
+        return { ...data, sectors: filteredSectors, values: filteredValues };
+      })()
+    : data;
 
   return (
     <div className="space-y-4">
@@ -59,6 +72,13 @@ export default function HeatmapPage() {
             <option value={3}>3天</option>
             <option value={5}>5天</option>
             <option value={10}>10天</option>
+            <option value={20}>20天</option>
+          </select>
+          <select value={topN} onChange={(e) => setTopN(Number(e.target.value))} className="px-3 py-1.5 rounded-lg border text-sm" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)', color: 'var(--text-primary)' }}>
+            <option value={20}>Top 20</option>
+            <option value={30}>Top 30</option>
+            <option value={50}>Top 50</option>
+            <option value={9999}>全部</option>
           </select>
         </div>
       </div>
@@ -67,7 +87,7 @@ export default function HeatmapPage() {
         {loading ? (
           <div className="flex items-center justify-center h-96 text-sm" style={{ color: 'var(--text-muted)' }}>加载中...</div>
         ) : (
-          <HeatmapChart data={data} />
+          <HeatmapChart data={filteredData} />
         )}
       </div>
 
@@ -75,7 +95,7 @@ export default function HeatmapPage() {
         <div className="rounded-xl border p-4" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
           <h3 className="text-sm font-medium mb-3" style={{ color: 'var(--text-secondary)' }}>热度 Top 10 板块</h3>
           <div className="space-y-2">
-            {topSectors.map((s, i) => (
+            {topSectors.slice(0, 10).map((s, i) => (
               <div key={s.sector} className="flex items-center gap-3">
                 <span className="text-xs w-6" style={{ color: 'var(--text-muted)' }}>{i + 1}</span>
                 <span className="text-sm flex-1" style={{ color: 'var(--text-primary)' }}>{s.sector}</span>

@@ -7,6 +7,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from datetime import datetime, timedelta
 from db.connection import get_db
 from db.models import SectorFlow
+from sqlalchemy import func
 
 
 def calculate_rotation(trade_date, lookback_days=5):
@@ -19,10 +20,21 @@ def calculate_rotation(trade_date, lookback_days=5):
         # 获取当前日期和N天前的板块数据
         current_sectors = db.query(SectorFlow).filter_by(trade_date=trade_date).all()
         
-        # 获取N天前的数据
+        # 获取N天前的数据：查找数据库中实际存在的最近交易日
         trade_date_obj = datetime.strptime(trade_date, '%Y-%m-%d') if isinstance(trade_date, str) else trade_date
-        past_date = (trade_date_obj - timedelta(days=lookback_days)).strftime('%Y-%m-%d')
-        past_sectors = db.query(SectorFlow).filter_by(trade_date=past_date).all()
+        past_date_obj = trade_date_obj - timedelta(days=lookback_days)
+        # 查询该日期之前（含）最近的交易日
+        past_date_row = db.query(func.max(SectorFlow.trade_date)).filter(
+            SectorFlow.trade_date <= past_date_obj.date(),
+            SectorFlow.trade_date < trade_date_obj.date()
+        ).scalar()
+        past_sectors = []
+        if past_date_row:
+            past_date = past_date_row.strftime('%Y-%m-%d')
+            past_sectors = db.query(SectorFlow).filter_by(trade_date=past_date_row).all()
+            print(f'[rotation] Comparing {trade_date} vs {past_date} (lookback {lookback_days}d)')
+        else:
+            print(f'[rotation] No past trading day found for lookback {lookback_days}d')
         
         if not current_sectors:
             return {'nodes': [], 'links': [], 'signals': []}
