@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import TreemapChart from '../components/charts/TreemapChart';
+import PolarChart from '../components/charts/PolarChart';
 import TrendLineChart from '../components/charts/TrendLineChart';
 
 export default function HeatmapPage() {
@@ -138,7 +138,7 @@ export default function HeatmapPage() {
         {loading ? (
           <div className="flex items-center justify-center h-96 text-sm" style={{ color: 'var(--text-muted)' }}>加载中...</div>
         ) : (
-          <TreemapChart data={data} selectedDate={viewDate} />
+          <PolarChart data={data} selectedDate={viewDate} />
         )}
       </div>
 
