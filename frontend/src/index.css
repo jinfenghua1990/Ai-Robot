@@ -5,6 +5,7 @@
 :root {
   --bg-primary: #ffffff;
   --bg-card: #ffffff;
+  --bg-elevated: #f8fafc;       /* 弹窗/抽屉使用：浅色下比页面微深一档 */
   --bg-surface: #f8fafc;
   --bg-hover: #f1f5f9;
   --text-primary: #1a1a1a;
@@ -21,6 +22,7 @@
 [data-theme="dark"] {
   --bg-primary: #0f172a;
   --bg-card: #1e293b;
+  --bg-elevated: #f8fafc;       /* 弹窗/抽屉使用：深色下用浅色背景做强对比 */
   --bg-surface: #1e293b;
   --bg-hover: #334155;
   --text-primary: #f1f5f9;
@@ -39,10 +41,36 @@ body {
   background: var(--bg-primary);
   color: var(--text-primary);
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 13px;
+  line-height: 1.4;
   transition: background 0.3s ease, color 0.3s ease;
 }
 
 #root {
   min-height: 100vh;
   background: var(--bg-primary);
+}
+
+/* 全局紧凑化：减小卡片间距 */
+main > div[class*="space-y"] > * + * {
+  margin-top: 0.5rem;
+}
+
+/* 全局紧凑化：表格行高 */
+table td, table th {
+  padding-top: 0.375rem;
+  padding-bottom: 0.375rem;
+}
+
+/* 滚动条紧凑化 */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--text-muted);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
 }

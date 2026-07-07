@@ -4,4 +4,3 @@ from .tdx_collector import (
     get_stock_money_flow, get_limit_up_stocks,
     collect_daily_data, PYTDX_AVAILABLE, TUSHARE_AVAILABLE
 )
-from .tushare_fallback import get_tushare_api, get_stock_list_tushare

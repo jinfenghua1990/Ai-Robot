@@ -1,0 +1,77 @@
+import { memo } from 'react';
+import SignalCard from './SignalCard';
+
+/**
+ * 自选股列表项（memoized）
+ * 关键优化：通过 React.memo 避免点击切换选中时 164 张卡片全部重渲染。
+ * 只有 isSelected 变化的 2 张卡（旧选中→未选中、新选中→选中）会重渲染。
+ *
+ * onSelect/onSell 是 useState setter（React 保证引用稳定），onRemove 需在父层 useCallback。
+ */
+function WatchlistItem({ signal, isSelected, onSelect, onRemove, onSell, batchMode, checked, onToggleCheck }) {
+  const bp = signal.buyPower || {};
+  const junk = signal.junk || {};
+
+  return (
+    <div
+      onClick={() => batchMode ? onToggleCheck?.(signal.secCode) : onSelect(signal.secCode)}
+      className="cursor-pointer rounded-lg transition-all relative"
+      style={{
+        outline: isSelected ? '2px solid #60a5fa' : (batchMode && checked ? '2px solid #f97316' : '2px solid transparent'),
+        opacity: junk.is_junk ? 0.55 : 1,
+      }}
+      title={junk.is_junk ? `杂毛: ${(junk.reasons || []).join('+')}` : ''}
+    >
+      {/* 杂毛角标 */}
+      {junk.is_junk && (
+        <div className="absolute top-1 right-1 z-10 px-1.5 py-0.5 rounded text-[9px] font-bold"
+          style={{ background: 'rgba(239,68,68,0.9)', color: '#fff' }}
+          title={junk.reasons?.join('、') || '杂毛'}>
+          🛡杂毛
+        </div>
+      )}
+
+      {/* 批量模式 checkbox */}
+      {batchMode && (
+        <div className="absolute top-1 left-1 z-10">
+          <input
+            type="checkbox"
+            checked={!!checked}
+            onChange={() => onToggleCheck?.(signal.secCode)}
+            onClick={(e) => e.stopPropagation()}
+            className="w-4 h-4 cursor-pointer"
+          />
+        </div>
+      )}
+
+      <SignalCard
+        signal={signal}
+        orders={[]}
+        onSell={onSell}
+        showWatchBtn={false}
+        mode="watchlist"
+        extraActions={
+          <div className="flex items-center gap-1.5">
+            {/* 购买力评分 */}
+            {bp.score > 0 && (
+              <span className="px-1.5 py-0.5 rounded text-[10px] font-bold" style={{ background: `${bp.color}22`, color: bp.color }} title={`量${bp.dimensions?.volume||0} 位${bp.dimensions?.position||0} 流${bp.dimensions?.flow||0} 热${bp.dimensions?.heat||0} 形${bp.dimensions?.tech||0}`}>
+                💰{bp.score} {bp.level}
+              </span>
+            )}
+            {!batchMode && (
+              <button
+                onClick={(e) => { e.stopPropagation(); onRemove(signal.secCode, signal.secName); }}
+                className="px-2 py-1 text-xs rounded"
+                style={{ background: 'rgba(107,114,128,0.1)', color: '#6b7280' }}
+              >
+                ✕ 移除
+              </button>
+            )}
+          </div>
+        }
+      />
+    </div>
+  );
+}
+
+export default memo(WatchlistItem);

@@ -1,16 +1,16 @@
 from fastapi import APIRouter, Query
 from db.connection import get_db
+from db.session import get_db_session
 from db.models import LeaderLifecycle
-from datetime import datetime
+from api.validators import validate_date
 
 router = APIRouter()
 
 @router.get("/api/lifecycle")
-async def get_lifecycle(date: str = Query(None), stage: str = Query(None)):
+def get_lifecycle(date: str = Query(None), stage: str = Query(None)):
     """返回龙头生命周期数据"""
-    db = next(get_db())
-    try:
-        trade_date = date or datetime.now().strftime('%Y-%m-%d')
+    trade_date = validate_date(date)
+    with get_db_session() as db:
         query = db.query(LeaderLifecycle).filter_by(trade_date=trade_date)
         if stage:
             query = query.filter_by(stage=stage)
@@ -27,5 +27,3 @@ async def get_lifecycle(date: str = Query(None), stage: str = Query(None)):
                 'consecutive_days': l.consecutive_days,
             } for l in leaders],
         }
-    finally:
-        db.close()

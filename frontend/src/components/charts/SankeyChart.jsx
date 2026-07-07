@@ -1,6 +1,13 @@
-import ReactECharts from 'echarts-for-react';
+import ReactECharts from 'echarts-for-react/lib/core';
+import echarts from '../../lib/echarts';
+import { tooltipStyle } from '../../utils/chartConfig';
+import { getSectorColorHex } from '../../utils/sectorColors';
 
-export default function SankeyChart({ data }) {
+// A股颜色习惯：红色=流入/上涨，绿色=流出/下跌
+const COLOR_INFLOW = '#ef4444';   // 红色 - 流入
+const COLOR_OUTFLOW = '#22c55e';  // 绿色 - 流出
+
+export default function SankeyChart({ data, onNodeClick, selectedSector, height = '500px' }) {
   if (!data || !data.nodes || data.nodes.length === 0) {
     return (
       <div className="flex items-center justify-center h-96 text-sm" style={{ color: 'var(--text-muted)' }}>
@@ -12,102 +19,119 @@ export default function SankeyChart({ data }) {
   // 计算各节点总流入/流出
   const inTotals = {};
   const outTotals = {};
+  const nodeCategory = {}; // name → category 映射
+  data.nodes.forEach(n => {
+    nodeCategory[n.name] = n.category;
+  });
   data.links.forEach(l => {
     outTotals[l.source] = (outTotals[l.source] || 0) + l.value;
     inTotals[l.target] = (inTotals[l.target] || 0) + l.value;
   });
 
-  // 节点颜色：流出=蓝色系，流入=红色系
-  const getNodeColor = (name, category) => {
-    if (category === 'outflow') {
-      const val = outTotals[name] || 0;
-      if (val > 300) return '#1e40af';
-      if (val > 150) return '#3b82f6';
-      return '#60a5fa';
-    } else {
-      const val = inTotals[name] || 0;
-      if (val > 300) return '#b91c1c';
-      if (val > 150) return '#ef4444';
-      return '#f87171';
-    }
+  // 节点颜色：同一板块固定色相，流入/流出用同一色相的明暗区分
+  const getNodeColor = (name) => {
+    const category = nodeCategory[name];
+    return getSectorColorHex(name, category === 'outflow' ? 'outflow' : 'inflow');
+  };
+
+  // 获取节点总额
+  const getNodeTotal = (name) => {
+    const category = nodeCategory[name];
+    return category === 'outflow' ? (outTotals[name] || 0) : (inTotals[name] || 0);
   };
 
   const option = {
     tooltip: {
+      ...tooltipStyle,
       trigger: 'item',
       formatter: (params) => {
         if (params.dataType === 'edge') {
           const pct = ((params.data.value / (outTotals[params.data.source] || 1)) * 100).toFixed(1);
           return `<div style="font-weight:600;font-size:13px">${params.data.source} → ${params.data.target}</div>` +
-                 `<div style="font-size:12px;color:#ccc">资金量: <span style="font-weight:600;color:#fff">${params.data.value.toFixed(1)}万</span></div>` +
-                 `<div style="font-size:12px;color:#ccc">占流出比: ${pct}%</div>`;
+                 `<div style="font-size:12px;color:#ccc">资金量：<span style="font-weight:600;color:#fff">${params.data.value.toFixed(1)}万</span></div>` +
+                 `<div style="font-size:12px;color:#ccc">占流出比：${pct}%</div>`;
         }
-        const node = params.data;
-        const total = node.category === 'outflow'
-          ? outTotals[node.name] || 0
-          : inTotals[node.name] || 0;
-        const type = node.category === 'outflow' ? '流出' : '流入';
-        const color = node.category === 'outflow' ? '#60a5fa' : '#f87171';
-        return `<div style="font-weight:700;font-size:14px;margin-bottom:4px">${node.name}</div>` +
-               `<div style="font-size:12px;color:#ccc">类型: <span style="color:${color}">${type}</span></div>` +
-               `<div style="font-size:12px;color:#ccc">总${type}: <span style="font-weight:600;color:#fff">${total.toFixed(1)}万</span></div>`;
+        const nodeName = params.data.name;
+        const category = nodeCategory[nodeName];
+        const total = getNodeTotal(nodeName);
+        const type = category === 'outflow' ? '流出' : '流入';
+        const color = getSectorColorHex(nodeName, category === 'outflow' ? 'outflow' : 'inflow');
+        return `<div style="font-weight:700;font-size:14px;margin-bottom:4px">${nodeName}</div>` +
+               `<div style="font-size:12px;color:#ccc">类型：<span style="color:${color}">${type}</span></div>` +
+               `<div style="font-size:12px;color:#ccc">总${type}：<span style="font-weight:600;color:#fff">${total.toFixed(1)}万</span></div>`;
       },
-      backgroundColor: 'rgba(20, 20, 20, 0.95)',
-      borderColor: 'rgba(255, 255, 255, 0.15)',
-      borderWidth: 1,
-      padding: [10, 14],
-      extraCssText: 'border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.4);',
     },
     series: [{
       type: 'sankey',
-      data: data.nodes.map(n => ({
-        name: n.name,
-        itemStyle: { color: getNodeColor(n.name, n.category), borderColor: 'rgba(0,0,0,0.2)' },
-        value: n.category === 'outflow' ? (outTotals[n.name] || 0) : (inTotals[n.name] || 0),
-      })),
-      links: data.links.map(l => ({
-        source: l.source,
-        target: l.target,
-        value: l.value,
-        lineStyle: {
-          color: 'gradient',
-          curveness: 0.5,
-          opacity: 0.25,
-        },
-      })),
+      data: data.nodes.map(n => {
+        const isSelected = selectedSector && n.name === selectedSector;
+        const dimmed = selectedSector && !isSelected;
+        return {
+          name: n.name,
+          itemStyle: {
+            color: getNodeColor(n.name),
+            borderColor: isSelected ? '#fff' : 'rgba(0,0,0,0.2)',
+            borderWidth: isSelected ? 2 : 0,
+            opacity: dimmed ? 0.25 : 1,
+          },
+          value: getNodeTotal(n.name),
+        };
+      }),
+      links: data.links.map(l => {
+        const involved = selectedSector && (l.source === selectedSector || l.target === selectedSector);
+        const dimmed = selectedSector && !involved;
+        return {
+          source: l.source,
+          target: l.target,
+          value: l.value,
+          lineStyle: {
+            color: 'gradient',
+            curveness: 0.5,
+            opacity: dimmed ? 0.05 : (involved ? 0.5 : 0.25),
+          },
+        };
+      }),
       orient: 'horizontal',
       label: {
         color: 'var(--text-primary)',
-        fontSize: 12,
-        fontWeight: 600,
+        fontSize: 11,
+        fontWeight: 500,
         formatter: (params) => {
-          const node = params.data;
-          const total = node.category === 'outflow'
-            ? outTotals[node.name] || 0
-            : inTotals[node.name] || 0;
-          return `${node.name}\n${total.toFixed(0)}万`;
+          const name = params.data.name;
+          const total = getNodeTotal(name);
+          return `${name}\n${total.toFixed(0)}万`;
         },
       },
       lineStyle: { color: 'gradient', curveness: 0.5, opacity: 0.25 },
       emphasis: { focus: 'adjacency', lineStyle: { opacity: 0.7 } },
-      nodeGap: 14,
-      nodeWidth: 12,
+      nodeGap: 16,
+      nodeWidth: 10,
       layoutIterations: 32,
     }],
   };
 
+  const onChartClick = (params) => {
+    if (params.dataType === 'node' && onNodeClick) {
+      onNodeClick(params.data.name);
+    }
+  };
+
+  const onEvents = { click: onChartClick };
+
   return (
-    <div>
-      <div className="flex items-center justify-between mb-3 px-1">
-        <div className="flex items-center gap-3 text-xs" style={{ color: 'var(--text-muted)' }}>
-          <span className="flex items-center gap-1"><span className="inline-block w-3 h-3 rounded" style={{background:'#3b82f6'}}></span>资金流出板块</span>
-          <span className="flex items-center gap-1"><span className="inline-block w-3 h-3 rounded" style={{background:'#ef4444'}}></span>资金流入板块</span>
+    <div className="h-full flex flex-col">
+      <div className="flex items-center justify-between mb-1 px-1">
+        <div className="flex items-center gap-2 text-[10px]" style={{ color: 'var(--text-muted)' }}>
+          <span className="flex items-center gap-1"><span className="inline-block w-2 h-2 rounded" style={{background: COLOR_OUTFLOW}}></span>流出</span>
+          <span className="flex items-center gap-1"><span className="inline-block w-2 h-2 rounded" style={{background: COLOR_INFLOW}}></span>流入</span>
         </div>
-        <div className="text-xs" style={{ color: 'var(--text-muted)' }}>
-          连线粗细=资金量 · 悬停查看详情
+        <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+          悬停详情{onNodeClick ? ' · 点击钻取' : ''}
         </div>
       </div>
-      <ReactECharts option={option} style={{ height: '500px', width: '100%' }} opts={{ renderer: 'canvas' }} />
+      <div className="flex-1 min-h-0">
+        <ReactECharts echarts={echarts} option={option} style={{ height: '100%', width: '100%' }} opts={{ renderer: 'canvas' }} onEvents={onEvents} />
+      </div>
     </div>
   );
 }

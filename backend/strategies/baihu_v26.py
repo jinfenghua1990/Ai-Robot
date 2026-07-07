@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+import logging
+logger = logging.getLogger(__name__)
 """
 🐯 白虎 V2.6 - 强势回调选股策略
 从 /Users/gino/Downloads/白虎V2.6选股策略_核心代码(1).py 迁移
@@ -17,6 +19,8 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
 
+
+logger = logging.getLogger(__name__)
 
 # ============================================================
 # 工具函数
@@ -51,6 +55,12 @@ def baihu_strategy_v26(kline, day_index=-1):
         符合条件返回评分字典，不符合返回None
     """
     try:
+        # 统一处理 day_index=-1，避免 kline[:0] 切片为空的BUG
+        if day_index == -1:
+            day_index = len(kline) - 1
+        if day_index < 0 or day_index >= len(kline):
+            return None
+
         # ========== 【5个必过硬门槛】 ==========
 
         # 1. MA20连续4天向上
@@ -152,6 +162,7 @@ def baihu_strategy_v26(kline, day_index=-1):
             'date': latest.get('day', ''),
         }
     except Exception:
+        logger.debug(f"function failed", exc_info=True)
         return None
 
 
@@ -203,10 +214,10 @@ def get_kline_from_tdx(code, days=90):
         bars = api.get_security_bars(4, market, pure_code, 0, days)
         if not bars or len(bars) < 30:
             return None
-        # pytdx 返回 newest-first，反转为 oldest-first 以匹配策略的负索引用法
-        bars = list(reversed(bars))
+        # pytdx 实测返回 oldest-first（bars[0] 最早），无需 reversed，直接使用
         kline = []
         closes_history = []
+        ma20_sum = 0.0
         for b in bars:
             close = float(b['close'])
             open_p = float(b['open'])
@@ -218,10 +229,11 @@ def get_kline_from_tdx(code, days=90):
             if not day and b.get('year'):
                 day = f"{b['year']:04d}-{b['month']:02d}-{b['day']:02d}"
             closes_history.append(close)
-            # 计算 MA20（截至当前bar）
-            ma20 = 0.0
-            if len(closes_history) >= 20:
-                ma20 = sum(closes_history[-20:]) / 20.0
+            ma20_sum += close
+            if len(closes_history) > 20:
+                ma20_sum -= closes_history[-21]
+            # 计算 MA20（滑动窗口，O(1)）
+            ma20 = ma20_sum / 20.0 if len(closes_history) >= 20 else 0.0
             kline.append({
                 'close': close,
                 'open': open_p,
@@ -233,13 +245,14 @@ def get_kline_from_tdx(code, days=90):
             })
         return kline
     except Exception:
+        logger.debug(f"function failed", exc_info=True)
         return None
     finally:
         if api:
             try:
                 api.disconnect()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f'[baihu_v26] pytdx disconnect 失败: {e}')
 
 
 # ============================================================

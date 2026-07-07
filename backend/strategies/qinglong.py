@@ -18,6 +18,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
 
 from .baihu_v26 import get_kline_from_tdx, calc_rsi
+import logging
+logger = logging.getLogger(__name__)
 
 
 # ============================================================
@@ -49,14 +51,21 @@ def qinglong_strategy(kline, day_index=-1):
         符合条件返回评分字典，不符合返回None
     """
     try:
+        # 统一处理 day_index=-1，避免 kline[:0] 切片为空的BUG
+        if day_index == -1:
+            day_index = len(kline) - 1
+        if day_index < 0 or day_index >= len(kline):
+            return None
+
         # ========== 【5个必过硬门槛】 ==========
 
-        # 1. MA10连续3天向上
+        # 1. MA10连续3天向上（预计算，避免重复切片）
+        start_idx = max(0, day_index - 4)
+        closes = [float(k['close']) for k in kline[:day_index + 1]]
         ma10_list = []
-        for i in range(max(0, day_index - 4), day_index + 1):
-            ma10 = calc_ma(kline, i, 10)
-            if ma10 > 0:
-                ma10_list.append(ma10)
+        for i in range(start_idx, min(day_index + 1, len(closes))):
+            if i >= 9:
+                ma10_list.append(sum(closes[i-9:i+1]) / 10.0)
 
         if len(ma10_list) < 3:
             return None
@@ -64,7 +73,6 @@ def qinglong_strategy(kline, day_index=-1):
             return None
 
         # 2. 近20日累计涨幅 > 30%（必须是超强主升浪）
-        closes = [float(k['close']) for k in kline[:day_index + 1]]
         if len(closes) < 21:
             return None
         close_20day_ago = closes[-21]
@@ -147,6 +155,7 @@ def qinglong_strategy(kline, day_index=-1):
             'date': latest.get('day', ''),
         }
     except Exception:
+        logger.debug(f"function failed", exc_info=True)
         return None
 
 
