@@ -472,21 +472,6 @@ def _is_trading_day(date_str):
     return False
 
 
-def scheduled_collect():
-    """定时采集任务（保留兼容，已由实时快照+归档替代）"""
-    today = datetime.now().strftime('%Y-%m-%d')
-    date_no_dash = datetime.now().strftime('%Y%m%d')
-
-    if not _is_trading_day(today):
-        logger.info(f'[scheduler] {today} is not a trading day, skipping collection')
-        return
-
-    logger.info(f'[scheduler] Collecting data for {today}')
-    try:
-        collect_daily_data(date_no_dash)
-    except Exception as e:
-        logger.error(f'[scheduler] Collect error: {e}')
-
 
 def scheduled_analyze():
     """盘后分析任务"""

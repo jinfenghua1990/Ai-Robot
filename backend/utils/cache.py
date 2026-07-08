@@ -14,6 +14,20 @@ logger = logging.getLogger(__name__)
 
 _lock = threading.Lock()
 _registry: dict = {}  # full_cache_name -> {'data':..., 'ts':..., 'ttl':...}
+_MAX_ENTRIES = 1000
+
+
+def _evict_expired():
+    """惰性清理：移除所有过期条目；若仍超限则淘汰最旧的 20%"""
+    now = time.time()
+    expired = [k for k, v in _registry.items() if now - v['ts'] >= v['ttl']]
+    for k in expired:
+        del _registry[k]
+    if len(_registry) > _MAX_ENTRIES:
+        # 仍超限：按写入时间排序，淘汰最旧的 20%
+        sorted_keys = sorted(_registry.keys(), key=lambda k: _registry[k]['ts'])
+        for k in sorted_keys[:max(len(sorted_keys) // 5, 1)]:
+            del _registry[k]
 
 
 def cached(name: str, ttl: int = 60, key_fn: Optional[Callable] = None):
@@ -39,6 +53,7 @@ def cached(name: str, ttl: int = 60, key_fn: Optional[Callable] = None):
             data = fn(*args, **kwargs)
             with _lock:
                 _registry[cache_key] = {'data': data, 'ts': time.time(), 'ttl': ttl}
+                _evict_expired()
             return data
         wrapper.invalidate = lambda: invalidate_prefix(name)
         wrapper._cache_name = name
@@ -61,6 +76,7 @@ def async_cached(name: str, ttl: int = 60, key_fn: Optional[Callable] = None):
             data = await fn(*args, **kwargs)
             with _lock:
                 _registry[cache_key] = {'data': data, 'ts': time.time(), 'ttl': ttl}
+                _evict_expired()
             return data
         wrapper.invalidate = lambda: invalidate_prefix(name)
         wrapper._cache_name = name

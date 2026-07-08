@@ -13,7 +13,6 @@ from fastapi import APIRouter, Query, HTTPException
 from pydantic import BaseModel
 from typing import Optional
 from analyzers.strategy_engine import get_config, update_config
-from db.connection import get_db
 from db.session import get_db_session
 from db.models import SimPositionSnapshot, SimAccountSnapshot
 from api.trading import get_positions as _get_local_positions

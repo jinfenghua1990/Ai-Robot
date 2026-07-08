@@ -105,135 +105,48 @@ def collect_realtime_stock_flow(trade_date):
     top20_for_flow = sorted_flows[:20]   # 资金流向验证Top20
     top10_for_guosen = sorted_flows[:10] # 国信证券验证Top10（减少额度消耗）
 
-    # === 多源采集验证数据 ===
-    # 1. 腾讯财经批量价格（Top50，无额度限制）
-    tencent_prices = {}
-    if top50_for_price:
-        ts_codes = [s['ts_code'] for s in top50_for_price]
-        try:
-            tencent_prices = batch_realtime_quotes(ts_codes)
-            print(f'[realtime] Tencent prices: {len(tencent_prices)} stocks')
-        except Exception as e:
-            print(f'[realtime] Tencent price error: {e}')
+    # === 多源采集验证数据（数据源配置 + 统一循环，代替 12 组重复 try/except） ===
+    import importlib
+    _PRICE_COLLECTORS = [
+        ('tencent',       top50_for_price, 'collectors.astock_collector',    'batch_realtime_quotes'),
+        ('tdx',           top20_for_flow,  'collectors.astock_collector',    'tdx_realtime_price'),
+        ('akshare',       top50_for_price, 'collectors.akshare_collector',   'akshare_batch_prices'),
+        ('efinance',      top20_for_flow,  'collectors.extended_collectors', 'efinance_batch_quotes'),
+        ('adata',         top20_for_flow,  'collectors.extended_collectors', 'adata_batch_quotes'),
+        ('sina_quote',    top50_for_price, 'collectors.extended_collectors', 'sina_quote_batch'),
+        ('tencent_kline', top20_for_flow,  'collectors.extended_collectors', 'tencent_kline_batch'),
+        ('baostock',      top20_for_flow,  'collectors.extended_collectors', 'baostock_batch_quotes'),
+        ('itick',         top20_for_flow,  'collectors.extended_collectors', 'itick_batch_quotes'),
+        ('jqdata',        top20_for_flow,  'collectors.extended_collectors', 'jqdata_batch_quotes'),
+        ('mootdx',        top20_for_flow,  'collectors.extended_collectors', 'mootdx_batch_quotes'),
+        ('qstock',        top20_for_flow,  'collectors.extended_collectors', 'qstock_batch_quotes'),
+    ]
 
-    # 2. 通达信实时价格（Top20，TCP协议无额度限制）
-    tdx_prices = {}
-    if top20_for_flow:
-        ts_codes = [s['ts_code'] for s in top20_for_flow]
+    price_results = {}
+    for name, codes_list, mod_path, func_name in _PRICE_COLLECTORS:
+        result = {}
+        ts_codes = [s['ts_code'] for s in codes_list]
         try:
-            tdx_prices = tdx_realtime_price(ts_codes)
-            print(f'[realtime] TDX prices: {len(tdx_prices)} stocks')
+            mod = importlib.import_module(mod_path)
+            func = getattr(mod, func_name)
+            result = func(ts_codes)
+            print(f'[realtime] {name} prices: {len(result)} stocks')
         except Exception as e:
-            print(f'[realtime] TDX price error: {e}')
+            print(f'[realtime] {name} price error: {e}')
+        price_results[name] = result
 
-    # 2.5 AKShare实时行情（Top50，基于新浪，无额度限制）
-    akshare_prices = {}
-    if top50_for_price:
-        ts_codes = [s['ts_code'] for s in top50_for_price]
-        try:
-            akshare_prices = akshare_batch_prices(ts_codes)
-            print(f'[realtime] AKShare prices: {len(akshare_prices)} stocks')
-        except Exception as e:
-            print(f'[realtime] AKShare price error: {e}')
-
-    # 2.6 efinance实时行情（Top20，基于东财，无额度限制）
-    efinance_prices = {}
-    if top20_for_flow:
-        ts_codes = [s['ts_code'] for s in top20_for_flow]
-        try:
-            from collectors.extended_collectors import efinance_batch_quotes
-            efinance_prices = efinance_batch_quotes(ts_codes)
-            print(f'[realtime] efinance prices: {len(efinance_prices)} stocks')
-        except Exception as e:
-            print(f'[realtime] efinance price error: {e}')
-
-    # 2.7 adata实时行情（Top20，聚合多源，无额度限制）
-    adata_prices = {}
-    if top20_for_flow:
-        ts_codes = [s['ts_code'] for s in top20_for_flow]
-        try:
-            from collectors.extended_collectors import adata_batch_quotes
-            adata_prices = adata_batch_quotes(ts_codes)
-            print(f'[realtime] adata prices: {len(adata_prices)} stocks')
-        except Exception as e:
-            print(f'[realtime] adata price error: {e}')
-
-    # 2.8 新浪行情API（Top50，无额度限制，极速批量）
-    sina_quote_prices = {}
-    if top50_for_price:
-        ts_codes = [s['ts_code'] for s in top50_for_price]
-        try:
-            from collectors.extended_collectors import sina_quote_batch
-            sina_quote_prices = sina_quote_batch(ts_codes)
-            print(f'[realtime] sina_quote prices: {len(sina_quote_prices)} stocks')
-        except Exception as e:
-            print(f'[realtime] sina_quote price error: {e}')
-
-    # 2.9 腾讯K线（Top20，无额度限制，前复权日K）
-    tencent_kline_prices = {}
-    if top20_for_flow:
-        ts_codes = [s['ts_code'] for s in top20_for_flow]
-        try:
-            from collectors.extended_collectors import tencent_kline_batch
-            tencent_kline_prices = tencent_kline_batch(ts_codes)
-            print(f'[realtime] tencent_kline prices: {len(tencent_kline_prices)} stocks')
-        except Exception as e:
-            print(f'[realtime] tencent_kline price error: {e}')
-
-    # 2.10 baostock日K（Top20，免费开源，盘后数据验证）
-    baostock_prices = {}
-    if top20_for_flow:
-        ts_codes = [s['ts_code'] for s in top20_for_flow]
-        try:
-            from collectors.extended_collectors import baostock_batch_quotes
-            baostock_prices = baostock_batch_quotes(ts_codes)
-            print(f'[realtime] baostock prices: {len(baostock_prices)} stocks')
-        except Exception as e:
-            print(f'[realtime] baostock price error: {e}')
-
-    # 2.11 iTick实时行情（Top20，低延迟HTTP API）
-    itick_prices = {}
-    if top20_for_flow:
-        ts_codes = [s['ts_code'] for s in top20_for_flow]
-        try:
-            from collectors.extended_collectors import itick_batch_quotes
-            itick_prices = itick_batch_quotes(ts_codes)
-            print(f'[realtime] iTick prices: {len(itick_prices)} stocks')
-        except Exception as e:
-            print(f'[realtime] iTick price error: {e}')
-
-    # 2.12 聚宽数据（Top20，高质量日K验证）
-    jqdata_prices = {}
-    if top20_for_flow:
-        ts_codes = [s['ts_code'] for s in top20_for_flow]
-        try:
-            from collectors.extended_collectors import jqdata_batch_quotes
-            jqdata_prices = jqdata_batch_quotes(ts_codes)
-            print(f'[realtime] jqdata prices: {len(jqdata_prices)} stocks')
-        except Exception as e:
-            print(f'[realtime] jqdata price error: {e}')
-
-    # 2.13 mootdx TCP行情（Top20，pytdx降级，无额度限制）
-    mootdx_prices = {}
-    if top20_for_flow:
-        ts_codes = [s['ts_code'] for s in top20_for_flow]
-        try:
-            from collectors.extended_collectors import mootdx_batch_quotes
-            mootdx_prices = mootdx_batch_quotes(ts_codes)
-            print(f'[realtime] mootdx prices: {len(mootdx_prices)} stocks')
-        except Exception as e:
-            print(f'[realtime] mootdx price error: {e}')
-
-    # 2.14 qstock行情（Top20，多源聚合，无额度限制）
-    qstock_prices = {}
-    if top20_for_flow:
-        ts_codes = [s['ts_code'] for s in top20_for_flow]
-        try:
-            from collectors.extended_collectors import qstock_batch_quotes
-            qstock_prices = qstock_batch_quotes(ts_codes)
-            print(f'[realtime] qstock prices: {len(qstock_prices)} stocks')
-        except Exception as e:
-            print(f'[realtime] qstock price error: {e}')
+    tencent_prices       = price_results['tencent']
+    tdx_prices           = price_results['tdx']
+    akshare_prices       = price_results['akshare']
+    efinance_prices      = price_results['efinance']
+    adata_prices         = price_results['adata']
+    sina_quote_prices    = price_results['sina_quote']
+    tencent_kline_prices = price_results['tencent_kline']
+    baostock_prices      = price_results['baostock']
+    itick_prices         = price_results['itick']
+    jqdata_prices        = price_results['jqdata']
+    mootdx_prices        = price_results['mootdx']
+    qstock_prices        = price_results['qstock']
 
     # 3. 东财push2资金流向（Top20，无额度限制）
     em_push2_flows = {}

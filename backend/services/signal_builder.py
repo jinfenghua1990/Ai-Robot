@@ -524,6 +524,16 @@ async def build_signals_from_strategy_result(
             r['continuityDays'] = int(detail.get('continuity_days', 0))
             r['hasMainForce'] = detail.get('has_main_force', False)
             r['exitSignal'] = detail.get('exit_signal')
+        if strategy_key == 'wave_band':
+            r['ma5'] = float(detail.get('ma5', 0))
+            r['ma10'] = float(detail.get('ma10', 0))
+            r['ma20'] = float(detail.get('ma20', 0))
+            r['rsi6'] = float(detail.get('rsi6') or 0)
+            r['volRatio'] = float(detail.get('vol_ratio', 0))
+            r['changePct'] = float(detail.get('change_pct', 0))
+            r['confidence'] = float(detail.get('confidence', 0))
+            r['waveReason'] = detail.get('reason', '')
+            r['waveSignal'] = detail.get('signal', 'buy')
         if strategy_key == 'liangjia_report':
             # 量价报告策略：5种形态 + 3层分层 + 交易计划
             r['pattern'] = detail.get('pattern', '')

@@ -365,8 +365,13 @@ async def screen_stocks(strategy: str = Query("heat"), date: str = Query(None)):
                 stage_key='stage', strength_key='score',
                 change_key='price_chg',
             )
-            # 保留原始策略字段
-            stock_meta = {r['ts_code']: r for r in results}
+            # 保留原始策略字段（ts_code 形如 "000001.SZ"，secCode 是 6 位数字，需统一 key）
+            stock_meta = {}
+            for r in results:
+                code = r['ts_code']
+                if '.' in code:
+                    code = code.split('.')[0]
+                stock_meta[code] = r
             for s in enriched_stocks:
                 meta = stock_meta.get(s['secCode'])
                 if meta:

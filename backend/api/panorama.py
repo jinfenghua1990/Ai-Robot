@@ -8,7 +8,6 @@ from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel
 from typing import List, Optional
 from sqlalchemy import func
-from db.connection import get_db
 from db.session import get_db_session
 from db.models import WatchlistSignalDaily
 from services.signal_builder import build_signal_for_stock, build_signal_from_precomputed

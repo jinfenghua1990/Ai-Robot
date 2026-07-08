@@ -156,18 +156,28 @@ def _restore_cache_from_db(dimension: str):
 
 
 def _bulk_upsert_snapshots(records: List[RealtimeMoneyFlowSnapshot]):
-    """批量写入/更新数据库"""
+    """批量写入/更新数据库（预加载现有记录 → 内存 map，避免 N 次 SELECT）"""
     if not records:
         return
     try:
         with get_db_session() as db:
+            # 1) 按 (trade_date, dimension) 一次性批量加载已有记录
+            date_dim_pairs = {(r.trade_date, r.dimension) for r in records}
+            all_existing = []
+            for td, dim in date_dim_pairs:
+                batch = db.query(RealtimeMoneyFlowSnapshot).filter_by(
+                    trade_date=td, dimension=dim
+                ).all()
+                all_existing.extend(batch)
+            exist_map = {
+                (e.trade_date, e.dimension, e.block_name, e.minute): e
+                for e in all_existing
+            }
+
+            # 2) 内存 map 查找，零 DB 查询
             for rec in records:
-                existing = db.query(RealtimeMoneyFlowSnapshot).filter_by(
-                    trade_date=rec.trade_date,
-                    dimension=rec.dimension,
-                    block_name=rec.block_name,
-                    minute=rec.minute,
-                ).first()
+                key = (rec.trade_date, rec.dimension, rec.block_name, rec.minute)
+                existing = exist_map.get(key)
                 if existing:
                     existing.net_inflow_yi = rec.net_inflow_yi
                     existing.source = rec.source

@@ -166,6 +166,19 @@ function SignalCard({
                     {signal.strategyMode === 'breakout' ? '🔥 放量突破' : '📉 缩量回踩'}
                   </span>
                 )}
+                {signal.waveSignal && (
+                  <span
+                    className="px-1.5 py-0.5 rounded text-[10px] font-bold whitespace-nowrap"
+                    style={{
+                      background: 'rgba(34,197,94,0.12)',
+                      color: '#22c55e',
+                      border: '1px solid rgba(34,197,94,0.35)',
+                    }}
+                    title={signal.waveReason || '波段信号'}
+                  >
+                    🌊 {signal.waveSignal === 'buy' ? '买入' : signal.waveSignal === 'sell' ? '卖出' : '观望'} {signal.confidence ? `${signal.confidence.toFixed(0)}%` : ''}
+                  </span>
+                )}
                 {hasOrders && (
                   <button onClick={(e) => { e.stopPropagation(); setOrderOpen(true); }} className="px-1 py-0.5 rounded text-[10px] cursor-pointer" style={{ background: 'rgba(59,130,246,0.1)', color: '#3b82f6' }}>
                     📋 {orders.length}笔委托
@@ -175,6 +188,39 @@ function SignalCard({
               {/* 6 大命中雷达标签（仅 watchlist 模式） */}
               {isWatchlistStyle && signal.hitTags && signal.hitTags.length > 0 && (
                 <HitTagBar tags={signal.hitTags} />
+              )}
+              {/* 波段信号指标条 */}
+              {signal.waveSignal && (
+                <div className="flex items-center gap-1.5 flex-wrap mt-0.5">
+                  {signal.waveReason && (
+                    <span className="text-[10px] truncate" style={{ color: 'var(--text-muted)' }} title={signal.waveReason}>
+                      {signal.waveReason}
+                    </span>
+                  )}
+                  <span className="text-[9px] px-1 rounded" style={{ background: 'rgba(168,85,247,0.1)', color: '#a855f7' }} title="RSI6">
+                    RSI6 {signal.rsi6?.toFixed(1)}
+                  </span>
+                  {signal.ma5 > 0 && (
+                    <span className="text-[9px] px-1 rounded" style={{ background: 'rgba(59,130,246,0.1)', color: '#3b82f6' }} title="均线">
+                      MA5 {signal.ma5.toFixed(2)}
+                    </span>
+                  )}
+                  {signal.ma10 > 0 && (
+                    <span className="text-[9px] px-1 rounded" style={{ background: 'rgba(59,130,246,0.1)', color: '#3b82f6' }} title="均线">
+                      MA10 {signal.ma10.toFixed(2)}
+                    </span>
+                  )}
+                  {signal.ma20 > 0 && (
+                    <span className="text-[9px] px-1 rounded" style={{ background: 'rgba(59,130,246,0.1)', color: '#3b82f6' }} title="均线">
+                      MA20 {signal.ma20.toFixed(2)}
+                    </span>
+                  )}
+                  {signal.volRatio > 0 && (
+                    <span className="text-[9px] px-1 rounded" style={{ background: 'rgba(234,179,8,0.1)', color: '#eab308' }} title="量比">
+                      量比 {signal.volRatio.toFixed(2)}
+                    </span>
+                  )}
+                </div>
               )}
             </div>
           </div>
