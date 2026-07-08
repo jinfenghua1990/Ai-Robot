@@ -31,6 +31,7 @@ const STATIC_TABS = [
   { key: 'smart-qinglong', label: '青龙', shortLabel: '青龙', icon: '🐉', group: 'smart', Component: ScreenerPage, props: { initialStrategy: 'qinglong', hideStrategySelector: true } },
   { key: 'smart-zhushenglang', label: '主升浪', shortLabel: '主升浪', icon: '🚀', group: 'smart', Component: ScreenerPage, props: { initialStrategy: 'zhushenglang', hideStrategySelector: true } },
   { key: 'smart-liangjia', label: '白虎V4.0', shortLabel: '白虎V4.0', icon: '🐯', group: 'smart', Component: ScreenerPage, props: { initialStrategy: 'liangjia', hideStrategySelector: true } },
+  { key: 'smart-wave', label: '波段信号', shortLabel: '波段信号', icon: '🌊', group: 'smart', Component: ScreenerPage, props: { initialStrategy: 'wave_band', hideStrategySelector: true } },
 ];
 
 // BS配置页（策略编辑器，不参与扁平Tab，放右侧操作区）

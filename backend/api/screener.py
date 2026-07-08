@@ -248,9 +248,9 @@ async def screen_stocks(strategy: str = Query("heat"), date: str = Query(None)):
                     'filters': [f for f in filters_used if f],
                 },
             }
-        elif strategy in ("baihu", "qinglong", "zhushenglang"):
+        elif strategy in ("baihu", "qinglong", "zhushenglang", "wave_band"):
             # 优先读预计算表（盘后定时扫描已落库），命中则跳过现场计算
-            _sk_map = {'baihu': 'baihu_v26', 'qinglong': 'qinglong', 'zhushenglang': 'zhushenglang'}
+            _sk_map = {'baihu': 'baihu_v26', 'qinglong': 'qinglong', 'zhushenglang': 'zhushenglang', 'wave_band': 'wave_band'}
             _sk = _sk_map.get(strategy)
             if _sk:
                 _precomputed = await build_signals_from_strategy_result(db, _sk, trade_date)
@@ -307,6 +307,9 @@ async def screen_stocks(strategy: str = Query("heat"), date: str = Query(None)):
             elif strategy == "qinglong":
                 from strategies.qinglong import run_qinglong_screen
                 hits = run_qinglong_screen(stock_list, trade_date)
+            elif strategy == "wave_band":
+                from strategies.wave_band import run_wave_band_screen
+                hits = run_wave_band_screen(stock_list, trade_date)
             else:
                 from strategies.zhushenglang import run_zhushenglang_screen
                 hits = run_zhushenglang_screen(stock_list, trade_date, db=db)
@@ -344,6 +347,14 @@ async def screen_stocks(strategy: str = Query("heat"), date: str = Query(None)):
                     r['continuity_days'] = int(h.get('continuity_days', 0))
                     r['has_main_force'] = h.get('has_main_force', False)
                     r['exit_signal'] = h.get('exit_signal')
+                # 波段信号策略特有字段
+                if strategy == "wave_band":
+                    r['ma5'] = float(h.get('ma5', 0))
+                    r['ma10'] = float(h.get('ma10', 0))
+                    r['rsi6'] = float(h.get('rsi6') or 0)
+                    r['confidence'] = float(h.get('confidence', 0))
+                    r['reason'] = h.get('reason', '')
+                    r['signal'] = h.get('signal', 'buy')
                 results.append(r)
             results = sorted(results, key=lambda x: x['score'], reverse=True)
 
@@ -375,6 +386,14 @@ async def screen_stocks(strategy: str = Query("heat"), date: str = Query(None)):
                         s['continuityDays'] = meta.get('continuity_days', 0)
                         s['hasMainForce'] = meta.get('has_main_force', False)
                         s['exitSignal'] = meta.get('exit_signal')
+                    # 波段信号策略特有字段
+                    if strategy == "wave_band":
+                        s['ma5'] = meta.get('ma5', 0)
+                        s['ma10'] = meta.get('ma10', 0)
+                        s['rsi6'] = meta.get('rsi6', 0)
+                        s['confidence'] = meta.get('confidence', 0)
+                        s['waveReason'] = meta.get('reason', '')
+                        s['waveSignal'] = meta.get('signal', 'buy')
 
             return {
                 'strategy': strategy,

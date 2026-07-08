@@ -11,11 +11,12 @@
 - 进程重启 = 数据从 0 重算,可接受
 - 如需多实例,只需把 REALTIME_STATE 替换为 redis.Redis 即可,API 不变
 """
+import time
 import logging
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Dict, Optional
+from typing import Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -257,29 +258,45 @@ def collect_realtime_snapshot():
         elif tick['ask_vol_1'] and tick['ask_vol_1'] > tick['bid_vol_1'] * 1.5:
             state.record_large_order('sell', tick['ask_vol_1'])
 
-        # 准备落库（复用 tick dict，扩展 DB 专属字段）
-        tick_rows.append({**tick, 'ts_code': code, 'trade_date': today})
+        # 准备落库
+        tick_rows.append({
+            'snapshot_time': now,
+            'trade_date': today,
+            'ts_code': code,
+            'price': tick['price'],
+            'volume': tick['volume'],
+            'amount': tick['amount'],
+            'bid_price_1': tick['bid_price_1'],
+            'bid_vol_1': tick['bid_vol_1'],
+            'ask_price_1': tick['ask_price_1'],
+            'ask_vol_1': tick['ask_vol_1'],
+            'turnover_rate': tick['turnover_rate'],
+            'main_force_inflow': tick['main_force_inflow'],
+            'source': tick['source'],
+        })
 
     # 4) 批量写库(每 3 秒一次,数据量大;超过 500 条用 bulk_insert_mappings)
     if tick_rows:
         try:
             from db.connection import engine
             from sqlalchemy import text
-            # 参数化批量 INSERT，避免 SQL 注入
-            with engine.connect() as conn:
-                conn.execute(
-                    text("""
+            # 用原生 SQL UPSERT,避免 ORM 慢
+            values_sql = []
+            for r in tick_rows:
+                values_sql.append(f"('{r['snapshot_time'].isoformat()}', '{r['trade_date']}', '{r['ts_code']}', "
+                                  f"{r['price']}, {r['volume']}, {r['amount']}, "
+                                  f"{r['bid_price_1']}, {r['bid_vol_1']}, {r['ask_price_1']}, {r['ask_vol_1']}, "
+                                  f"{r['turnover_rate']}, {r['main_force_inflow']}, '{r['source']}')")
+            if values_sql:
+                with engine.connect() as conn:
+                    conn.execute(text(f'''
                         INSERT INTO stock_realtime_tick
                         (snapshot_time, trade_date, ts_code, price, volume, amount,
                          bid_price_1, bid_vol_1, ask_price_1, ask_vol_1,
                          turnover_rate, main_force_inflow, source)
-                        VALUES (:snapshot_time, :trade_date, :ts_code, :price, :volume, :amount,
-                                :bid_price_1, :bid_vol_1, :ask_price_1, :ask_vol_1,
-                                :turnover_rate, :main_force_inflow, :source)
-                    """),
-                    tick_rows
-                )
-                conn.commit()
+                        VALUES {','.join(values_sql)}
+                    '''))
+                    conn.commit()
         except Exception as e:
             logger.warning(f'[realtime_aggregator] tick write failed: {e}')
 
@@ -366,10 +383,12 @@ def cleanup_realtime_after_close():
     """收盘 15:30 后清理当日盘口数据(tick 流水保留 20 天,盘口可清)"""
     from db.connection import engine
     from sqlalchemy import text
-    cutoff = datetime.now().date() - timedelta(days=20)
     today = datetime.now().date()
     with engine.connect() as conn:
-        conn.execute(text("DELETE FROM stock_realtime_orderbook WHERE trade_date = :td"), {"td": today})
-        conn.execute(text("DELETE FROM stock_realtime_tick WHERE trade_date < :cutoff"), {"cutoff": cutoff})
+        conn.execute(text(f"DELETE FROM stock_realtime_orderbook WHERE trade_date = '{today}'"))
+        conn.execute(text(f"""
+            DELETE FROM stock_realtime_tick
+            WHERE trade_date < '{today - timedelta(days=20)}'
+        """))  # 20 天 TTL,覆盖完整中期波段
         conn.commit()
-    logger.info(f'[realtime_aggregator] cleanup done (keep tick since {cutoff})')
+    logger.info('[realtime_aggregator] cleanup done')

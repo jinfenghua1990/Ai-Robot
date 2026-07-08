@@ -21,6 +21,7 @@ const STRATEGIES = [
   { key: 'liangjia', label: '白虎V4.0', desc: '5种形态分类 + 3层分层（优先买入/等回踩/暂不参与）+ 交易计划', icon: '🐯' },
   { key: 'qinglong', label: '青龙', desc: 'MA10主升浪回踩策略', icon: '🐉' },
   { key: 'zhushenglang', label: '主升浪', desc: 'MA多头排列+主力资金流入，主升浪趋势选股', icon: '🚀' },
+  { key: 'wave_band', label: '波段信号', desc: 'MA多头排列+回踩MA10缩量 / 放量突破MA20，RSI6+量比买卖点', icon: '🌊' },
 ];
 
 export default function ScreenerPage({ initialStrategy, hideStrategySelector }) {

@@ -83,6 +83,14 @@ STRATEGIES = [
         'func': 'run_liangjia_report_screen',
         'needs_db': False,
     },
+    {
+        'key': 'wave_band',
+        'name': '波段信号',
+        'icon': '🌊',
+        'module': 'strategies.wave_band',
+        'func': 'run_wave_band_screen',
+        'needs_db': False,
+    },
 ]
 
 
