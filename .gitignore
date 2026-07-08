@@ -15,3 +15,7 @@ dist/
 
 # OS
 .DS_Store
+
+# 本地产物,不进版本库
+.trash/
+backups/
