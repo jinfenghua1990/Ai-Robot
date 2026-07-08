@@ -45,38 +45,80 @@ def _row_to_dict(r: YuziLifecycleTracker) -> dict:
 
 
 def _attach_boss_exits(db, rows: list) -> None:
-    """给每个 tracker row 附上 boss_exits: {YYYYMMDD: [{alias, net}]}
+    """给每个 tracker row 附上 boss_exits + 离场/归档判定
 
-    含义: D1 大佬在后续哪天卖了(根据 YuziSeatDaily side=SELL 记录)
-    用途: DayCell 上显示「💰卖」角标,直观看到大佬哪天跑了
+    boss_exits: {YYYYMMDD: [{alias, net}]}  D1 大佬在后续哪天卖了
+    all_bosses_exited: bool                 D1 大佬是否全部已离场
+    last_exit_date: str | None              最后一个大佬离场日期
+    new_entries_after_exit: list            离场后新游资买入记录
+    archived: bool                          全部离场 + 无新入场 + 距离≥3天 → 归档
     """
     if not rows:
         return
     ts_codes = list({r['ts_code'] for r in rows})
     earliest = min(r['trigger_date'] for r in rows)
-    # 一次拉所有相关 SELL 记录
+    # 一次拉所有相关 SELL + BUY 记录
     seats = db.query(YuziSeatDaily).filter(
         YuziSeatDaily.ts_code.in_(ts_codes),
         YuziSeatDaily.trade_date >= earliest,
-        YuziSeatDaily.side == 'SELL',
     ).all()
-    # 按 ts_code 分组
-    by_code = defaultdict(list)
+    # 按 ts_code + side 分组
+    sell_by_code = defaultdict(list)
+    buy_by_code = defaultdict(list)
     for s in seats:
-        by_code[s.ts_code].append(s)
-    # 给每个 row 配对
+        if s.side == 'SELL':
+            sell_by_code[s.ts_code].append(s)
+        elif s.side == 'BUY':
+            buy_by_code[s.ts_code].append(s)
+
     for r in rows:
         bosses = set(r['boss_list_d1'] or [])
-        code_seats = by_code.get(r['ts_code'], [])
+        code_sells = sell_by_code.get(r['ts_code'], [])
         exits = defaultdict(list)
-        for s in code_seats:
-            # 匹配 D1 大佬 + 触发日及之后的卖出 (含 D1 当天卖出 = 当天买当天跑)
+        for s in code_sells:
             if s.yuzi_alias in bosses and s.trade_date >= r['trigger_date']:
                 exits[s.trade_date].append({
                     'alias': s.yuzi_alias,
                     'net': round(float(s.net_amount or 0), 2),
                 })
         r['boss_exits'] = dict(exits)
+
+        # 离场判定: D1 大佬全部出现在 boss_exits 中
+        exited_aliases = set()
+        for _date, sells in exits.items():
+            for sl in sells:
+                exited_aliases.add(sl['alias'])
+        all_bosses_exited = bool(bosses) and bosses.issubset(exited_aliases)
+        r['all_bosses_exited'] = all_bosses_exited
+
+        # 最后离场日期
+        last_exit_date = max(exits.keys()) if exits else None
+        r['last_exit_date'] = last_exit_date
+
+        # 离场后新游资入场检测
+        new_entries = []
+        if all_bosses_exited and last_exit_date:
+            code_buys = buy_by_code.get(r['ts_code'], [])
+            for b in code_buys:
+                if b.trade_date > last_exit_date and b.yuzi_alias:
+                    new_entries.append({
+                        'alias': b.yuzi_alias,
+                        'date': b.trade_date,
+                        'net': round(float(b.net_amount or 0), 2),
+                    })
+            new_entries.sort(key=lambda x: x['date'], reverse=True)
+        r['new_entries_after_exit'] = new_entries
+
+        # 归档判定: 全部离场 + 无新入场 + 距最后离场日≥3天
+        if all_bosses_exited and last_exit_date and not new_entries:
+            try:
+                last_dt = datetime.strptime(last_exit_date, '%Y%m%d')
+                days_since = (datetime.now() - last_dt).days
+                r['archived'] = days_since >= 3
+            except ValueError:
+                r['archived'] = False
+        else:
+            r['archived'] = False
 
 
 @router.get("/api/yuzi/tracker")
@@ -85,11 +127,15 @@ def get_tracker(
     outcome: Optional[str] = None,
     days_back: int = 30,
     limit: int = 200,
+    include_archived: bool = False,
 ):
     """
     20 天跟踪矩阵数据(供心电图前端)
     默认拉最近 30 天的所有 tracker, 覆盖 20 个交易日
-    每行包含 boss_exits: D1 大佬在后续哪天卖了
+    每行包含 boss_exits / all_bosses_exited / archived 等离场判定字段
+
+    排序: 活跃(D1大佬未全离场) → 离场(全部离场但未归档) → 归档(离场3天无新入场)
+    include_archived=False 时归档股票从 rows 中排除, 单独放 archived_rows
     """
     with get_db_session() as db:
         cutoff = (datetime.now() - timedelta(days=days_back)).strftime('%Y%m%d')
@@ -102,23 +148,40 @@ def get_tracker(
             q = q.filter(YuziLifecycleTracker.final_outcome == outcome)
         rows = q.order_by(desc(YuziLifecycleTracker.quant_score_d1)).limit(limit or 200).all()
         data = [_row_to_dict(r) for r in rows]
-        # 附上大佬卖出记录(D2+ 哪天卖了)
+        # 附上大佬卖出记录 + 离场/归档判定
         _attach_boss_exits(db, data)
 
-        # 汇总统计
-        total = len(data)
+        # 三组分区排序: 活跃 → 离场 → 归档
+        active = [d for d in data if not d.get('all_bosses_exited')]
+        exited = [d for d in data if d.get('all_bosses_exited') and not d.get('archived')]
+        archived = [d for d in data if d.get('archived')]
+
+        # 活跃组: 按 quant_score_d1 desc (已是 DB 排序, 保持)
+        # 离场组: 按 last_exit_date desc
+        exited.sort(key=lambda x: x.get('last_exit_date') or '', reverse=True)
+        # 归档组: 按 last_exit_date desc
+        archived.sort(key=lambda x: x.get('last_exit_date') or '', reverse=True)
+
+        active_rows = active + exited
+        if include_archived:
+            active_rows = active + exited + archived
+
+        # 汇总统计(仅活跃+离场, 不含归档)
+        total = len(active_rows)
         by_outcome = {}
-        for d in data:
+        for d in active_rows:
             o = d['final_outcome']
             by_outcome[o] = by_outcome.get(o, 0) + 1
-        avg_20d = round(sum(d['net_return_20d'] for d in data) / total, 2) if total else 0
-        high_score_count = sum(1 for d in data if d['quant_score_d1'] >= 85)
+        avg_20d = round(sum(d['net_return_20d'] for d in active_rows) / total, 2) if total else 0
+        high_score_count = sum(1 for d in active_rows if d['quant_score_d1'] >= 85)
         return {
             'count': total,
+            'archived_count': len(archived),
             'avg_20d_return': avg_20d,
             'high_score_count': high_score_count,
             'by_outcome': by_outcome,
-            'rows': data,
+            'rows': active_rows,
+            'archived_rows': archived if not include_archived else [],
         }
 
 

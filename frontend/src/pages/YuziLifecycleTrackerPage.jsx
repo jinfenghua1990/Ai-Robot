@@ -301,6 +301,7 @@ export default function YuziLifecycleTrackerPage() {
   const [running, setRunning] = useState(false);
   const [error, setError] = useState('');
   const [selected, setSelected] = useState(null);
+  const [showArchived, setShowArchived] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -525,6 +526,19 @@ export default function YuziLifecycleTrackerPage() {
                     <td className="px-2 py-2 sticky left-0 z-10" style={{ background: isSelected ? 'var(--bg-hover)' : (i % 2 ? 'rgba(0,0,0,0.02)' : 'var(--bg-card)') }}>
                       <div className="flex items-center gap-1">
                         <span className="font-bold" style={{ color: 'var(--text-primary)' }}>{r.stock_name}</span>
+                        {r.all_bosses_exited && (
+                          <span
+                            className="px-1 py-0.5 rounded text-[9px] font-bold whitespace-nowrap"
+                            style={{
+                              background: r.archived ? 'rgba(100,116,139,0.15)' : 'rgba(249,115,22,0.12)',
+                              color: r.archived ? '#64748b' : '#f97316',
+                              border: `1px solid ${r.archived ? 'rgba(100,116,139,0.3)' : 'rgba(249,115,22,0.3)'}`,
+                            }}
+                            title={r.archived ? '已归档：大佬全离场且3天无新入场' : `已离场：D1大佬全部卖出${r.last_exit_date ? `（最后离场 ${r.last_exit_date}）` : ''}`}
+                          >
+                            {r.archived ? '📦已归档' : '🚪已离场'}
+                          </span>
+                        )}
                         <SinaLink tsCode={r.ts_code} />
                         <button
                           onClick={(e) => { e.stopPropagation(); navigate(`/stock/${r.ts_code.split('.')[0]}`); }}
