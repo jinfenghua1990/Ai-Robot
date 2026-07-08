@@ -17,6 +17,7 @@ import StockCompareSection from '../components/sections/StockCompareSection';
 import AfterConceptSectorFlowSection from '../components/sections/AfterConceptSectorFlowSection';
 import RealtimeConceptSectorSection from '../components/sections/RealtimeConceptSectorSection';
 import ConceptSectorFilter, { loadSelectedConcepts, saveSelectedConcepts } from '../components/sections/ConceptSectorFilter';
+import MarketStageBar from '../components/MarketStageBar';
 import { POLL_INTERVAL } from '../utils/constants';
 
 /**
@@ -54,17 +55,35 @@ export default function PanoramaPage() {
     saveSelectedConcepts(arr);
   }, []);
 
-  // 全量可选概念列表（合并实时+盘后排名，去重）
+  // 全量可选概念列表 + 板块热度数据并行拉取（原两个 useEffect 合并）
   const [conceptRankSectors, setConceptRankSectors] = useState([]);
   useEffect(() => {
     if (!selectedDate) return;
     let cancelled = false;
-    apiFetch(`/api/concept-sector-flow-rank?date=${selectedDate}`).then(({ ok, data }) => {
-      if (cancelled || !ok) return;
-      setConceptRankSectors((data?.sectors || []).map(s => s.sector));
+    setHeatmapLoading(true);
+    setHeatmapError(null);
+    Promise.all([
+      apiFetch(`/api/concept-sector-flow-rank?date=${selectedDate}`),
+      apiFetch(`/api/heatmap?date=${selectedDate}&days=${days}`),
+    ]).then(([rankRes, heatRes]) => {
+      if (cancelled) return;
+      if (rankRes.ok) {
+        setConceptRankSectors((rankRes.data?.sectors || []).map(s => s.sector));
+      }
+      if (heatRes.ok) {
+        const payload = heatRes.data || heatRes;
+        setHeatmapData(payload);
+        if (payload?.dates?.length) {
+          setViewDate(payload.dates[payload.dates.length - 1]);
+        }
+      }
+    }).catch(err => {
+      if (!cancelled) setHeatmapError(err.message || '加载失败');
+    }).finally(() => {
+      if (!cancelled) setHeatmapLoading(false);
     });
     return () => { cancelled = true; };
-  }, [selectedDate]);
+  }, [selectedDate, days]);
 
   const allConceptSectors = useMemo(() => {
     const map = new Map();
@@ -72,29 +91,6 @@ export default function PanoramaPage() {
     for (const s of (rtConceptSectors?.sectors || [])) map.set(s.sector, true);
     return [...map.keys()];
   }, [conceptRankSectors, rtConceptSectors]);
-
-  // 板块热度数据拉取
-  useEffect(() => {
-    let cancelled = false;
-    setHeatmapLoading(true);
-    setHeatmapError(null);
-    apiFetch(`/api/heatmap?date=${selectedDate}&days=${days}`)
-      .then(res => {
-        if (cancelled || !res.ok) return;
-        const payload = res.data || res;
-        setHeatmapData(payload);
-        if (payload?.dates?.length) {
-          setViewDate(payload.dates[payload.dates.length - 1]);
-        }
-      })
-      .catch(err => {
-        if (!cancelled) setHeatmapError(err.message || '加载失败');
-      })
-      .finally(() => {
-        if (!cancelled) setHeatmapLoading(false);
-      });
-    return () => { cancelled = true; };
-  }, [selectedDate, days]);
 
   // 单一实时轮询（消除原三处重复请求）
   const fetchRealtime = useCallback(async () => {
@@ -111,8 +107,10 @@ export default function PanoramaPage() {
   useEffect(() => {
     fetchRealtime();
     if (!autoRefresh) return;
-    const id = setInterval(fetchRealtime, POLL_INTERVAL);
-    return () => clearInterval(id);
+    const id = setInterval(() => { if (!document.hidden) fetchRealtime(); }, POLL_INTERVAL);
+    const onVisible = () => { if (!document.hidden) fetchRealtime(); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => { clearInterval(id); document.removeEventListener('visibilitychange', onVisible); };
   }, [fetchRealtime, autoRefresh]);
 
   // 共享盘中趋势
@@ -169,6 +167,9 @@ export default function PanoramaPage() {
         </h2>
         <RealtimeStatusBar />
       </div>
+
+      {/* 市场情绪 6 阶段（从 8788 迁移） */}
+      <MarketStageBar date={selectedDate} />
 
       {/* 通栏 1：资金流向分析 · 全通栏 */}
       <div className="rounded-xl border p-3" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>

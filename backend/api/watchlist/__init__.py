@@ -26,7 +26,6 @@ for _mod in ("core", "groups", "batch", "sync_mx"):
 
 
 # === 向后兼容：旧模块曾导出这些符号 ===
-_watchlist_refreshing = False
 WATCHLIST_CACHE_TTL = 300
 QUOTE_CACHE_TTL = 30
 KLINE_CACHE_TTL = 3600

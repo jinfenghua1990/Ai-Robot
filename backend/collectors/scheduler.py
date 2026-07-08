@@ -63,21 +63,24 @@ def _collect_money_flow_industry():
         logger.error(f'[scheduler] Money flow industry collect error: {e}')
 
 
-scheduler = AsyncIOScheduler()
+# misfire_grace_time=3600: 任务在计划时间后 1 小时内仍可补执行（避免后端重启/繁忙时任务被跳过）
+# coalesce=True: 多次错过的任务只执行一次
+scheduler = AsyncIOScheduler(misfire_grace_time=3600, coalesce=True)
 
 
 def _has_today_data():
-    """检查数据库中是否已有今天的完整数据（SectorFlow + StockFlow 同时有记录才算）"""
+    """检查数据库中是否已有今天的完整数据（SectorFlow + StockFlow + StockDailyKline 同时有记录才算）"""
     from db.connection import get_db
     from db.session import get_db_session
-    from db.models import SectorFlow, StockFlow
+    from db.models import SectorFlow, StockFlow, StockDailyKline
     today = datetime.now().date()
     try:
         with get_db_session() as db:
             sector_count = db.query(SectorFlow).filter(SectorFlow.trade_date == today).count()
             stock_count = db.query(StockFlow).filter(StockFlow.trade_date == today).count()
-            # 板块有数据(>30条) 且 个股有数据(>500条) 才算完成
-            return sector_count > 30 and stock_count > 500
+            kline_count = db.query(StockDailyKline).filter(StockDailyKline.trade_date == today).count()
+            # 板块>30 + 个股>500 + K线>1000 才算完成
+            return sector_count > 30 and stock_count > 500 and kline_count > 1000
     except Exception:
         logger.debug(f"_has_today_data failed", exc_info=True)
         return False
@@ -171,6 +174,51 @@ def _startup_backfill():
     )
 
 
+def _startup_lifecycle_catchup():
+    """启动时检查游资20天跟踪是否落后于信号表，落后则自动补跑"""
+    import time
+    time.sleep(15)  # 等待主数据采集完成
+
+    try:
+        from db.session import get_db_session
+        from db.models import YuziLifecycleTracker, YuziQuantSignal
+        from sqlalchemy import func
+        from collectors.lifecycle_tracker import trigger_d1, update_lifecycle
+
+        with get_db_session() as db:
+            latest_sig = db.query(func.max(YuziQuantSignal.trade_date)).scalar()
+            latest_track = db.query(func.max(YuziLifecycleTracker.trigger_date)).scalar()
+
+        if not latest_sig:
+            logger.info('[scheduler] No yuzi signals, skipping lifecycle catchup')
+            return
+
+        if latest_track and latest_track >= latest_sig:
+            logger.info(f'[scheduler] Lifecycle tracker up to date ({latest_track})')
+            return
+
+        logger.info(f'[scheduler] Lifecycle tracker behind: signal={latest_sig}, tracker={latest_track}, catching up...')
+
+        # 补跑缺失的每一天
+        from datetime import datetime as _dt, timedelta as _td
+        sd = _dt.strptime(latest_track or latest_sig, '%Y%m%d') + _td(days=1)
+        ed = _dt.strptime(latest_sig, '%Y%m%d')
+        cur = sd
+        while cur <= ed:
+            d = cur.strftime('%Y%m%d')
+            try:
+                ins = trigger_d1(d)
+                upd = update_lifecycle(d)
+                logger.info(f'[scheduler] Lifecycle catchup {d}: D1={ins}, update={upd}')
+            except Exception as e:
+                logger.error(f'[scheduler] Lifecycle catchup {d} error: {e}')
+            cur += _td(days=1)
+
+        logger.info('[scheduler] Lifecycle catchup done')
+    except Exception as e:
+        logger.error(f'[scheduler] Lifecycle catchup error: {e}', exc_info=True)
+
+
 def scheduled_realtime_snapshot():
     """盘中实时快照采集任务（每15分钟）"""
     today = datetime.now().strftime('%Y-%m-%d')
@@ -204,11 +252,19 @@ def scheduled_archive():
         logger.error(f'[scheduler] Archive error: {e}')
 
     # 收盘归档后，快照模拟盘持仓到本地（支持回溯历史盈亏）
+    # 注：snapshot_today_positions 是 async；当前函数在 AsyncIOScheduler 的 sync job 上下文中
+    # 用 run_coroutine_threadsafe 把任务丢到 scheduler 的 event loop（不阻塞当前 job）
     logger.info(f'[scheduler] Snapshotting sim positions for {today}')
     try:
         import asyncio
         from api.analysis import snapshot_today_positions
-        asyncio.get_event_loop().create_task(snapshot_today_positions())
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            # 已在事件循环中（如 AsyncIOScheduler 内部），schedule 异步执行
+            loop.create_task(snapshot_today_positions())
+        else:
+            # 兜底：直接同步等结果
+            loop.run_until_complete(snapshot_today_positions())
     except Exception as e:
         logger.error(f'[scheduler] Sim snapshot error: {e}')
 
@@ -249,16 +305,16 @@ def scheduled_refresh_caches():
         logger.error(f'[scheduler] Refresh caches error: {e}')
 
 
-def scheduled_auto_trade():
-    """盘中自动化交易（每5分钟检查信号+风控+下单）"""
+async def scheduled_auto_trade():
+    """盘中自动化交易（每5分钟检查信号+风控+下单）
+    - async def: AsyncIOScheduler 共用 event loop，避免新建 loop 导致 ResourceWarning
+    """
     today = datetime.now().strftime('%Y-%m-%d')
     if not _is_trading_day(today):
         return
     if not _is_intraday_trading_hours():
         return
     try:
-        import asyncio
-        from db.connection import get_db
         from db.session import get_db_session
         from db.models import AutoTradeConfig
         from services.auto_trade_engine import execute_auto_trade
@@ -266,11 +322,7 @@ def scheduled_auto_trade():
             config = db.query(AutoTradeConfig).filter_by(id=1).first()
             if not config or not config.enabled:
                 return
-            loop = asyncio.new_event_loop()
-            try:
-                loop.run_until_complete(execute_auto_trade(db, dry_run=False))
-            finally:
-                loop.close()
+            await execute_auto_trade(db, dry_run=False)
             logger.info(f'[scheduler] auto_trade executed at {datetime.now().strftime("%H:%M:%S")}')
     except Exception as e:
         logger.error(f'[scheduler] Auto trade error: {e}')
@@ -306,6 +358,9 @@ def start_scheduler():
     scheduler.add_job(scheduled_dragon_tiger, 'cron', hour='18', minute='30', id='dragon_tiger_evening')
     # 19:00 再补一次（防止 Tushare 数据延迟）
     scheduler.add_job(scheduled_dragon_tiger, 'cron', hour='19', minute='0', id='dragon_tiger_fallback')
+
+    # === 4档资金流采集（17:30 盘后，Tushare 17:00 后 moneyflow 数据完整）===
+    scheduler.add_job(scheduled_moneyflow_detail, 'cron', hour='17', minute='30', id='moneyflow_detail')
 
     # === 市场状态更新（16:00，收盘后计算所有自选股 CHOPPY/TREND/IMPULSE）===
     scheduler.add_job(scheduled_market_state_update, 'cron', hour='16', minute='0', id='market_state')
@@ -352,13 +407,34 @@ def start_scheduler():
     # === 数据维护（每日凌晨清理730天前数据）===
     scheduler.add_job(cleanup_old_data, 'cron', hour='6', minute='0', id='cleanup')
 
-    # === 盘中实时聚合（3 秒轮询,仅交易时段）===
-    # 函数内部判断 9:30-11:30 / 13:00-15:00,其余时段 no-op
+    # === 盘中实时聚合（5 秒轮询,仅交易时段）===
+    # 原 3 秒间隔因执行时间 >3s 导致 max_instances=1 频繁 skipped（4734次/日）
+    # 改为 5 秒间隔，消除 skipped，保证数据稳定更新
     from collectors.realtime_aggregator import collect_realtime_snapshot
     scheduler.add_job(_safe_realtime_aggregator, 'interval',
-                      seconds=3, id='realtime_aggregator_3s')
+                      seconds=5, id='realtime_aggregator_5s')
 
     scheduler.start()
+    logger.info('[scheduler] Started (realtime snapshot every 5min, watchlist sync every 5min during trading hours)')
+
+    # 启动后台线程检查是否需要补采
+    t = threading.Thread(target=_startup_backfill, daemon=True)
+    t.start()
+    logger.info('[scheduler] Backfill check thread started')
+
+    # 启动后台线程检查游资20天跟踪是否落后
+    t3 = threading.Thread(target=_startup_lifecycle_catchup, daemon=True)
+    t3.start()
+    logger.info('[scheduler] Lifecycle catchup thread started')
+
+    # 启动时同步一次概念板块成分股（后台线程，不阻塞）
+    def _startup_concept_sync():
+        import time
+        time.sleep(10)
+        _sync_concept_sectors()
+    t2 = threading.Thread(target=_startup_concept_sync, daemon=True)
+    t2.start()
+    logger.info('[scheduler] Concept sector sync thread started')
 
 
 def _safe_realtime_aggregator():
@@ -379,21 +455,6 @@ def _safe_realtime_aggregator():
         collect_realtime_snapshot()
     except Exception as e:
         logger.error(f'[realtime_aggregator] error: {e}', exc_info=True)
-    logger.info('[scheduler] Started (realtime snapshot every 5min, watchlist sync every 5min during trading hours)')
-
-    # 启动后台线程检查是否需要补采
-    t = threading.Thread(target=_startup_backfill, daemon=True)
-    t.start()
-    logger.info('[scheduler] Backfill check thread started')
-
-    # 启动时同步一次概念板块成分股（后台线程，不阻塞）
-    def _startup_concept_sync():
-        import time
-        time.sleep(10)
-        _sync_concept_sectors()
-    t2 = threading.Thread(target=_startup_concept_sync, daemon=True)
-    t2.start()
-    logger.info('[scheduler] Concept sector sync thread started')
 
 
 def _is_trading_day(date_str):
@@ -457,6 +518,7 @@ def scheduled_dragon_tiger():
     """龙虎榜采集（18:30 独立任务，Tushare 18:00 后数据完整）
     - 拉当日 top_list + top_inst
     - 匹配 yuzi_dict → 写 yuzi_seat_daily + yuzi_quant_signals
+    - 触发 D1 + 更新 D2-D20 游资 20 天跟踪
     """
     today = datetime.now().strftime('%Y-%m-%d')
     if not _is_trading_day(today):
@@ -467,6 +529,16 @@ def scheduled_dragon_tiger():
         logger.info(f'[scheduler] Dragon-Tiger 18:30: {r}')
     except Exception as e:
         logger.error(f'[scheduler] Dragon-Tiger 18:30 error: {e}', exc_info=True)
+
+    # 游资 20 天跟踪：D1 触发 + D2-D20 更新
+    try:
+        from collectors.lifecycle_tracker import trigger_d1, update_lifecycle
+        today_compact = datetime.now().strftime('%Y%m%d')
+        inserted = trigger_d1(today_compact)
+        upd = update_lifecycle(today_compact)
+        logger.info(f'[scheduler] Lifecycle tracker: D1 inserted={inserted}, update={upd}')
+    except Exception as e:
+        logger.error(f'[scheduler] Lifecycle tracker error: {e}', exc_info=True)
 
 
 def scheduled_moneyflow_detail():
@@ -589,12 +661,12 @@ def scheduled_trading_system_compute():
         logger.error(f'[scheduler] Trading system compute error: {e}')
 
 
-def scheduled_bs_strategy_precompute():
+async def scheduled_bs_strategy_precompute():
     """盘后 BS 策略预扫描（16:30-19:00 每30分钟轮询，跑一次最近10个回测策略）
     - 消除 /api/bs-screener/run 的现场全市场扫描
     - 防重复：bs_daily_scan 表 (trade_date, backtest_id) 唯一约束
+    - async def: AsyncIOScheduler 与 FastAPI 共用 event loop，必须 await 而非 asyncio.run
     """
-    import asyncio
     today = datetime.now().date()
     today_str = today.strftime('%Y-%m-%d')
 
@@ -608,13 +680,11 @@ def scheduled_bs_strategy_precompute():
 
     try:
         from services.bs_strategy_runner import precompute_bs_strategies
-        from db.connection import get_db
         from db.session import get_db_session
-        from db.models import BSDailyScan
+        from db.models import BSDailyScan, BSBacktestResult
 
         # 检查是否所有 backtest_id 都已预计算
         with get_db_session() as db:
-            from db.models import BSBacktestResult
             recent_count = db.query(BSBacktestResult).order_by(
                 BSBacktestResult.run_at.desc()
             ).limit(10).count()
@@ -625,15 +695,15 @@ def scheduled_bs_strategy_precompute():
                 return  # 全部已预计算
 
         logger.info(f'[scheduler] BS strategy precompute trigger for {today_str}')
-        asyncio.run(precompute_bs_strategies(today))
+        await precompute_bs_strategies(today)
     except Exception as e:
         logger.error(f'[scheduler] BS strategy precompute error: {e}')
 
 
-def scheduled_market_state_update():
-    """收盘后更新所有自选股的市场状态（CHOPPY/TREND/IMPULSE）"""
-    import asyncio
-    from db.connection import get_db
+async def scheduled_market_state_update():
+    """收盘后更新所有自选股的市场状态（CHOPPY/TREND/IMPULSE）
+    - async def: AsyncIOScheduler 共用 event loop，避免新建 loop 导致 ResourceWarning
+    """
     from db.session import get_db_session
     from db.models import Watchlist
     from analyzers.market_state import update_stock_state
@@ -649,38 +719,50 @@ def scheduled_market_state_update():
             logger.info(f'[scheduler] Updating market state for {len(stocks)} stocks...')
             sector_strength = 0  # 板块强度可后续从板块数据获取
 
-            async def _run():
-                for i, item in enumerate(stocks):
-                    try:
-                        result = await update_stock_state(item.stock_code, sector_strength)
-                        if (i + 1) % 10 == 0:
-                            logger.info(f'[scheduler] Market state {i+1}/{len(stocks)} done')
-                    except Exception as e:
-                        logger.error(f'[scheduler] Market state error for {item.stock_code}: {e}')
+            for i, item in enumerate(stocks):
+                try:
+                    await update_stock_state(item.stock_code, sector_strength)
+                    if (i + 1) % 10 == 0:
+                        logger.info(f'[scheduler] Market state {i+1}/{len(stocks)} done')
+                except Exception as e:
+                    logger.error(f'[scheduler] Market state error for {item.stock_code}: {e}')
 
-            loop = asyncio.new_event_loop()
-            try:
-                loop.run_until_complete(_run())
-            finally:
-                loop.close()
             logger.info(f'[scheduler] Market state update completed for {len(stocks)} stocks')
     except Exception as e:
         logger.error(f'[scheduler] Market state update error: {e}')
 
 
 def cleanup_old_data():
-    """清理2年前的数据（保留730天用于回测）"""
+    """清理2年前的数据（保留730天用于回测）
+
+    在宽 misfire_grace_time(3600s) 下，盘后任务可补执行；
+    但本任务若被 mfire 推迟到 6:00 之后 1 小时内会与盘后任务抢资源，
+    因此函数内自检：仅在 6:00-7:00 之间执行，错过则跳过当日。
+    """
     from db.connection import get_db
     from db.session import get_db_session
-    from db.models import SectorFlow, StockFlow, LeaderLifecycle
+    from db.models import (SectorFlow, StockFlow, LeaderLifecycle,
+                           RealtimeStockFlow, RealtimeSectorFlow,
+                           RealtimeMoneyFlowSnapshot, RealtimeConceptSectorFlow)
+    now_h = datetime.now().hour
+    if now_h >= 7:
+        logger.info(f'[scheduler] cleanup skipped (misfired too late, now_hour={now_h})')
+        return
     cutoff = (datetime.now() - timedelta(days=730)).date()
+    # realtime_* 表只保留 7 天（盘中每 5 秒写入，膨胀快）
+    realtime_cutoff = datetime.now() - timedelta(days=7)
     try:
         with get_db_session() as db:
+            # 历史表：保留 730 天
             db.query(SectorFlow).filter(SectorFlow.trade_date < cutoff).delete()
             db.query(StockFlow).filter(StockFlow.trade_date < cutoff).delete()
             db.query(LeaderLifecycle).filter(LeaderLifecycle.trade_date < cutoff).delete()
+            # 实时表：保留 7 天（271MB → ~50MB）
+            db.query(RealtimeStockFlow).filter(RealtimeStockFlow.snapshot_time < realtime_cutoff).delete(synchronize_session=False)
+            db.query(RealtimeSectorFlow).filter(RealtimeSectorFlow.snapshot_time < realtime_cutoff).delete(synchronize_session=False)
+            db.query(RealtimeMoneyFlowSnapshot).filter(RealtimeMoneyFlowSnapshot.snapshot_time < realtime_cutoff).delete(synchronize_session=False)
+            db.query(RealtimeConceptSectorFlow).filter(RealtimeConceptSectorFlow.snapshot_time < realtime_cutoff).delete(synchronize_session=False)
             db.commit()
-            logger.info(f'[scheduler] Cleaned data before {cutoff}')
+            logger.info(f'[scheduler] Cleaned history before {cutoff}, realtime before {realtime_cutoff}')
     except Exception as e:
-        db.rollback()
         logger.error(f'[scheduler] Cleanup error: {e}')

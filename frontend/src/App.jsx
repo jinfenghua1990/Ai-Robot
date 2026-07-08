@@ -9,7 +9,6 @@ const QualityPage = lazy(() => import('./pages/QualityPage'));
 const StrategyCenterPage = lazy(() => import('./pages/StrategyCenterPage'));
 const TradingSystemPage = lazy(() => import('./pages/TradingSystemPage'));
 const TradingPage = lazy(() => import('./pages/TradingPage'));
-const MxTradingPage = lazy(() => import('./pages/MxTradingPage'));
 const WatchlistPage = lazy(() => import('./pages/WatchlistPage'));
 const YuziCenterPage = lazy(() => import('./pages/YuziCenterPage'));
 const FocusStocksPage = lazy(() => import('./pages/FocusStocksPage'));
@@ -18,6 +17,8 @@ const YuziBillboardPage = lazy(() => import('./pages/YuziBillboardPage'));
 const YuziLifecycleTrackerPage = lazy(() => import('./pages/YuziLifecycleTrackerPage'));
 const ConceptFlowPage = lazy(() => import('./pages/ConceptFlowPage'));
 const ConceptFlowComparePage = lazy(() => import('./pages/ConceptFlowComparePage'));
+const IndexFlowPage = lazy(() => import('./pages/IndexFlowPage'));
+const GlobalMarketPage = lazy(() => import('./pages/GlobalMarketPage'));
 
 function PageLoader() {
   return (
@@ -42,11 +43,12 @@ export default function App() {
           <Route path="/yuzi-tracker-20d" element={<YuziLifecycleTrackerPage />} />
           <Route path="/yuzi-tracker" element={<YuziLifecycleTrackerPage />} />
           <Route path="/trading" element={<TradingPage />} />
-          <Route path="/mx-trading" element={<MxTradingPage />} />
           <Route path="/watchlist" element={<WatchlistPage />} />
           <Route path="/focus" element={<FocusStocksPage />} />
           <Route path="/concept-flow" element={<ConceptFlowPage />} />
           <Route path="/concept-flow-compare" element={<ConceptFlowComparePage />} />
+          <Route path="/index-flow" element={<IndexFlowPage />} />
+          <Route path="/global-market" element={<GlobalMarketPage />} />
           <Route path="/stock/:code" element={<StockDetailPage />} />
           <Route path="/mx-tools" element={<Navigate to="/watchlist" replace />} />
           {/* 合并后的重定向：龙虎榜+游资系统→游资中心，资金流→自选股 */}

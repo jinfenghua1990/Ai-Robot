@@ -153,6 +153,19 @@ function SignalCard({
                   );
                 })}
                 <span className="px-1 py-0.5 rounded text-[10px]" style={{ background: `${riskColor}15`, color: riskColor }}>{riskLabel}</span>
+                {signal.strategyMode && (
+                  <span
+                    className="px-1.5 py-0.5 rounded text-[10px] font-bold whitespace-nowrap"
+                    style={{
+                      background: signal.strategyMode === 'breakout' ? 'rgba(239,68,68,0.12)' : 'rgba(59,130,246,0.12)',
+                      color: signal.strategyMode === 'breakout' ? '#ef4444' : '#3b82f6',
+                      border: `1px solid ${signal.strategyMode === 'breakout' ? 'rgba(239,68,68,0.35)' : 'rgba(59,130,246,0.35)'}`,
+                    }}
+                    title={signal.strategyMode === 'breakout' ? '放量突破不破5/10日线' : '缩量回踩仍守20日线'}
+                  >
+                    {signal.strategyMode === 'breakout' ? '🔥 放量突破' : '📉 缩量回踩'}
+                  </span>
+                )}
                 {hasOrders && (
                   <button onClick={(e) => { e.stopPropagation(); setOrderOpen(true); }} className="px-1 py-0.5 rounded text-[10px] cursor-pointer" style={{ background: 'rgba(59,130,246,0.1)', color: '#3b82f6' }}>
                     📋 {orders.length}笔委托
@@ -249,12 +262,12 @@ function SignalCard({
                 {mode === 'sim_watchlist' && (position?.count || 0) > 0 && (
                   <>
                     <span>盈亏: <span style={{ color: profitColor, fontWeight: 700 }}>{profitPct >= 0 ? '+' : ''}{profitPct}%</span></span>
-                    <span>盈亏额: <span style={{ color: profitColor, fontWeight: 700 }}>{(position.profit || 0) >= 0 ? '+' : ''}{fmtWan(position.profit)}</span></span>
-                    <span>持仓: <span style={{ color: 'var(--text-primary)' }}>{position.count || 0}股</span></span>
-                    <span>成本: <span style={{ color: 'var(--text-primary)' }}>{(position.costPrice || 0).toFixed(2)}</span></span>
-                    <span>市值: <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{((position.value || 0) / 10000).toFixed(1)}万</span></span>
-                    <span>仓位: <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{position.posPct || 0}%</span></span>
-                    <span>当日: <span style={{ color: (position.dayProfit || 0) >= 0 ? '#ef4444' : '#22c55e', fontWeight: 600 }}>{(position.dayProfit || 0) >= 0 ? '+' : ''}{position.dayProfit || 0}</span></span>
+                    <span>盈亏额: <span style={{ color: profitColor, fontWeight: 700 }}>{(position?.profit || 0) >= 0 ? '+' : ''}{fmtWan(position?.profit)}</span></span>
+                    <span>持仓: <span style={{ color: 'var(--text-primary)' }}>{position?.count || 0}股</span></span>
+                    <span>成本: <span style={{ color: 'var(--text-primary)' }}>{(position?.costPrice || 0).toFixed(2)}</span></span>
+                    <span>市值: <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{((position?.value || 0) / 10000).toFixed(1)}万</span></span>
+                    <span>仓位: <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{position?.posPct || 0}%</span></span>
+                    <span>当日: <span style={{ color: (position?.dayProfit || 0) >= 0 ? '#ef4444' : '#22c55e', fontWeight: 600 }}>{(position?.dayProfit || 0) >= 0 ? '+' : ''}{position?.dayProfit || 0}</span></span>
                   </>
                 )}
               </>

@@ -75,6 +75,14 @@ STRATEGIES = [
         'func': 'run_macd_golden_cross_screen',
         'needs_db': False,
     },
+    {
+        'key': 'liangjia_report',
+        'name': '白虎V4.0',
+        'icon': '🐯',
+        'module': 'strategies.liangjia_report',
+        'func': 'run_liangjia_report_screen',
+        'needs_db': False,
+    },
 ]
 
 

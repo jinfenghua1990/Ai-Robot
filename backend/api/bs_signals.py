@@ -47,28 +47,78 @@ def _stock_code_to_sina(stock_code: str) -> str:
 
 
 async def _fetch_kline(stock_code: str, datalen: int = CALC_DATALEN):
-    """从新浪财经获取日K线数据，带文件缓存"""
+    """从本地 stock_daily_kline 表读 K线，不足时回退到 Tushare daily 接口
+    之前完全依赖新浪 API（常 502/TLS阻断），现优先本地+回退
+    """
+    import asyncio
+    from datetime import datetime, timedelta
+    from db.models import StockDailyKline
+
+    # 复用 market_state 中的格式转换（避免重复实现）
+    from analyzers.market_state import _stock_code_to_tushare
+    ts_code = _stock_code_to_tushare(stock_code)
+
+    # 1) 优先本地 stock_daily_kline
+    try:
+        with get_db_session() as db:
+            rows = db.query(StockDailyKline).filter(
+                StockDailyKline.ts_code == ts_code
+            ).order_by(StockDailyKline.trade_date.desc()).limit(datalen).all()
+        if rows and len(rows) >= 60:
+            klines = [{
+                'date': str(r.trade_date),
+                'open': float(r.open or 0), 'close': float(r.close or 0),
+                'high': float(r.high or 0), 'low': float(r.low or 0),
+                'volume': int(r.volume or 0),
+            } for r in reversed(rows)]
+            return klines
+    except Exception as e:
+        logger.debug(f'[bs_signals] 本地 K线查询失败 {stock_code}: {e}')
+
+    # 2) 本地不足，Tushare daily 回退
+    try:
+        from collectors.tdx_collector import call_tushare_mcp
+        end_date = datetime.now().strftime('%Y%m%d')
+        start_date = (datetime.now() - timedelta(days=datalen * 2)).strftime('%Y%m%d')
+        ts_data = await asyncio.to_thread(
+            call_tushare_mcp, 'daily',
+            {'ts_code': ts_code, 'start_date': start_date, 'end_date': end_date},
+            ['ts_code', 'trade_date', 'open', 'high', 'low', 'close', 'vol']
+        )
+        if ts_data:
+            klines = []
+            for item in ts_data:
+                try:
+                    klines.append({
+                        'date': str(item['trade_date'])[:10],
+                        'open': float(item['open']),
+                        'close': float(item['close']),
+                        'high': float(item['high']),
+                        'low': float(item['low']),
+                        'volume': int(float(item.get('vol', 0) or 0)),
+                    })
+                except (KeyError, ValueError, TypeError):
+                    continue
+            klines.sort(key=lambda x: x['date'])
+            return klines[-datalen:]
+    except Exception as e:
+        logger.debug(f'[bs_signals] Tushare 回退失败 {stock_code}: {e}')
+
+    # 3) 最后兜底：新浪 API（最不可靠）
     import os, json as _json
     cache_dir = '/tmp/kline_cache'
     os.makedirs(cache_dir, exist_ok=True)
     cache_file = f"{cache_dir}/{stock_code}.json"
-    # 命中缓存
     if os.path.exists(cache_file):
-        mtime = os.path.getmtime(cache_file)
-        # 缓存有效期：7 天
-        if time.time() - mtime < 7 * 86400:
-            try:
-                with open(cache_file, 'r', encoding='utf-8') as f:
-                    klines = _json.load(f)
-                if klines and len(klines) >= 100:
-                    return klines[:datalen] if datalen < len(klines) else klines
-            except Exception as e:
-                logger.debug(f'[bs_signals] 读取本地 K线缓存失败 {stock_code}: {e}')
+        try:
+            with open(cache_file, 'r', encoding='utf-8') as f:
+                klines = _json.load(f)
+            if klines and len(klines) >= 100:
+                return klines[:datalen] if datalen < len(klines) else klines
+        except Exception:
+            pass
 
     sina_code = _stock_code_to_sina(stock_code)
-    if not sina_code:
-        raise HTTPException(status_code=400, detail="无效的股票代码")
-
     url = f"https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData?symbol={sina_code}&scale=240&ma=no&datalen={datalen}"
     try:
         client = _get_http_client()
@@ -80,7 +130,6 @@ async def _fetch_kline(stock_code: str, datalen: int = CALC_DATALEN):
     if not data:
         raise HTTPException(status_code=404, detail="未找到K线数据")
 
-    # 转换格式
     klines = []
     for k in data:
         klines.append({
@@ -92,13 +141,12 @@ async def _fetch_kline(stock_code: str, datalen: int = CALC_DATALEN):
             'volume': int(float(k['volume'])),
         })
 
-    # 写缓存（仅当日线数 >= 100 时）
     if klines and len(klines) >= 100:
         try:
             with open(cache_file, 'w', encoding='utf-8') as f:
                 _json.dump(klines, f, ensure_ascii=False)
-        except Exception as e:
-            logger.debug(f'[bs_signals] 写入本地 K线缓存失败 {stock_code}: {e}')
+        except Exception:
+            pass
 
     return klines
 

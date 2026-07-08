@@ -16,15 +16,20 @@
  *     body: JSON.stringify({ stockCode: '000001' }),
  *   });
  */
-export async function apiFetch(url, options = {}) {
+export async function apiFetch(url, options = {}, timeout = 8000) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeout);
   try {
-    const resp = await fetch(url, options);
+    const resp = await fetch(url, { ...options, signal: ctrl.signal });
     if (!resp.ok) {
       return { ok: false, data: null, error: `HTTP ${resp.status}`, status: resp.status };
     }
     const data = await resp.json();
     return { ok: true, data, error: null, status: resp.status };
   } catch (err) {
-    return { ok: false, data: null, error: err.message, status: 0 };
+    const error = err.name === 'AbortError' ? '请求超时' : err.message;
+    return { ok: false, data: null, error, status: 0 };
+  } finally {
+    clearTimeout(timer);
   }
 }

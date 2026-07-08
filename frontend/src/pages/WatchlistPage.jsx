@@ -76,7 +76,7 @@ export default function WatchlistPage() {
     } catch (e) { /* silent */ }
   }, []);
 
-  useEffect(() => { loadGroups(); loadStrategyPicks(); }, [loadGroups, loadStrategyPicks]);
+  useEffect(() => { Promise.all([loadGroups(), loadStrategyPicks()]).catch(() => {}); }, [loadGroups, loadStrategyPicks]);
 
   // 选中股票变化时，请求该股实时资金流（只 1 次请求，不做 N+1）
   useEffect(() => {
@@ -94,7 +94,7 @@ export default function WatchlistPage() {
     return () => { active = false; };
   }, [selectedCode]);
 
-  useEffect(() => { loadWatchlist(); loadData(); }, [loadWatchlist, loadData]);
+  useEffect(() => { Promise.all([loadWatchlist(), loadData()]).catch(() => {}); }, [loadWatchlist, loadData]);
   useEffect(() => { if (tradeResult) { const t = setTimeout(clearTradeResult, TOAST_DURATION); return () => clearTimeout(t); } }, [tradeResult, clearTradeResult]);
 
   // 点击外部关闭云端同步下拉
@@ -409,7 +409,7 @@ export default function WatchlistPage() {
               <span className="text-[10px] flex items-center gap-2" style={{ color: 'var(--text-secondary)' }}>
                 <span className="font-bold" style={{ color: '#22c55e' }}>{selected.secName}</span>
                 <span>{selected.secCode}</span>
-                {selected.quote && <span style={{ color: selected.quote.changePct >= 0 ? '#ef4444' : '#22c55e' }}>{selected.quote.changePct >= 0 ? '+' : ''}{selected.quote.changePct}%</span>}
+                {selected.quote && selected.quote.changePct != null && <span style={{ color: selected.quote.changePct >= 0 ? '#ef4444' : '#22c55e' }}>{selected.quote.changePct >= 0 ? '+' : ''}{selected.quote.changePct}%</span>}
                 {selected.sector && <span style={{ color: 'var(--text-muted)' }}>{selected.sector}</span>}
                 {selectedSectorTrend?.available && (
                   <span style={{ color: selectedSectorTrend.heat_trend === 'up' ? '#ef4444' : selectedSectorTrend.heat_trend === 'down' ? '#22c55e' : 'var(--text-muted)' }}>

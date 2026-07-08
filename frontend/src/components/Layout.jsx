@@ -5,11 +5,12 @@ const navItems = [
   { path: '/panorama', label: '板块全景', icon: '🔥' },
   { path: '/concept-flow', label: '资金流向', icon: '💸' },
   { path: '/concept-flow-compare', label: '概念资金', icon: '📊' },
+  { path: '/index-flow', label: '指数资金', icon: '🇨🇳' },
+  { path: '/global-market', label: '港美股', icon: '🌍' },
   { path: '/strategy-center', label: '策略中心', icon: '🎯' },
   { path: '/yuzi-center', label: '游资中心', icon: '🐉' },
   { path: '/yuzi-tracker-20d', label: '20天跟踪', icon: '🧬' },
   { path: '/trading', label: '模拟盘', icon: '📈' },
-  { path: '/mx-trading', label: '东财模拟盘', icon: '🤖' },
   { path: '/focus', label: '重点关注', icon: '🎯' },
   { path: '/watchlist', label: '自选股', icon: '⭐' },
 ];

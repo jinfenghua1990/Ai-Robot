@@ -427,6 +427,7 @@ class StockFeaturesDaily(Base):
     # ④ 波动结构
     atr_14 = Column(Float)
     noise_ratio = Column(Float)                                      # 上下影线/实体
+    rsi_14 = Column(Float)                                           # RSI(14)
 
     # ⑤ 趋势一致性
     higher_high_flag = Column(Integer)                               # 近5日是否创新高 1/0

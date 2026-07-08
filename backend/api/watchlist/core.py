@@ -755,6 +755,7 @@ async def add_to_watchlist(req: AddStockRequest):
 
 @router.delete("/api/watchlist/{stock_code}")
 async def remove_from_watchlist(stock_code: str):
+    """从自选列表移除指定股票（含云端删除触发）"""
     with get_db_session() as db:
         item = db.query(Watchlist).filter_by(stock_code=stock_code).first()
         if not item:
@@ -876,6 +877,7 @@ async def sync_quality_from_market_state():
 
 @router.post("/api/watchlist/{code}/pin")
 async def pin_stock(code: str):
+    """置顶自选股（sort_order 前移到最前）"""
     with get_db_session() as db:
         item = db.query(Watchlist).filter_by(stock_code=code).first()
         if not item:

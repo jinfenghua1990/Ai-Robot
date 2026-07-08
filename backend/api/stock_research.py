@@ -34,7 +34,6 @@ def save_news_search(stock_code: str, stock_name: str, query_keyword: str, conte
             db.commit()
     except Exception:
         logger.warning(f"save_news_search db error", exc_info=True)
-        db.rollback()
 
 
 def save_data_query(stock_code: str, stock_name: str, query_keyword: str, tables: list, raw: dict):
@@ -51,7 +50,6 @@ def save_data_query(stock_code: str, stock_name: str, query_keyword: str, tables
             db.commit()
     except Exception:
         logger.warning(f"save_data_query db error", exc_info=True)
-        db.rollback()
 
 
 # ===== 资讯搜索历史读取 =====

@@ -17,13 +17,14 @@ from db.session import get_db_session
 from db.models import RealtimeSectorFlow, RealtimeStockFlow, RealtimeConceptSectorFlow, RealtimeMoneyFlowSnapshot
 from collectors.realtime_collector import collect_realtime_snapshot
 from collectors.money_flow_middleman import get_money_flow_response, collect_realtime_money_flow_snapshot
+from utils.cache import cached
 
 router = APIRouter(prefix="/api/realtime", tags=["realtime"])
 
 
-@router.get("/status")
-def realtime_status():
-    """实时采集状态"""
+@cached("realtime.status", ttl=60)
+def _query_status():
+    """实时采集状态（缓存 60s；快照每 5 分钟才更新，轮询命中率极高）"""
     with get_db_session() as db:
         latest_sector_time = db.query(func.max(RealtimeSectorFlow.snapshot_time)).scalar()
         latest_stock_time = db.query(func.max(RealtimeStockFlow.snapshot_time)).scalar()
@@ -37,31 +38,38 @@ def realtime_status():
         ).distinct().count()
 
         return {
-            "latest_sector_time": latest_sector_time.strftime('%Y-%m-%d %H:%M:%S') if latest_sector_time else None,
-            "latest_stock_time": latest_stock_time.strftime('%Y-%m-%d %H:%M:%S') if latest_stock_time else None,
+            "latest_sector_time": latest_sector_time,
+            "latest_stock_time": latest_stock_time,
             "total_sector_snapshots": sector_count,
             "total_stock_snapshots": stock_count,
             "today_snapshots": today_snapshots,
-            "is_trading_hours": _is_trading_hours(),
         }
 
 
-@router.get("/latest-sectors")
-def latest_sectors(trade_date: str = Query(None, description="YYYY-MM-DD，默认今天")):
-    """最新板块快照"""
-    with get_db_session() as db:
-        if trade_date:
-            target_date = datetime.strptime(trade_date, '%Y-%m-%d').date()
-        else:
-            target_date = date.today()
+@router.get("/status")
+def realtime_status():
+    """实时采集状态"""
+    s = _query_status()
+    return {
+        "latest_sector_time": s["latest_sector_time"].strftime('%Y-%m-%d %H:%M:%S') if s["latest_sector_time"] else None,
+        "latest_stock_time": s["latest_stock_time"].strftime('%Y-%m-%d %H:%M:%S') if s["latest_stock_time"] else None,
+        "total_sector_snapshots": s["total_sector_snapshots"],
+        "total_stock_snapshots": s["total_stock_snapshots"],
+        "today_snapshots": s["today_snapshots"],
+        "is_trading_hours": _is_trading_hours(),
+    }
 
-        # 找到该日期最后一次快照时间
+
+@cached("realtime.latest_sectors", ttl=60, key_fn=lambda trade_date=None: trade_date or "today")
+def _query_latest_sectors(target_date):
+    """最新板块快照（缓存 60s）"""
+    with get_db_session() as db:
         latest_time = db.query(func.max(RealtimeSectorFlow.snapshot_time)).filter(
             RealtimeSectorFlow.trade_date == target_date
         ).scalar()
 
         if not latest_time:
-            return {"snapshot_time": None, "sectors": [], "trade_date": trade_date or target_date.isoformat()}
+            return {"snapshot_time": None, "sectors": [], "trade_date": target_date.isoformat()}
 
         sectors = db.query(RealtimeSectorFlow).filter_by(
             trade_date=target_date, snapshot_time=latest_time
@@ -82,26 +90,24 @@ def latest_sectors(trade_date: str = Query(None, description="YYYY-MM-DD，默�
         }
 
 
-@router.get("/latest-stocks")
-def latest_stocks(
-    trade_date: str = Query(None),
-    limit: int = Query(100, le=500),
-    sort_by: str = Query("main_force_inflow", description="main_force_inflow | net_inflow | price_chg"),
-    sector: str = Query(None, description="按板块过滤"),
-):
-    """最新个股快照（Top N）"""
-    with get_db_session() as db:
-        if trade_date:
-            target_date = datetime.strptime(trade_date, '%Y-%m-%d').date()
-        else:
-            target_date = date.today()
+@router.get("/latest-sectors")
+def latest_sectors(trade_date: str = Query(None, description="YYYY-MM-DD，默认今天")):
+    """最新板块快照"""
+    target_date = datetime.strptime(trade_date, '%Y-%m-%d').date() if trade_date else date.today()
+    return _query_latest_sectors(target_date)
 
+
+@cached("realtime.latest_stocks", ttl=60,
+        key_fn=lambda trade_date=None, limit=100, sort_by="main_force_inflow", sector=None: f"{trade_date}:{limit}:{sort_by}:{sector}")
+def _query_latest_stocks(target_date, limit, sort_by, sector):
+    """最新个股快照 Top N（缓存 60s）"""
+    with get_db_session() as db:
         latest_time = db.query(func.max(RealtimeStockFlow.snapshot_time)).filter(
             RealtimeStockFlow.trade_date == target_date
         ).scalar()
 
         if not latest_time:
-            return {"snapshot_time": None, "stocks": [], "trade_date": trade_date or target_date.isoformat()}
+            return {"snapshot_time": None, "stocks": [], "trade_date": target_date.isoformat()}
 
         q = db.query(RealtimeStockFlow).filter_by(
             trade_date=target_date, snapshot_time=latest_time
@@ -135,21 +141,28 @@ def latest_stocks(
         }
 
 
-@router.get("/concept-sectors")
-def concept_sectors(trade_date: str = Query(None, description="YYYY-MM-DD，默认今天")):
-    """最新概念板块快照"""
-    with get_db_session() as db:
-        if trade_date:
-            target_date = datetime.strptime(trade_date, '%Y-%m-%d').date()
-        else:
-            target_date = date.today()
+@router.get("/latest-stocks")
+def latest_stocks(
+    trade_date: str = Query(None),
+    limit: int = Query(100, le=500),
+    sort_by: str = Query("main_force_inflow", description="main_force_inflow | net_inflow | price_chg"),
+    sector: str = Query(None, description="按板块过滤"),
+):
+    """最新个股快照（Top N）"""
+    target_date = datetime.strptime(trade_date, '%Y-%m-%d').date() if trade_date else date.today()
+    return _query_latest_stocks(target_date, limit, sort_by, sector)
 
+
+@cached("realtime.concept_sectors", ttl=60, key_fn=lambda trade_date=None: trade_date or "today")
+def _query_concept_sectors(target_date):
+    """最新概念板块快照（缓存 60s）"""
+    with get_db_session() as db:
         latest_time = db.query(func.max(RealtimeConceptSectorFlow.snapshot_time)).filter(
             RealtimeConceptSectorFlow.trade_date == target_date
         ).scalar()
 
         if not latest_time:
-            return {"snapshot_time": None, "sectors": [], "trade_date": trade_date or target_date.isoformat()}
+            return {"snapshot_time": None, "sectors": [], "trade_date": target_date.isoformat()}
 
         sectors = db.query(RealtimeConceptSectorFlow).filter_by(
             trade_date=target_date, snapshot_time=latest_time
@@ -168,6 +181,13 @@ def concept_sectors(trade_date: str = Query(None, description="YYYY-MM-DD，默�
                 "source": s.source,
             } for s in sectors],
         }
+
+
+@router.get("/concept-sectors")
+def concept_sectors(trade_date: str = Query(None, description="YYYY-MM-DD，默认今天")):
+    """最新概念板块快照"""
+    target_date = datetime.strptime(trade_date, '%Y-%m-%d').date() if trade_date else date.today()
+    return _query_concept_sectors(target_date)
 
 
 @router.get("/sector-trend")

@@ -48,12 +48,13 @@ def trigger_d1(trade_date: str) -> int:
     """
     inserted = 0
     with get_db_session() as db:
-        # 1) 找当日触发股
+        # 1) 找当日触发股 (排除 ST/*ST 股票)
         rows = db.query(YuziQuantSignal).filter(
             YuziQuantSignal.trade_date == trade_date,
             YuziQuantSignal.resonance_count >= 1,
             YuziQuantSignal.total_net_buy > 0,
             YuziQuantSignal.quant_score >= 60,
+            ~YuziQuantSignal.stock_name.like('%ST%'),
         ).all()
 
         for r in rows:
@@ -220,13 +221,15 @@ def _compute_day_metrics(ts_code: str, trade_date: str, yesterday_seat_net: Opti
     pre_close = daily['pre_close']
     pct_chg = daily['pct_chg']
 
-    # turnover_rate 从 stock_flow 补
+    # 从 stock_flow 读资金数据
     with get_db_session() as db:
         sf = db.query(StockFlow).filter(
             StockFlow.ts_code == ts_code,
             StockFlow.trade_date == trade_date,
         ).first()
-        turnover = float(sf.volume_change or 0) if sf else 0  # 字段不对应,先放 0
+        main_force = float(sf.main_force_inflow or 0) if sf else 0  # 主力净流入(万)
+        net_inflow = float(sf.net_inflow or 0) if sf else 0  # 总净流入(万)
+        retail_flow = float(sf.retail_flow or 0) if sf else 0  # 散户净流入(万)
 
     open_premium = (open_p / pre_close - 1) * 100 if pre_close > 0 else 0
     intra_amp = (high_p - low_p) / pre_close * 100 if pre_close > 0 else 0
@@ -239,11 +242,19 @@ def _compute_day_metrics(ts_code: str, trade_date: str, yesterday_seat_net: Opti
 
     support = _classify_support(open_premium, intra_amp, pct_chg)
 
+    # 主力主导度 = |主力| / (|主力| + |散户|), 0-100 之间
+    total_abs = abs(main_force) + abs(retail_flow)
+    main_force_ratio = round(abs(main_force) / total_abs * 100, 0) if total_abs > 0 else 0
+
     return {
         'price_stage': price_stage,
         'open_premium': round(open_premium, 2),
         'intra_amplitude': round(intra_amp, 2),
-        'turnover_status': round(turnover, 2),
+        'pct_chg': round(pct_chg, 2),
+        'main_force_inflow': round(main_force, 0),
+        'net_inflow': round(net_inflow, 0),
+        'retail_flow': round(retail_flow, 0),
+        'main_force_ratio': main_force_ratio,
         'capital_retention': capital_retention,
         'support_level': support,
         'win_rate_impact': round(pct_chg, 2),
@@ -276,6 +287,7 @@ def update_lifecycle(target_date: str) -> Dict:
                 continue
             if day_diff <= tracker.day_filled:
                 skipped += 1  # 已填过
+                continue
 
             day_key = f'd{day_diff}'
 

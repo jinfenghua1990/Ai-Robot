@@ -132,8 +132,8 @@ def get_best_server():
     return _BEST_SERVER
 
 
-def connect_with_retry(max_retries=3):
-    """带重试的连接"""
+def connect_with_retry(max_retries=3, time_out=5):
+    """带重试的连接（真正调用 api.connect）"""
     if not PYTDX_AVAILABLE:
         return None, None
     server = get_best_server()
@@ -144,7 +144,9 @@ def connect_with_retry(max_retries=3):
     for i, (ip, port) in enumerate(candidates[:max_retries]):
         try:
             api = get_thread_api()
-            return api, (ip, port)
+            if api.connect(ip, port, time_out=time_out):
+                return api, (ip, port)
+            logger.debug(f'[tdx] TDX 连接未成功 {ip}:{port}')
         except Exception as e:
             logger.debug(f'[tdx] TDX 连接失败 {ip}:{port} - {e}')
         time.sleep(0.5)
@@ -932,7 +934,60 @@ def collect_daily_data(trade_date):
             db.rollback()
             logger.error(f'[collect] Concept sector flow error: {e}')
 
+    # 6. 批量采集全市场K线（按trade_date一次获取）
+    try:
+        _batch_collect_kline(trade_date)
+    except Exception as e:
+        logger.error(f'[collect] K-line batch error: {e}')
+
     logger.info(f'[collect] Collection complete for {trade_date}')
+
+
+def _batch_collect_kline(trade_date: str):
+    """按trade_date批量采集全市场K线写入stock_daily_kline表"""
+    from db.models import StockDailyKline
+    td_dash = f'{trade_date[:4]}-{trade_date[4:6]}-{trade_date[6:8]}'
+    with get_db_session() as db:
+        existing = db.query(StockDailyKline.ts_code).filter(StockDailyKline.trade_date == td_dash).count()
+        if existing > 1000:
+            logger.info(f'[collect] K-line for {trade_date} already cached ({existing} rows)')
+            return
+
+    data = call_tushare_mcp(
+        'daily', {'trade_date': trade_date},
+        ['ts_code', 'trade_date', 'open', 'high', 'low', 'close', 'vol', 'amount', 'pct_chg']
+    )
+    if not data:
+        logger.warning(f'[collect] No K-line data from Tushare for {trade_date}')
+        return
+
+    from datetime import datetime as _dt
+    with get_db_session() as db:
+        existing_codes = {r[0] for r in db.query(StockDailyKline.ts_code).filter(StockDailyKline.trade_date == td_dash).all()}
+        new_rows = []
+        for item in data:
+            ts_code = item.get('ts_code', '')
+            if not ts_code or ts_code in existing_codes:
+                continue
+            try:
+                td = item.get('trade_date', '')
+                if not td:
+                    continue
+                new_rows.append(StockDailyKline(
+                    ts_code=ts_code,
+                    trade_date=_dt.strptime(td, '%Y%m%d').date(),
+                    open=float(item['open']), high=float(item['high']),
+                    low=float(item['low']), close=float(item['close']),
+                    volume=int(float(item.get('vol', 0) or 0)),
+                    amount=float(item.get('amount', 0) or 0),
+                    pct_chg=float(item.get('pct_chg', 0) or 0),
+                ))
+            except (KeyError, ValueError):
+                continue
+        if new_rows:
+            db.bulk_save_objects(new_rows)
+            db.commit()
+            logger.info(f'[collect] K-line cached {len(new_rows)} rows for {trade_date}')
 
 
 if __name__ == '__main__':

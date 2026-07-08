@@ -5,7 +5,7 @@ GET /api/leader/system - 板块+龙头双层决策结果
 import logging
 from fastapi import APIRouter, Query
 from starlette.concurrency import run_in_threadpool
-from datetime import date
+from datetime import date, datetime
 from sqlalchemy import func
 from analyzers.leader_engine import run_leader_engine, should_switch
 from analyzers.sector_engine import get_sector_ranking
@@ -208,6 +208,9 @@ def _load_precomputed_map(db, ts_codes: list) -> dict:
     return precomputed_map
 
 
+_leader_cache = {'data': None, 'ts': 0, 'date': None}
+_LEADER_CACHE_TTL = 5  # 5 秒结果缓存，避免短时间内重复计算
+
 @router.get("/api/leader/system")
 async def leader_system(target_date: str = Query(None, description="目标日期 YYYY-MM-DD")):
     """双引擎决策系统
@@ -220,6 +223,15 @@ async def leader_system(target_date: str = Query(None, description="目标日期
     - switch_warning: 主龙切换预警
     """
     d = date.fromisoformat(target_date) if target_date else None
+    today_str = target_date or datetime.now().strftime('%Y-%m-%d')
+
+    # 5 秒结果缓存（同日内重复请求直接返回）
+    import time as _time
+    if (not target_date and _leader_cache['data']
+            and _leader_cache['date'] == today_str
+            and _time.time() - _leader_cache['ts'] < _LEADER_CACHE_TTL):
+        return _leader_cache['data']
+
     result = await run_in_threadpool(run_leader_engine, d)
 
     # 切换预警：如果有候选且候选评分接近主龙
@@ -311,7 +323,7 @@ async def leader_system(target_date: str = Query(None, description="目标日期
     except Exception as e:
         logger.warning(f'leader_meta enrichment failed: {e}')
 
-    return {
+    response = {
         'leader': enriched_leader,
         'candidates': enriched_candidates,
         'all_stocks': enriched_all,
@@ -321,6 +333,14 @@ async def leader_system(target_date: str = Query(None, description="目标日期
         'date': result.get('date'),
         'message': result.get('message', 'ok'),
     }
+
+    # 写入 5 秒缓存
+    if not target_date:
+        _leader_cache['data'] = response
+        _leader_cache['ts'] = _time.time()
+        _leader_cache['date'] = today_str
+
+    return response
 
 
 @router.get("/api/leader/sector-status")

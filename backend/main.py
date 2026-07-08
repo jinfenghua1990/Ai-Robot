@@ -3,15 +3,21 @@ AIROBOT 市场指挥舱 - FastAPI 入口
 端口 9000，同时服务 API 和前端
 """
 import sys, os
+import logging
+import uuid
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.gzip import GZipMiddleware
 from contextlib import asynccontextmanager
 
-from api import heatmap, rotation, lifecycle, lifecycle_v2, lifecycle_v3, money_flow, screener, portfolio, baihu, trading, analysis, bs_signals, realtime, quality, watchlist, bs_screener, bs_backtest, leader_system, leader_history, mx_skills, sync_pkg, sina_sync, stock_research, focus_stocks, panorama, concept_sector, strategy_tags, auto_trading, mx_trading, trading_system, yuzi, yuzi_tracker, super_panel, money_flow_detail
+# 启用慢查询监听（>200ms 记录到 logger）
+import utils.slow_query_logger  # noqa: F401
+
+from api import heatmap, rotation, lifecycle, lifecycle_v2, lifecycle_v3, money_flow, screener, portfolio, baihu, trading, analysis, bs_signals, realtime, quality, watchlist, bs_screener, bs_backtest, leader_system, leader_history, mx_skills, sync_pkg, sina_sync, stock_research, focus_stocks, panorama, concept_sector, strategy_tags, auto_trading, mx_trading, trading_system, yuzi, yuzi_tracker, super_panel, money_flow_detail, index_flow, liangjia_report, strategy_resonance, global_market, market_stage
 from api.rate_limit import RateLimitMiddleware
 from collectors.scheduler import start_scheduler, scheduler
 from db.connection import get_db
@@ -44,9 +50,13 @@ async def lifespan(app: FastAPI):
     import asyncio
     asyncio.create_task(_refresh_caches())
     yield
-    # 关闭时清理
+    # 关闭时清理：必须先停 scheduler（停止所有 job），再关 http_client
+    # 否则 job 仍在用 http_client → 'RuntimeError: handler is closed'
+    try:
+        scheduler.shutdown(wait=False)
+    except Exception:
+        pass
     await app.state.http_client.aclose()
-    scheduler.shutdown()
 
 
 async def _refresh_caches():
@@ -58,6 +68,14 @@ async def _refresh_caches():
         # 纯DB缓存先行（快）
         _refresh_hot_cache()
         refresh_heatmap_cache()
+        # 预热 index-flow（避免首次访问 25 秒卡顿）
+        try:
+            import httpx
+            async with httpx.AsyncClient(timeout=30) as client:
+                await client.get('http://localhost:9000/api/index-flow/rank')
+            print('[startup] index-flow cache preheated')
+        except Exception as e:
+            print(f'[startup] index-flow preheat skip: {e}')
         # 依赖妙想API的缓存（慢，盘中才有意义，盘前失败可忽略）
         await refresh_signal_cache()
         print('[startup] cache warmup done')
@@ -80,6 +98,12 @@ def _ensure_bs_strategy_columns():
     # 确保个股特征每日表存在（CHOPPY/TREND/IMPULSE 三态判定）
     from db.models import StockFeaturesDaily
     Base.metadata.create_all(bind=engine, tables=[StockFeaturesDaily.__table__])
+    # StockFeaturesDaily 新增 rsi_14 列（RSI(14) 技术指标，用于 7 段技术形态判定）
+    with engine.connect() as conn:
+        conn.execute(text(
+            "ALTER TABLE stock_features_daily ADD COLUMN IF NOT EXISTS rsi_14 DOUBLE PRECISION"
+        ))
+        conn.commit()
     # 确保模拟盘持仓/账户快照表存在（支持历史盈亏回溯）
     from db.models import SimPositionSnapshot, SimAccountSnapshot
     Base.metadata.create_all(bind=engine, tables=[
@@ -183,6 +207,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# GZip 压缩：压缩 API 响应与静态资源（含 echarts 等大体积 JS），首屏传输体积显著下降
+app.add_middleware(GZipMiddleware, minimum_size=512)
+
 # 限流中间件
 app.add_middleware(RateLimitMiddleware)
 
@@ -212,6 +239,7 @@ app.include_router(sina_sync.router)
 app.include_router(stock_research.router)
 app.include_router(focus_stocks.router)
 app.include_router(panorama.router)
+app.include_router(index_flow.router)
 app.include_router(concept_sector.router)
 app.include_router(strategy_tags.router)
 app.include_router(auto_trading.router)
@@ -221,11 +249,31 @@ app.include_router(yuzi.router)
 app.include_router(yuzi_tracker.router)
 app.include_router(super_panel.router)
 app.include_router(money_flow_detail.router)
+app.include_router(liangjia_report.router)
+app.include_router(strategy_resonance.router)
+app.include_router(global_market.router)
+app.include_router(market_stage.router)
 
 
 @app.get("/api/health")
 async def health():
     return {"status": "ok", "service": "AIROBOT"}
+
+
+# 全局异常处理：未捕获异常返回统一结构 + request_id 日志，避免 500 裸奔
+logger = logging.getLogger("airobat")
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    rid = uuid.uuid4().hex[:8]
+    logger.exception("Unhandled error", extra={"request_id": rid})
+    return JSONResponse(status_code=500, content={
+        "title": "INTERNAL_ERROR",
+        "status": 500,
+        "detail": "服务器内部错误，请稍后重试",
+        "request_id": rid,
+    })
 
 
 @app.get("/api/latest-date")

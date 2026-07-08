@@ -8,19 +8,21 @@
 - GET  /api/yuzi/resonance          当日共振信号池（按股聚合，quant_score 排序）
 - GET  /api/yuzi/seat-stats         某游资近 N 日战绩
 - GET  /api/yuzi/stock-history      某股近 N 日游资介入记录
+- GET  /api/yuzi/holdings           大佬持仓跟踪(BUY→SELL 配对,持有天数+收益率)
 - POST /api/yuzi/refresh            触发盘后清洗
 - GET  /api/yuzi/dates              DB 已有数据日期列表
 """
 import json
 import logging
 from collections import defaultdict
+from datetime import datetime, timedelta
 from typing import Optional, List
 
 from fastapi import APIRouter, HTTPException, Query, Body
 from pydantic import BaseModel
 
 from db.session import get_db_session
-from db.models import YuziDict, YuziQuantSignal, YuziSeatDaily
+from db.models import YuziDict, YuziQuantSignal, YuziSeatDaily, StockDailyKline
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -476,4 +478,166 @@ def list_dates(limit: int = 30):
                 'signal_count': r[1],
                 'seat_count': seat_dict.get(r[0], 0),
             } for r in rows]
+        }
+
+
+# ============================================================
+# 大佬持仓跟踪 (BUY → SELL 配对)
+# ============================================================
+def _parse_date_yyyymmdd(s: str):
+    """YYYYMMDD 字符串转 date 对象"""
+    try:
+        return datetime.strptime(s, '%Y%m%d').date()
+    except (ValueError, TypeError):
+        return None
+
+
+def _days_between(d1: str, d2: str) -> Optional[int]:
+    """两个 YYYYMMDD 字符串之间相隔天数 (calendar days)"""
+    dt1 = _parse_date_yyyymmdd(d1)
+    dt2 = _parse_date_yyyymmdd(d2)
+    if not dt1 or not dt2:
+        return None
+    return (dt2 - dt1).days
+
+
+@router.get("/api/yuzi/holdings")
+def holdings(
+    days: int = Query(30, description="回溯最近 N 天的席位记录"),
+    alias: Optional[str] = Query(None, description="按大佬别名过滤"),
+    ts_code: Optional[str] = Query(None, description="按股票代码过滤"),
+    status: Optional[str] = Query(None, description="'open'=未平仓 / 'closed'=已平仓 / None=全部"),
+    min_hold_days: int = Query(0, description="最小持有天数过滤(已平仓)"),
+    limit: int = Query(300, description="最多返回条数"),
+):
+    """
+    大佬持仓跟踪: 把同一 (alias, ts_code) 的 BUY 和后续 SELL 配对,算持有天数和收益率
+
+    算法(简化 FIFO):
+      - 按 (alias, ts_code) 分组,组内按 trade_date ASC 排序
+      - open_date = 首次 BUY 记录日期
+      - close_date = 首次 SELL 记录(open_date 之后)日期
+      - 持有天数 = close_date - open_date (calendar days)
+      - 收益率 = (close日 close价 - open日 close价) / open日 close价 × 100
+      - 若无 close_date → status='open' (未平仓)
+
+    注: 龙虎榜数据是席位日聚合(非订单级),所以 BUY/SELL 配对是近似(FIFO),
+        够回答"大佬买入后第几天跑了"这个核心问题。
+    """
+    with get_db_session() as db:
+        cutoff = (datetime.now() - timedelta(days=days + 15)).strftime('%Y%m%d')
+        q = db.query(YuziSeatDaily).filter(YuziSeatDaily.trade_date >= cutoff)
+        if alias:
+            q = q.filter(YuziSeatDaily.yuzi_alias == alias)
+        if ts_code:
+            q = q.filter(YuziSeatDaily.ts_code == ts_code)
+        rows = q.order_by(
+            YuziSeatDaily.yuzi_alias,
+            YuziSeatDaily.ts_code,
+            YuziSeatDaily.trade_date,
+        ).all()
+
+        # 按 (alias, ts_code) 分组
+        groups: dict = defaultdict(list)
+        for r in rows:
+            groups[(r.yuzi_alias, r.ts_code)].append(r)
+
+        results = []
+        for (alias_name, code), recs in groups.items():
+            if not recs or not alias_name:
+                continue
+            stock_name = recs[0].stock_name or ''
+            # 过滤 ST
+            if 'ST' in stock_name or 'ST' in code:
+                continue
+
+            buy_recs = [r for r in recs if r.side == 'BUY']
+            sell_recs = [r for r in recs if r.side == 'SELL']
+            if not buy_recs:
+                continue  # 只有卖出没有买入,无法配对
+
+            open_rec = buy_recs[0]
+            open_date = open_rec.trade_date
+            open_amount = float(open_rec.net_amount or 0)
+
+            # 找首次 SELL after open_date
+            close_rec = next((s for s in sell_recs if s.trade_date > open_date), None)
+
+            if close_rec:
+                close_date = close_rec.trade_date
+                close_amount = float(close_rec.net_amount or 0)
+                hold_days = _days_between(open_date, close_date)
+                status_val = 'closed'
+            else:
+                close_date = None
+                close_amount = None
+                hold_days = None
+                status_val = 'open'
+
+            # 过滤: 最小持有天数
+            if min_hold_days and (hold_days is None or hold_days < min_hold_days):
+                continue
+            # 过滤: 状态
+            if status and status_val != status:
+                continue
+
+            # 算收益率 (用 StockDailyKline)
+            return_pct = None
+            if close_date:
+                open_dt = _parse_date_yyyymmdd(open_date)
+                close_dt = _parse_date_yyyymmdd(close_date)
+                if open_dt and close_dt:
+                    k_open = db.query(StockDailyKline).filter(
+                        StockDailyKline.ts_code == code,
+                        StockDailyKline.trade_date == open_dt,
+                    ).first()
+                    k_close = db.query(StockDailyKline).filter(
+                        StockDailyKline.ts_code == code,
+                        StockDailyKline.trade_date == close_dt,
+                    ).first()
+                    if k_open and k_close:
+                        o = float(k_open.close or 0)
+                        c = float(k_close.close or 0)
+                        if o > 0:
+                            return_pct = round((c - o) / o * 100, 2)
+
+            results.append({
+                'alias': alias_name,
+                'ts_code': code,
+                'stock_name': stock_name,
+                'open_date': open_date,
+                'open_amount': round(open_amount, 2),
+                'close_date': close_date,
+                'close_amount': round(close_amount, 2) if close_amount is not None else None,
+                'hold_days': hold_days,
+                'return_pct': return_pct,
+                'status': status_val,
+            })
+
+        # 排序: 未平仓优先,然后按 open_date desc
+        results.sort(
+            key=lambda x: (x['status'] != 'open', -(int(x['open_date']) if x['open_date'] else 0))
+        )
+        total_before_limit = len(results)
+        results = results[:limit]
+
+        # 汇总
+        open_count = sum(1 for r in results if r['status'] == 'open')
+        closed_count = sum(1 for r in results if r['status'] == 'closed')
+        closed_with_hold = [r for r in results if r['hold_days'] is not None]
+        avg_hold = (
+            sum(r['hold_days'] for r in closed_with_hold) / len(closed_with_hold)
+            if closed_with_hold else 0
+        )
+        win_count = sum(1 for r in results if r['return_pct'] and r['return_pct'] > 0)
+        win_rate = round(win_count / max(closed_count, 1) * 100, 1) if closed_count else 0
+
+        return {
+            'total': total_before_limit,
+            'returned': len(results),
+            'open_count': open_count,
+            'closed_count': closed_count,
+            'avg_hold_days': round(avg_hold, 1) if closed_with_hold else 0,
+            'win_rate': win_rate,
+            'holdings': results,
         }

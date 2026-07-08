@@ -318,7 +318,7 @@ export default function YuziBillboardPage() {
               ?.filter(b => !searchSeat || b.alias.includes(searchSeat) || b.seat_names.some(s => s.includes(searchSeat)))
               ?.map((b, i) => (
               <div
-                key={b.alias}
+                key={`${b.alias}-${i}`}
                 className="rounded border p-1.5 cursor-pointer hover:opacity-90"
                 style={{
                   borderColor: `${groupColor(b.group)}50`,
@@ -408,9 +408,9 @@ export default function YuziBillboardPage() {
                   {s.turnover_rate > 0 && <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>换手 {s.turnover_rate.toFixed(1)}%</span>}
                 </div>
                 <div className="flex flex-wrap gap-1 mt-0.5">
-                  {s.boss_list.map(b => (
+                  {s.boss_list.map((b, idx) => (
                     <span
-                      key={b}
+                      key={`${b}-${idx}`}
                       className="text-[10px] px-1 rounded cursor-pointer"
                       style={{ background: 'rgba(239,68,68,0.1)', color: UP_COLOR }}
                       onClick={() => handleSeatStats(b)}
@@ -419,11 +419,17 @@ export default function YuziBillboardPage() {
                   ))}
                 </div>
                 {s.list_reason && <div className="text-[10px] mt-0.5" style={{ color: 'var(--text-muted)' }}>上榜：{s.list_reason}</div>}
+                <button
+                  className="text-[10px] px-1.5 py-0.5 rounded border mt-0.5"
+                  style={{ borderColor: 'rgba(168,85,247,0.4)', color: '#a855f7', background: 'rgba(168,85,247,0.05)' }}
+                  onClick={() => navigate(`/yuzi-tracker?ts_code=${s.ts_code.split('.')[0]}&min_score=0`)}
+                  title="跳转到20天跟踪页面查看该股生命周期"
+                >📊 20天跟踪</button>
                 {s.seat_detail?.length > 0 && (
                   <div className="text-[10px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
                     逐席位:
-                    {s.seat_detail.slice(0, 5).map(d => (
-                      <span key={d.alias} className="ml-1" style={{ color: d.side === 'BUY' ? UP_COLOR : DOWN_COLOR }}>
+                    {s.seat_detail.slice(0, 5).map((d, idx) => (
+                      <span key={`${d.alias}-${idx}`} className="ml-1" style={{ color: d.side === 'BUY' ? UP_COLOR : DOWN_COLOR }}>
                         {d.alias} {fmtNet(d.net_buy)}
                       </span>
                     ))}

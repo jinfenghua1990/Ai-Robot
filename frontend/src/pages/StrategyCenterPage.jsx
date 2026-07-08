@@ -12,11 +12,14 @@ const LifecyclePage = lazy(() => import('./LifecyclePage'));
 const LifecycleV2Page = lazy(() => import('./LifecycleV2Page'));
 const LifecycleV3Page = lazy(() => import('./LifecycleV3Page'));
 const ScreenerPage = lazy(() => import('./ScreenerPage'));
+const ResonancePage = lazy(() => import('./ResonancePage'));
 const BSScreenerPage = lazy(() => import('./BSScreenerPage'));
 const BSStrategyTab = lazy(() => import('./BSStrategyTab'));
 
 // 静态Tab定义（已调试完成的策略，每天看结果）
 const STATIC_TABS = [
+  // 共振组（聚合视图，置顶）
+  { key: 'resonance', label: '多策略共振', shortLabel: '共振', icon: '🎯', group: 'resonance', Component: ResonancePage },
   // 龙头组
   { key: 'v4', label: '双引擎决策', shortLabel: 'V4双引擎', icon: '🧠', group: 'leader', Component: LifecycleV4Page },
   { key: 'v1', label: '龙头趋势阶段', shortLabel: 'V1趋势阶段', icon: '👑', group: 'leader', Component: LifecyclePage },
@@ -27,12 +30,14 @@ const STATIC_TABS = [
   { key: 'smart-baihu', label: '白虎V3.0', shortLabel: '白虎V3.0', icon: '🐯', group: 'smart', Component: ScreenerPage, props: { initialStrategy: 'baihu', hideStrategySelector: true } },
   { key: 'smart-qinglong', label: '青龙', shortLabel: '青龙', icon: '🐉', group: 'smart', Component: ScreenerPage, props: { initialStrategy: 'qinglong', hideStrategySelector: true } },
   { key: 'smart-zhushenglang', label: '主升浪', shortLabel: '主升浪', icon: '🚀', group: 'smart', Component: ScreenerPage, props: { initialStrategy: 'zhushenglang', hideStrategySelector: true } },
+  { key: 'smart-liangjia', label: '白虎V4.0', shortLabel: '白虎V4.0', icon: '🐯', group: 'smart', Component: ScreenerPage, props: { initialStrategy: 'liangjia', hideStrategySelector: true } },
 ];
 
 // BS配置页（策略编辑器，不参与扁平Tab，放右侧操作区）
 const BS_CONFIG_TAB = { key: 'bs-full', label: '策略配置调整中心', Component: BSScreenerPage };
 
 const GROUP_LABELS = {
+  resonance: '共振',
   leader: '龙头',
   smart: '智能',
   bs: 'BS',
@@ -40,6 +45,7 @@ const GROUP_LABELS = {
 };
 
 const GROUP_COLORS = {
+  resonance: '#a855f7',
   leader: '#ef4444',
   smart: '#3b82f6',
   bs: '#22c55e',

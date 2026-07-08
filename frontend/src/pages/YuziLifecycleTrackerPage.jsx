@@ -15,9 +15,10 @@
  * 数据: GET /api/yuzi/tracker
  */
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { apiFetch } from '../utils/request';
 import { UP_COLOR, DOWN_COLOR, UP_DARK, DOWN_DARK } from '../utils/colors';
+import { computeSignalScore, fmtHitCount, computeTrendSignalScore, fmtTrendTooltip } from '../utils/signalScore';
 import SinaLink from '../components/SinaLink';
 
 const fmtPct = (v) => {
@@ -105,82 +106,182 @@ const _classifyAction = (row) => {
   const openPrem = Number(last.open_premium || 0);
   const outcome = row.final_outcome || '未结束';
 
+  // 算近3天累计涨跌(用于趋势判定,避免"最新一格偏多但近3天暴跌"误判)
+  const n = last._n;
+  const recent3 = [0, 1, 2].map(i => lc[`d${n - i}`]).filter(d => d);
+  const recent3Pct = recent3.map(d => Number(d.pct_chg ?? d.win_rate_impact ?? 0));
+  const recent3Sum = recent3Pct.reduce((a, b) => a + b, 0);
+  const recent3AllDown = recent3Pct.length >= 3 && recent3Pct.every(p => p < 0);
+
   // 已 final 的走弱/退潮 → 卖出 / 放弃
   if (outcome === 'A杀退潮') return 'sell';
   if (outcome === '弱势回调') return 'sell';
-  // 已 final 的大妖股 / 高位震荡 → 持有 (按最新一格)
+  // 已 final 的大妖股 / 高位震荡 → 持有 (但要警惕近期走弱)
   if (outcome === '大妖股' || outcome === '高位震荡') {
-    if (stage === '跌停A杀' || stage === '砸盘' || stage === '分歧') return 'sell';
+    if (stage === '跌停A杀' || stage === '砸盘' || stage === '分歧' || stage === '偏空') return 'sell';
+    if (recent3AllDown && recent3Sum <= -5) return 'sell';  // 高位但近3天暴跌 = 退潮信号
     return 'hold';
   }
   if (outcome === '横盘') {
-    if (stage === '连板' || stage === '晋级' || stage === '偏多') return 'hold';
-    if (stage === '跌停A杀' || stage === '砸盘') return 'sell';
+    if (stage === '连板' || stage === '晋级' || stage === '偏多') {
+      if (recent3AllDown && recent3Sum <= -5) return 'sell';
+      return 'hold';
+    }
+    if (stage === '跌停A杀' || stage === '砸盘' || stage === '偏空') return 'sell';
     return 'skip';
   }
 
   // 未结束: 4 方向判定
   // ❌ 放弃: 竞价负溢价 + 无承接 (D2 是关键观察日)
-  if (last._n === 2 && openPrem <= -2) return 'skip';
+  if (n === 2 && openPrem <= -2) return 'skip';
   if (openPrem <= -3) return 'skip';
 
-  // 🚨 卖出: 最新一格是跌停/分歧/砸盘
+  // 🚨 卖出: 最新一格是跌停/分歧/砸盘/偏空
   if (stage === '跌停A杀' || stage === '砸盘' || stage === '爆量滞涨') return 'sell';
-  if (stage === '分歧' && last._n >= 5) return 'sell'; // D5+ 分歧通常走弱
+  if (stage === '偏空') return 'sell';  // 偏空 = 明确走弱,应卖出
+  if (stage === '分歧' && n >= 5) return 'sell'; // D5+ 分歧通常走弱
+
+  // 🚨 卖出: 近3天累计跌幅过大(>8%)或连续3天下跌
+  if (recent3AllDown && recent3Sum <= -8) return 'sell';
+  if (recent3AllDown && n >= 4) return 'sell';  // D4+ 连跌3天 = 趋势走坏
 
   // 🎯 寻找买点: D3-D7, 前 1-2 天是走弱, 今天修复/偏多
-  if (last._n >= 3 && last._n <= 7) {
-    const prev1 = lc[`d${last._n - 1}`];
-    const prev2 = lc[`d${last._n - 2}`];
+  if (n >= 3 && n <= 7) {
+    const prev1 = lc[`d${n - 1}`];
+    const prev2 = lc[`d${n - 2}`];
     const prevWeakened = [prev1, prev2].some(p => p && ['跌停A杀', '分歧', '砸盘', '弱势回调'].includes(p.price_stage));
     if (prevWeakened && (stage === '震荡' || stage === '偏多' || stage === '晋级')) {
       return 'buy';
     }
   }
 
-  // 🔋 持有: 一红到底 (连板/晋级/偏多)
-  if (stage === '连板' || stage === '晋级' || stage === '偏多') return 'hold';
+  // 🔋 持有: 仅当最新一格明确偏多且近3天没暴跌
+  if (stage === '连板' || stage === '晋级' || stage === '偏多') {
+    if (recent3AllDown && recent3Sum <= -5) return 'sell';  // 即使最新偏多,但3天累计跌>5% = 风险
+    return 'hold';
+  }
 
-  // 默认: 中性观察
-  return 'hold';
+  // 默认: 中性观察(不轻易建议持有)
+  return 'skip';
 };
 
-// Day 单元格渲染
-const DayCell = ({ data, dayNum }) => {
+// 资金格式化:万/亿
+const fmtMoney = (v) => {
+  if (v == null || isNaN(v)) return '—';
+  const n = Number(v);
+  if (n === 0) return '—';
+  const abs = Math.abs(n);
+  if (abs >= 10000) return `${(n / 10000).toFixed(1)}亿`;
+  return `${n > 0 ? '+' : ''}${n.toFixed(0)}万`;
+};
+
+// Day 单元格渲染 — 一眼看懂：涨跌幅 + 主力资金 + 散户 + 竞价 + 大佬卖出标记
+const DayCell = ({ data, dayNum, bossExits }) => {
   if (!data) {
     return <div className="text-[9px] text-center" style={{ color: '#9ca3af' }}>—</div>;
   }
   const stage = data.price_stage || '震荡';
   const openPrem = Number(data.open_premium || 0);
-  const turnover = Number(data.turnover_status || 0);
+  const pctChg = Number(data.pct_chg ?? data.win_rate_impact ?? 0);
+  const mainForce = Number(data.main_force_inflow || 0); // 主力净流入(万)
+  const netInflow = Number(data.net_inflow || 0); // 总净流入(万)
+  const retail = Number(data.retail_flow || 0); // 散户净流入(万)
+  const mfRatio = Number(data.main_force_ratio || 0); // 主力主导度(%)
   const amp = Number(data.intra_amplitude || 0);
   const support = data.support_level || '-';
-  const retention = data.capital_retention || '-';
 
-  // 竞价色块（红=强溢价/绿=弱溢价/灰=中性）
-  const premBg = openPrem >= 2 ? 'rgba(239,68,68,0.15)' :
-                 openPrem <= -2 ? 'rgba(34,197,94,0.15)' : 'rgba(156,163,175,0.1)';
-  const premColor = openPrem >= 2 ? UP_COLOR : openPrem <= -2 ? DOWN_COLOR : '#6b7280';
+  // 涨跌幅色块（红=涨/绿=跌/灰=平）
+  const chgBg = pctChg >= 5 ? 'rgba(239,68,68,0.2)' :
+                pctChg > 0 ? 'rgba(239,68,68,0.08)' :
+                pctChg <= -5 ? 'rgba(34,197,94,0.2)' :
+                pctChg < 0 ? 'rgba(34,197,94,0.08)' : 'rgba(156,163,175,0.08)';
+  const chgColor = pctChg > 0 ? UP_COLOR : pctChg < 0 ? DOWN_COLOR : '#6b7280';
+
+  // 主力资金流向（红=流入/绿=流出）
+  const mfColor = mainForce > 0 ? UP_COLOR : mainForce < 0 ? DOWN_COLOR : '#6b7280';
+  const mfText = fmtMoney(mainForce);
+
+  // 散户流向(通常与主力相反)
+  const retailColor = retail > 0 ? UP_COLOR : retail < 0 ? DOWN_COLOR : '#6b7280';
+  const retailText = fmtMoney(retail);
+
+  // 承接力度色块
+  const supportBg = support === '强' ? UP_COLOR : support === '弱' ? DOWN_COLOR : '#6b7280';
+
+  // 主力主导度: 主力 vs 总净流入(>70% = 主力主导, <30% = 散户主导)
+  const isMainDominant = mfRatio >= 70 && mainForce !== 0;
+
+  // 7 维度信号命中数
+  const sigScore = computeSignalScore(data);
+
+  // 大佬卖出记录 (D1 大佬在这一天卖了)
+  const dayDate = data.date || '';
+  const bossSells = (bossExits && dayDate && bossExits[dayDate]) || [];
+  const hasBossSell = bossSells.length > 0;
+
+  const tooltip = [
+    `📅${data.date || ''}`,
+    `涨跌:${pctChg.toFixed(2)}%`,
+    `阶段:${stage}`,
+    `竞价:${openPrem.toFixed(1)}%`,
+    `振幅:${amp.toFixed(1)}%`,
+    `💰主力:${mfText} (${mfRatio}%主导)`,
+    `总净流入:${fmtMoney(netInflow)}`,
+    `散户:${retailText}`,
+    `承接:${support}`,
+    `7维信号:${sigScore ? fmtHitCount(sigScore) : '—'} (${sigScore?.label || '—'})`,
+    hasBossSell ? `🚨大佬卖出:${bossSells.map(s => `${s.alias} ${fmtMoney(s.net)}`).join(', ')}` : '',
+  ].filter(Boolean).join(' | ');
 
   return (
-    <div className="rounded p-1 min-w-[68px]" style={{ background: premBg, border: '1px solid var(--border-color)' }}>
-      <div
-        className="text-[10px] font-bold text-center px-1 py-0.5 rounded mb-0.5"
-        style={{ background: stageColor(stage), color: '#fff' }}
-      >
-        {stage}
+    <div className="rounded p-1 min-w-[78px] relative" style={{ background: chgBg, border: hasBossSell ? '1px solid #dc2626' : '1px solid var(--border-color)' }} title={tooltip}>
+      {/* 大佬卖出角标 — 红色警示,贴右上角 */}
+      {hasBossSell && (
+        <div
+          className="absolute -top-1 -right-1 px-1 py-0 rounded text-[8px] font-bold z-10"
+          style={{ background: '#dc2626', color: '#fff', border: '1px solid #fff' }}
+          title={`🚨 大佬卖出: ${bossSells.map(s => `${s.alias} ${fmtMoney(s.net)}`).join(', ')}`}
+        >
+          💰卖{bossSells.length}
+        </div>
+      )}
+      {/* 7维命中数标签 — 最顶部，一眼看多空 */}
+      {sigScore && (
+        <div className="text-center mb-0.5">
+          <span
+            className="text-[8px] font-bold px-1 py-0 rounded inline-block"
+            style={{ background: sigScore.bg, color: sigScore.color, border: `1px solid ${sigScore.color}40` }}
+            title={`7维命中: ${fmtHitCount(sigScore)} (得分${sigScore.score > 0 ? '+' : ''}${sigScore.score})`}
+          >
+            {sigScore.label} {sigScore.score > 0 ? '+' : ''}{sigScore.score}
+          </span>
+        </div>
+      )}
+      {/* 涨跌幅 — 最醒目大字 */}
+      <div className="text-[12px] font-bold text-center leading-tight" style={{ color: chgColor }}>
+        {pctChg > 0 ? '+' : ''}{pctChg.toFixed(1)}%
       </div>
-      <div className="text-[9px] text-center" style={{ color: premColor }}>
-        竞价 {openPrem > 0 ? '+' : ''}{openPrem.toFixed(1)}%
+      {/* 阶段标签 + 承接力度（并列） */}
+      <div className="flex items-center justify-center gap-0.5 mt-0.5 mb-0.5">
+        <span className="text-[9px] font-bold px-1 py-0.5 rounded" style={{ background: stageColor(stage), color: '#fff' }}>
+          {stage}
+        </span>
+        <span className="text-[8px] px-0.5 rounded" style={{ background: supportBg, color: '#fff' }} title={`承接:${support}`}>
+          {support}
+        </span>
       </div>
-      <div className="text-[9px] text-center" style={{ color: 'var(--text-muted)' }}>
-        振幅 {amp.toFixed(1)}%
+      {/* 💰主力净流入 — 用户最关心，粗体 */}
+      <div className="text-[10px] text-center font-bold" style={{ color: mfColor }}>
+        💰{mfText}
       </div>
-      <div className="text-[9px] text-center" style={{ color: 'var(--text-muted)' }}>
-        换手 {turnover.toFixed(1)}%
-      </div>
-      <div className="text-[9px] text-center" style={{ color: 'var(--text-muted)' }}>
-        {support}/{retention}
+      {/* 主力主导度 + 散户流向 — 第二行资金信息 */}
+      <div className="flex items-center justify-between text-[8px] mt-0.5">
+        <span style={{ color: isMainDominant ? mfColor : '#9ca3af' }} title="主力主导度">
+          {mfRatio > 0 ? `${mfRatio}%` : '—'}
+        </span>
+        <span style={{ color: retailColor }} title={`散户净流入 ${retailText}`}>
+          👥{retail === 0 ? '—' : retail > 0 ? '+' : ''}{Math.abs(retail) >= 10000 ? `${(retail/10000).toFixed(1)}亿` : `${Math.abs(retail).toFixed(0)}万`}
+        </span>
       </div>
     </div>
   );
@@ -188,10 +289,14 @@ const DayCell = ({ data, dayNum }) => {
 
 export default function YuziLifecycleTrackerPage() {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const initialTsCode = searchParams.get('ts_code') || '';
+  const initialMinScore = searchParams.get('min_score');
   const [data, setData] = useState(null);
-  const [minScore, setMinScore] = useState(70);
+  const [minScore, setMinScore] = useState(initialMinScore != null ? Number(initialMinScore) : 70);
   const [outcome, setOutcome] = useState('');
   const [action, setAction] = useState('');  // 操作指令过滤: '' / buy / hold / sell / skip
+  const [searchText, setSearchText] = useState(initialTsCode);
   const [loading, setLoading] = useState(false);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState('');
@@ -220,11 +325,21 @@ export default function YuziLifecycleTrackerPage() {
     return data.rows.map(r => ({ ...r, _action: _classifyAction(r) }));
   }, [data]);
 
-  // 按 action 过滤
+  // 按 action + 搜索文本过滤
   const filteredRows = useMemo(() => {
-    if (!action) return rowsWithAction;
-    return rowsWithAction.filter(r => r._action === action);
-  }, [rowsWithAction, action]);
+    let result = rowsWithAction;
+    if (action) result = result.filter(r => r._action === action);
+    if (searchText.trim()) {
+      const q = searchText.trim().toLowerCase();
+      result = result.filter(r => {
+        const bosses = Array.isArray(r.boss_list_d1) ? r.boss_list_d1.join(',') : (r.boss_list_d1 || '');
+        return r.ts_code?.toLowerCase().includes(q) ||
+               r.stock_name?.toLowerCase().includes(q) ||
+               bosses.toLowerCase().includes(q);
+      });
+    }
+    return result;
+  }, [rowsWithAction, action, searchText]);
 
   // 4 方向数量统计
   const actionCounts = useMemo(() => {
@@ -327,6 +442,21 @@ export default function YuziLifecycleTrackerPage() {
               }}
             >{o || '全部'}</button>
           ))}
+          <input
+            type="text"
+            value={searchText}
+            onChange={(e) => setSearchText(e.target.value)}
+            placeholder="搜索代码/名称/游资"
+            className="ml-2 px-2 py-0.5 text-[10px] rounded border w-32"
+            style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)', color: 'var(--text-primary)' }}
+          />
+          {initialTsCode && (
+            <button
+              onClick={() => { setSearchText(''); setMinScore(70); setSearchParams({}); }}
+              className="px-2 py-0.5 text-[10px] rounded border"
+              style={{ borderColor: '#a855f7', color: '#a855f7' }}
+            >清除筛选</button>
+          )}
 
           {/* 操作指令 4 方向过滤 (小喇叭决策栏) */}
           <span className="text-[10px] ml-3" style={{ color: 'var(--text-muted)' }}>🎯 操作指令</span>
@@ -425,17 +555,50 @@ export default function YuziLifecycleTrackerPage() {
                       >
                         {ac.emoji} {ac.label}
                       </div>
+                      {/* 3天趋势标签 — 今日动作下方 (基于最近3天7维得分综合判断强度+走势) */}
+                      {(() => {
+                        const trend = computeTrendSignalScore(r.lifecycle_data);
+                        if (!trend) return null;
+                        const arrow = trend.trajectory >= 2 ? '↑' : trend.trajectory <= -2 ? '↓' : '→';
+                        return (
+                          <div
+                            className="mt-1 px-1 py-0.5 rounded text-[9px] font-bold inline-block whitespace-nowrap"
+                            style={{ background: trend.bg, color: trend.color, border: `1px solid ${trend.color}40` }}
+                            title={fmtTrendTooltip(trend)}
+                          >
+                            {trend.label} {arrow}{trend.avgScore > 0 ? '+' : ''}{trend.avgScore}
+                          </div>
+                        );
+                      })()}
+                      {/* 最新一天 7维命中数 (副标签,小字) */}
+                      {(() => {
+                        const keys = Object.keys(r.lifecycle_data || {}).filter(k => k.startsWith('d')).map(k => parseInt(k.slice(1)));
+                        if (!keys.length) return null;
+                        const maxN = Math.max(...keys);
+                        const lastDay = r.lifecycle_data[`d${maxN}`];
+                        const sig = computeSignalScore(lastDay);
+                        if (!sig) return null;
+                        return (
+                          <div
+                            className="mt-0.5 text-[8px]"
+                            style={{ color: sig.color, opacity: 0.75 }}
+                            title={`D${maxN} 7维命中: ${fmtHitCount(sig)}`}
+                          >
+                            D{maxN}:{sig.label}{sig.score > 0 ? '+' : ''}{sig.score}
+                          </div>
+                        );
+                      })()}
                     </td>
                     {Array.from({ length: 20 }, (_, i) => i + 1).map(d => {
-                      // 优先用生命周期数据里的 date 字段(实际填入的交易日),否则用 anchor + d 推算
+                      // 只用实际填入的 date 字段,没有数据就不显示日期(避免错误推算导致重复)
                       const dd = r.lifecycle_data[`d${d}`];
-                      const dayDate = dd?.date || (anchor ? addDaysStr(anchor, d - 1) : '');
+                      const dayDate = dd?.date || '';
                       return (
                         <td key={d} className="px-0.5 py-1 text-center">
                           <div className="text-[9px] font-bold mb-0.5" style={{ color: dayDate ? 'var(--text-secondary)' : 'var(--text-muted)' }}>
-                            {dayDate ? dayDate.slice(4, 6) + '-' + dayDate.slice(6, 8) : '—'}
+                            {dayDate ? dayDate.slice(4, 6) + '-' + dayDate.slice(6, 8) : ''}
                           </div>
-                          <DayCell data={dd} dayNum={d} />
+                          <DayCell data={dd} dayNum={d} bossExits={r.boss_exits} />
                         </td>
                       );
                     })}

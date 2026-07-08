@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import SignalCard from '../components/trading/SignalCard';
 import StrategyOverview from '../components/bs-screener/StrategyOverview';
 import { DEFAULT_BS_PARAMS, SIGNAL_TYPES } from '../components/bs-screener/constants';
-import * as echarts from 'echarts';
+import echarts from '../lib/echarts';
 import { apiFetch } from '../utils/request';
 import { TOAST_DURATION } from '../utils/constants';
 

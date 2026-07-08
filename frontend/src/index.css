@@ -5,13 +5,13 @@
 :root {
   --bg-primary: #ffffff;
   --bg-card: #ffffff;
-  --bg-elevated: #f8fafc;       /* 弹窗/抽屉使用：浅色下比页面微深一档 */
-  --bg-surface: #f8fafc;
-  --bg-hover: #f1f5f9;
-  --text-primary: #1a1a1a;
-  --text-secondary: #64748b;
-  --text-muted: #94a3b8;
-  --border-color: #e2e8f0;
+  --bg-elevated: #fafcff;       /* 弹窗/抽屉使用：浅色下比页面微深一档 */
+  --bg-surface: #fafcff;
+  --bg-hover: #f5f8fc;
+  --text-primary: #0f172a;
+  --text-secondary: #475569;
+  --text-muted: #64748b;
+  --border-color: #e8eef5;
   --border-light: #f1f5f9;
   --accent-blue: #2c56ba;
   --accent-green: #16a34a;

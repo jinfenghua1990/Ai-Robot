@@ -10,7 +10,8 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from db.connection import get_db
 from db.session import get_db_session
-from services.signal_builder import build_signal_for_stock
+from services.signal_builder import build_signal_for_stock, build_signal_from_precomputed
+from db.models import WatchlistSignalDaily
 
 router = APIRouter()
 
@@ -252,13 +253,42 @@ async def get_focus_stocks():
             for s in sector_data["stocks"]
         ]
 
-        # 分批并发构造 signal（20只一批，避免新浪限流）
+        # 优先从预计算表读取（毫秒级），缺失时才现场计算
         import asyncio
+
+        # 取最近一日的预计算数据
+        latest_date = db.query(WatchlistSignalDaily.trade_date).order_by(
+            WatchlistSignalDaily.trade_date.desc()
+        ).first()
+        precomputed_map = {}
+        if latest_date:
+            rows = db.query(WatchlistSignalDaily).filter(
+                WatchlistSignalDaily.trade_date == latest_date[0]
+            ).all()
+            for r in rows:
+                # ts_code (600000.SH) → code (600000)
+                code = r.ts_code.split('.')[0] if r.ts_code else ''
+                if code:
+                    precomputed_map[code] = r
+
+        # 分批构造 signal：预计算命中用快速路径，未命中用现场计算
         BATCH = 20
         all_signals = []
+        precomputed_hits = 0
         for i in range(0, len(all_stocks), BATCH):
             batch = all_stocks[i:i + BATCH]
-            tasks = [build_signal_for_stock(code, name, sector_name, db) for code, name, sector_name in batch]
+            tasks = []
+            for code, name, sector_name in batch:
+                pre = precomputed_map.get(code)
+                if pre is not None:
+                    precomputed_hits += 1
+                    tasks.append(build_signal_from_precomputed(
+                        code, name, pre,
+                        extra_positive=[{"label": "赛道", "value": sector_name, "type": "positive"}],
+                        db=db,
+                    ))
+                else:
+                    tasks.append(build_signal_for_stock(code, name, sector_name, db))
             results = await asyncio.gather(*tasks, return_exceptions=True)
             for r in results:
                 if not isinstance(r, Exception) and r is not None:

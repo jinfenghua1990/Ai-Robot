@@ -17,7 +17,8 @@ const DIM_COLORS = {
 
 const STRATEGIES = [
   { key: 'heat', label: '热度综合', desc: '板块热度 Top 5 + 突破/加速阶段 + 主力净流入', icon: '🔥' },
-  { key: 'baihu', label: '白虎V3.0', desc: 'MA20强势回调，5维度评分≥6分入选（科创创业板）', icon: '🐯' },
+  { key: 'baihu', label: '白虎V3.0', desc: '双模式选股：缩量回踩守20日线 / 放量突破不破5/10日线，5维度评分≥5分入选，全市场', icon: '🐯' },
+  { key: 'liangjia', label: '白虎V4.0', desc: '5种形态分类 + 3层分层（优先买入/等回踩/暂不参与）+ 交易计划', icon: '🐯' },
   { key: 'qinglong', label: '青龙', desc: 'MA10主升浪回踩策略', icon: '🐉' },
   { key: 'zhushenglang', label: '主升浪', desc: 'MA多头排列+主力资金流入，主升浪趋势选股', icon: '🚀' },
 ];
@@ -37,6 +38,10 @@ export default function ScreenerPage({ initialStrategy, hideStrategySelector }) 
   // 白虎V3.0独立数据
   const [baihuData, setBaihuData] = useState(null);
   const [baihuLoading, setBaihuLoading] = useState(false);
+  // 量价报告独立数据
+  const [liangjiaData, setLiangjiaData] = useState(null);
+  const [liangjiaLoading, setLiangjiaLoading] = useState(false);
+  const [liangjiaTier, setLiangjiaTier] = useState('priority');
   // 防止重复请求：记录已请求的 date+strategy
   const fetchedRef = useRef('');
   // 妙想智能选股（自然语言）
@@ -115,6 +120,26 @@ export default function ScreenerPage({ initialStrategy, hideStrategySelector }) 
       }
       setBaihuData(d);
       setBaihuLoading(false);
+    })();
+    return () => controller.abort();
+  }, [selectedDate, strategy]);
+
+  // 量价报告独立请求
+  useEffect(() => {
+    if (strategy !== 'liangjia' || !selectedDate) return;
+    if (liangjiaData && liangjiaData.date === selectedDate) return;
+    setLiangjiaLoading(true);
+    const controller = new AbortController();
+    (async () => {
+      const { ok, data: d, error } = await apiFetch(`/api/liangjia-report?date=${selectedDate}`, { signal: controller.signal });
+      if (!ok) {
+        if (/abort/i.test(error || '')) return;
+        setLiangjiaData(null);
+        setLiangjiaLoading(false);
+        return;
+      }
+      setLiangjiaData(d);
+      setLiangjiaLoading(false);
     })();
     return () => controller.abort();
   }, [selectedDate, strategy]);
@@ -217,7 +242,7 @@ export default function ScreenerPage({ initialStrategy, hideStrategySelector }) 
         <div className="text-sm mb-2"><strong style={{ color: 'var(--text-primary)' }}>📖 名词解释</strong> · 选股策略说明</div>
         <div className="space-y-1.5 text-xs" style={{ color: 'var(--text-secondary)' }}>
           <div><strong style={{ color: 'var(--text-primary)' }}>热度综合：</strong>板块热度Top5 + 突破/加速阶段龙头 + 主力净流入排序</div>
-          <div><strong style={{ color: 'var(--text-primary)' }}>白虎V3.0：</strong>MA20强势回调策略，5维度评分（下影3+涨幅2+缩量2+RSI1+偏离2=10分），≥6分入选，仅科创创业板</div>
+          <div><strong style={{ color: 'var(--text-primary)' }}>白虎V3.0：</strong>双模式选股：缩量回踩守20日线 / 放量突破不破5/10日线，5维度评分≥5分入选，全市场</div>
           <div><strong style={{ color: 'var(--text-primary)' }}>青龙：</strong>MA10主升浪回踩策略</div>
           <div><strong style={{ color: '#ef4444' }}>红色</strong>=上涨/流入，<strong style={{ color: '#22c55e' }}>绿色</strong>=下跌/流出（A股习惯）</div>
           <div><strong style={{ color: 'var(--text-primary)' }}>注意：</strong>筛选结果仅供参考，不构成投资建议</div>
@@ -465,7 +490,7 @@ export default function ScreenerPage({ initialStrategy, hideStrategySelector }) 
             <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
               <div className="rounded-lg border p-3 text-center" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
                 <div className="text-2xl font-bold" style={{ color: 'var(--accent-blue)' }}>{baihuData.candidate_count || 0}</div>
-                <div className="text-xs mt-1" style={{ color: 'var(--text-secondary)' }}>候选池（科创+创业板）</div>
+                <div className="text-xs mt-1" style={{ color: 'var(--text-secondary)' }}>候选池（全市场主力净流入前50）</div>
               </div>
               <div className="rounded-lg border p-3 text-center" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
                 <div className="text-2xl font-bold" style={{ color: '#22c55e' }}>{baihuData.total || 0}</div>
@@ -540,14 +565,14 @@ export default function ScreenerPage({ initialStrategy, hideStrategySelector }) 
               </>
             ) : (
               <div className="flex items-center justify-center h-96 text-sm" style={{ color: 'var(--text-muted)' }}>
-                {baihuData?.stocks?.length > 0 ? '无匹配结果，请调整筛选条件' : '暂无选股结果 — 白虎策略仅在强势股回踩MA20时触发，请切换日期查看'}
+                {baihuData?.stocks?.length > 0 ? '无匹配结果，请调整筛选条件' : '暂无选股结果 — 白虎策略在缩量回踩守20日线或放量突破不破5/10日线时触发，请切换日期查看'}
               </div>
             )}
           </div>
 
           {/* 白虎V3.0公式说明 */}
           <div className="rounded-xl border p-3" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
-            <h3 className="text-sm font-medium mb-2" style={{ color: 'var(--text-secondary)' }}>白虎 V3.0 策略说明（科创创业板适配版）</h3>
+            <h3 className="text-sm font-medium mb-2" style={{ color: 'var(--text-secondary)' }}>白虎 V3.0 策略说明（全市场适配版）</h3>
             <div className="mb-3">
               <div className="text-xs font-medium mb-1" style={{ color: 'var(--text-muted)' }}>必过硬门槛（5项全满足）</div>
               <div className="flex flex-wrap gap-2">
@@ -582,6 +607,121 @@ export default function ScreenerPage({ initialStrategy, hideStrategySelector }) 
             )}
             <div className="mt-3 text-xs" style={{ color: 'var(--text-muted)' }}>
               及格线：总分 ≥ {passThreshold} 分入选 · 满分 {maxScore} 分 · 回测胜率37%（V2.6为19%）
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* ===== 量价报告：3层分层 + 交易计划 ===== */}
+      {strategy === 'liangjia' && (
+        <>
+          {/* 3层分层统计 */}
+          {liangjiaData && (
+            <div className="grid grid-cols-3 gap-2">
+              {[
+                { key: 'priority', label: '优先买入', count: liangjiaData.priority_count || 0, color: '#ef4444', desc: '只做条件触发，不追高' },
+                { key: 'wait', label: '等回踩确认', count: liangjiaData.wait_count || 0, color: '#f59e0b', desc: '逻辑尚可，位置需优化' },
+                { key: 'avoid', label: '暂不参与', count: liangjiaData.avoid_count || 0, color: '#6b7280', desc: '高位、破位或性价比不足' },
+              ].map(t => (
+                <button key={t.key} onClick={() => setLiangjiaTier(t.key)}
+                  className="rounded-lg border p-3 text-center transition-all"
+                  style={{
+                    borderColor: liangjiaTier === t.key ? t.color : 'var(--border-color)',
+                    background: liangjiaTier === t.key ? `${t.color}15` : 'var(--bg-card)',
+                    borderWidth: liangjiaTier === t.key ? 2 : 1,
+                  }}>
+                  <div className="text-2xl font-bold" style={{ color: t.color }}>{t.count}</div>
+                  <div className="text-xs mt-1 font-medium" style={{ color: 'var(--text-primary)' }}>{t.label}</div>
+                  <div className="text-[10px] mt-0.5" style={{ color: 'var(--text-muted)' }}>{t.desc}</div>
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* 当前层股票列表 */}
+          <div className="rounded-xl border p-3" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
+            {liangjiaLoading ? (
+              <div className="flex items-center justify-center h-96 text-sm" style={{ color: 'var(--text-muted)' }}>加载中...</div>
+            ) : (liangjiaData?.groups?.[liangjiaTier] || []).length > 0 ? (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                {(liangjiaData.groups[liangjiaTier] || []).map((signal, idx) => (
+                  <div key={signal.secCode || idx} className="space-y-1">
+                    <SignalCard
+                      signal={signal}
+                      orders={[]}
+                      showWatchBtn
+                      mode="watchlist"
+                      showMarketState
+                      showBuyPower
+                      showAnalysisButton
+                    />
+                    {/* 交易计划展示 */}
+                    {signal.tradePlan && (
+                      <div className="rounded-lg border p-2 text-xs space-y-1"
+                        style={{ borderColor: 'var(--border-color)', background: 'var(--bg-secondary)' }}>
+                        <div className="flex items-center gap-2">
+                          <span className="px-1.5 py-0.5 rounded font-bold"
+                            style={{
+                              background: signal.pattern === 'pullback' ? 'rgba(59,130,246,0.12)' :
+                                signal.pattern === 'breakout' ? 'rgba(239,68,68,0.12)' :
+                                signal.pattern === 'trend' ? 'rgba(168,85,247,0.12)' :
+                                signal.pattern === 'repair' ? 'rgba(245,158,11,0.12)' : 'rgba(107,114,128,0.12)',
+                              color: signal.pattern === 'pullback' ? '#3b82f6' :
+                                signal.pattern === 'breakout' ? '#ef4444' :
+                                signal.pattern === 'trend' ? '#a855f7' :
+                                signal.pattern === 'repair' ? '#f59e0b' : '#6b7280',
+                            }}>
+                            {signal.patternDesc || signal.pattern}
+                          </span>
+                          <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                            5日 {signal.gain5d}% | 量比 {signal.volRatio20}x | 距高点 {signal.distanceToHigh20}%
+                          </span>
+                        </div>
+                        <div style={{ color: 'var(--text-secondary)' }}>
+                          <span style={{ color: '#ef4444', fontWeight: 600 }}>买入:</span> {signal.tradePlan.buy}
+                        </div>
+                        <div style={{ color: 'var(--text-secondary)' }}>
+                          <span style={{ color: '#6b7280', fontWeight: 600 }}>止损:</span> {signal.tradePlan.stop}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="flex items-center justify-center h-96 text-sm" style={{ color: 'var(--text-muted)' }}>
+                {liangjiaData ? `当前层级无股票，切换其他层级查看` : '暂无数据'}
+              </div>
+            )}
+          </div>
+
+          {/* 白虎V4.0策略说明 */}
+          <div className="rounded-xl border px-3 py-2" style={{ borderColor: 'rgba(168,85,247,0.2)', background: 'var(--bg-card)' }}>
+            <h3 className="text-sm font-medium mb-2" style={{ color: 'var(--text-secondary)' }}>🐯 白虎V4.0策略说明（CodeBuddy）</h3>
+            <div className="text-xs mb-2" style={{ color: 'var(--text-muted)' }}>
+              按 CodeBuddy 量价筛选报告逻辑，5种形态分类 + 3层分层 + 具体交易计划
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div>
+                <div className="text-xs font-medium mb-1" style={{ color: 'var(--text-muted)' }}>5种形态分类</div>
+                <div className="space-y-1">
+                  <div className="text-xs"><span style={{ color: '#3b82f6' }}>缩量回踩:</span> 最低价≤MA20、缩量、收盘守MA20</div>
+                  <div className="text-xs"><span style={{ color: '#ef4444' }}>放量突破:</span> 收盘&gt;MA5/MA10、放量、接近20日高点</div>
+                  <div className="text-xs"><span style={{ color: '#a855f7' }}>趋势延续:</span> 多头排列、均线结构尚可</div>
+                  <div className="text-xs"><span style={{ color: '#f59e0b' }}>缩量修复:</span> 缩量、跌破MA5/MA10、守MA20</div>
+                  <div className="text-xs"><span style={{ color: '#6b7280' }}>结构偏弱:</span> 跌破MA20或双线破位</div>
+                </div>
+              </div>
+              <div>
+                <div className="text-xs font-medium mb-1" style={{ color: 'var(--text-muted)' }}>执行规则</div>
+                <div className="space-y-1">
+                  <div className="text-xs">• 开盘高开&gt;3%不追，等回踩不破分时均线</div>
+                  <div className="text-xs">• 优先看5/10日线附近缩量承接</div>
+                  <div className="text-xs">• 突破型必须放量站上前高或平台上沿</div>
+                  <div className="text-xs">• 放量跌破20日线，短线计划失效</div>
+                  <div className="text-xs">• 冲高回落且放量，次日不接</div>
+                </div>
+              </div>
             </div>
           </div>
         </>

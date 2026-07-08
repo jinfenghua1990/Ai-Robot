@@ -169,7 +169,6 @@ def compute_for_date(target_date=None):
             logger.info(f'[watchlist_signal_runner] done: {upserted} rows in {elapsed:.1f}s')
         return True
     except Exception as e:
-        db.rollback()
         logger.error(f'[watchlist_signal_runner] error: {e}')
         import traceback
         traceback.print_exc()

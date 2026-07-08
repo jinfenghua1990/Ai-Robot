@@ -16,7 +16,7 @@ router = APIRouter()
 
 
 async def _get_realtime_price(code: str) -> dict:
-    """获取新浪实时行情，返回 {name, price, yesterday_close, change_pct}"""
+    """获取新浪实时行情，返回完整字段 {name, price, yesterday_close, open, high, low, volume, amount, change, change_pct}"""
     sina_code = _stock_code_to_sina(code)
     if not sina_code:
         raise HTTPException(status_code=400, detail="无效的股票代码")
@@ -35,13 +35,25 @@ async def _get_realtime_price(code: str) -> dict:
         if len(parts) < 10:
             raise HTTPException(status_code=500, detail="行情数据格式异常")
         name = parts[0]
-        yesterday_close = float(parts[1])
-        current_price = float(parts[3])
+        yesterday_close = float(parts[1]) if parts[1] else 0.0
+        open_price = float(parts[2]) if parts[2] else 0.0
+        current_price = float(parts[3]) if parts[3] else 0.0
+        high = float(parts[4]) if parts[4] else 0.0
+        low = float(parts[5]) if parts[5] else 0.0
+        volume = int(float(parts[8])) if parts[8] else 0
+        amount = float(parts[9]) if parts[9] else 0.0
+        change = current_price - yesterday_close
         change_pct = ((current_price - yesterday_close) / yesterday_close * 100) if yesterday_close else 0
         return {
             'name': name,
             'price': current_price,
             'yesterday_close': yesterday_close,
+            'open': open_price,
+            'high': high,
+            'low': low,
+            'volume': volume,
+            'amount': amount,
+            'change': change,
             'change_pct': change_pct,
         }
     except (IndexError, ValueError) as e:
@@ -129,14 +141,20 @@ async def cancel(req: CancelRequest):
 
 @router.get("/api/trading/quote")
 async def get_realtime_quote(code: str = Query(..., description="6位股票代码")):
-    """获取新浪实时行情"""
+    """获取新浪实时行情（完整字段：price/yesterdayClose/open/high/low/change/changePct）"""
     quote = await _get_realtime_price(code)
     return {
         'code': code,
         'name': quote['name'],
         'price': quote['price'],
         'yesterdayClose': quote['yesterday_close'],
+        'open': quote['open'],
+        'high': quote['high'],
+        'low': quote['low'],
+        'change': quote['change'],
         'changePct': quote['change_pct'],
+        'volume': quote['volume'],
+        'amount': quote['amount'],
     }
 
 

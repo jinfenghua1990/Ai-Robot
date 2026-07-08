@@ -1,16 +1,16 @@
 """
 个股市场状态判定引擎（CHOPPY / TREND / IMPULSE）
-从新浪日K线计算6类特征数据，输出3态判定。
+从本地 stock_daily_kline 表读取日K线，计算6类特征数据，输出3态判定。
 
-数据来源：新浪日K线（day/open/close/high/low/volume）
-资金流替代：用3日涨跌方向连续性替代主力净流入（新浪K线无资金流数据）
+数据来源：stock_daily_kline 表（由 tdx_collector 每日采集）
+资金流替代：用3日涨跌方向连续性替代主力净流入
 """
 import json
 import httpx
 from datetime import datetime
 from db.connection import get_db
 from db.session import get_db_session
-from db.models import StockFeaturesDaily
+from db.models import StockFeaturesDaily, StockDailyKline
 from utils import stock_code_to_sina as _stock_code_to_sina
 from services.indicators import calc_rsi
 import logging
@@ -18,32 +18,115 @@ logger = logging.getLogger(__name__)
 
 
 async def _fetch_kline(stock_code: str, datalen: int = 120):
-    """从新浪获取日K线，返回 [{day, open, close, high, low, volume}, ...]"""
-    sina_code = _stock_code_to_sina(stock_code)
-    if not sina_code:
-        return []
-    url = f"https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData?symbol={sina_code}&scale=240&ma=no&datalen={datalen}"
+    """从本地 stock_daily_kline 表读取日K线，不足时用 Tushare daily 补充。
+    返回 [{day, open, close, high, low, volume}, ...]（按日期升序）
+    """
+    ts_code = _stock_code_to_tushare(stock_code)
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.get(url)
-            data = resp.json()
+        with get_db_session() as db:
+            rows = db.query(StockDailyKline).filter(
+                StockDailyKline.ts_code == ts_code
+            ).order_by(StockDailyKline.trade_date.desc()).limit(datalen).all()
+            rows = rows[::-1]  # 升序
     except Exception:
-        logger.debug(f"_fetch_kline failed", exc_info=True)
-        return []
+        logger.debug(f"_fetch_kline DB failed for {stock_code}", exc_info=True)
+        rows = []
+
+    # 本地数据充足，直接返回
+    if len(rows) >= datalen:
+        return [{
+            'day': str(r.trade_date), 'open': float(r.open or 0), 'close': float(r.close or 0),
+            'high': float(r.high or 0), 'low': float(r.low or 0), 'volume': int(r.volume or 0),
+        } for r in rows]
+
+    # 本地数据不足，用 Tushare daily 接口补充（在独立线程中执行同步 HTTP 请求）
+    import asyncio
+    from collectors.tdx_collector import call_tushare_mcp
+    from datetime import datetime, timedelta
+    end_date = datetime.now().strftime('%Y%m%d')
+    start_date = (datetime.now() - timedelta(days=datalen * 2)).strftime('%Y%m%d')
+    try:
+        ts_data = await asyncio.to_thread(
+            call_tushare_mcp, 'daily',
+            {'ts_code': ts_code, 'start_date': start_date, 'end_date': end_date},
+            ['ts_code', 'trade_date', 'open', 'high', 'low', 'close', 'vol']
+        )
+    except Exception:
+        ts_data = None
+
+    if not ts_data:
+        # Tushare 也失败，返回本地已有的数据（即使不足）
+        return [{
+            'day': str(r.trade_date), 'open': float(r.open or 0), 'close': float(r.close or 0),
+            'high': float(r.high or 0), 'low': float(r.low or 0), 'volume': int(r.volume or 0),
+        } for r in rows]
+
+    # 合并本地 + Tushare 数据，按 trade_date 去重
+    local_dates = {str(r.trade_date) for r in rows}
+    merged = {str(r.trade_date): r for r in rows}
+    for item in ts_data:
+        td = item.get('trade_date', '')
+        if td and td not in local_dates:
+            merged[td] = item
+
+    # 转为统一格式，按日期升序排列
+    all_dates = sorted(merged.keys())
     klines = []
-    for k in (data or []):
-        try:
+    for td in all_dates[-datalen:]:
+        r = merged[td]
+        if hasattr(r, 'trade_date'):  # ORM 对象
             klines.append({
-                'day': k.get('day', ''),
-                'open': float(k['open']),
-                'close': float(k['close']),
-                'high': float(k['high']),
-                'low': float(k['low']),
-                'volume': int(float(k.get('volume', 0) or 0)),
+                'day': str(r.trade_date), 'open': float(r.open or 0), 'close': float(r.close or 0),
+                'high': float(r.high or 0), 'low': float(r.low or 0), 'volume': int(r.volume or 0),
             })
-        except (KeyError, ValueError, TypeError):
-            continue
+        else:  # Tushare dict
+            try:
+                klines.append({
+                    'day': td, 'open': float(r['open']), 'close': float(r['close']),
+                    'high': float(r['high']), 'low': float(r['low']), 'volume': int(float(r.get('vol', 0))),
+                })
+            except (KeyError, ValueError, TypeError):
+                continue
+
+    # 后台写入 stock_daily_kline 表缓存（不阻塞返回）
+    _cache_kline_to_db(ts_code, ts_data)
+
     return klines
+
+
+def _cache_kline_to_db(ts_code: str, ts_data: list):
+    """将 Tushare daily 数据写入 stock_daily_kline 表缓存"""
+    if not ts_data:
+        return
+    try:
+        from datetime import datetime as dt
+        with get_db_session() as db:
+            existing_dates = {str(r.trade_date) for r in db.query(StockDailyKline).filter(
+                StockDailyKline.ts_code == ts_code
+            ).all()}
+            new_rows = []
+            for item in ts_data:
+                td = item.get('trade_date', '')
+                if not td or td in existing_dates:
+                    continue
+                try:
+                    new_rows.append(StockDailyKline(
+                        ts_code=ts_code,
+                        trade_date=dt.strptime(td, '%Y%m%d').date(),
+                        open=float(item['open']), high=float(item['high']),
+                        low=float(item['low']), close=float(item['close']),
+                        volume=int(float(item.get('vol', 0) or 0)),
+                        amount=float(item.get('amount', 0) or 0),
+                        pct_chg=float(item.get('pct_chg', 0) or 0),
+                    ))
+                except (KeyError, ValueError):
+                    continue
+            if new_rows:
+                db.bulk_save_objects(new_rows)
+                db.commit()
+                logger.info(f'[market_state] 缓存 {len(new_rows)} 条 K线到 stock_daily_kline ({ts_code})')
+    except Exception:
+        logger.debug(f'_cache_kline_to_db failed for {ts_code}', exc_info=True)
 
 
 def _stock_code_to_tushare(stock_code: str) -> str:

@@ -4,6 +4,7 @@ import KLineChart from '../components/charts/KLineChart';
 import IntradayPanel from '../components/trading/IntradayPanel';
 import SinaLink from '../components/SinaLink';
 import { apiFetch } from '../utils/request';
+import { POLL_INTERVAL } from '../utils/constants';
 
 const TABS = [
   { key: 'kline', label: 'K线' },
@@ -277,11 +278,11 @@ export default function StockDetailPage() {
     } catch (e) { /* silent */ }
   }, [code]);
 
-  // 切到盘中 tab 时启动 3 秒轮询
+  // 切到盘中 tab 时启动 5 秒轮询（页面隐藏时暂停）
   useEffect(() => {
     if (activeTab !== 'intraday') return;
     fetchRealtime();
-    const t = setInterval(fetchRealtime, 3000);
+    const t = setInterval(() => { if (!document.hidden) fetchRealtime(); }, POLL_INTERVAL);
     return () => clearInterval(t);
   }, [activeTab, fetchRealtime]);
 
@@ -430,10 +431,10 @@ export default function StockDetailPage() {
         {/* Tab2 盘中实时(双轨制聚合) */}
         {activeTab === 'intraday' && (
           <div className="h-full overflow-y-auto p-3 space-y-3">
-            {/* 实时大盘(3秒刷新) */}
+            {/* 实时大盘(5秒刷新) */}
             <div className="rounded-xl border p-3" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
               <div className="flex items-center justify-between mb-2">
-                <h3 className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>📊 盘中实时（3秒刷新）</h3>
+                <h3 className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>📊 盘中实时（5秒刷新）</h3>
                 {realtimeData?.source_health?.realtime && (
                   <span
                     className="px-2 py-0.5 rounded text-[10px]"
@@ -800,7 +801,7 @@ export default function StockDetailPage() {
   );
 }
 
-// 盘中实时数据展示（3秒刷新）
+// 盘中实时数据展示（5秒刷新）
 function IntradayLive({ data }) {
   const pct = data.pct_chg;
   const isUp = pct == null ? null : pct >= 0;

@@ -295,7 +295,7 @@ async def build_signals_batch(
                 kwargs['change_rate'] = float(s[change_key])
             if days_key and s.get(days_key) is not None:
                 kwargs['consecutive_days'] = int(s[days_key])
-            kwargs['lifecycle_stage'] = lifecycle_map.get(ts_code)
+            kwargs['lifecycle_stage'] = lifecycle_map.get(ts_code) or '未入选'
             tasks.append(build_signal_for_stock(code, name, sector, db, **kwargs))
         results = await asyncio.gather(*tasks, return_exceptions=True)
         for r in results:
@@ -479,7 +479,7 @@ async def build_signals_from_strategy_result(
     for row in rows:
         code = row.ts_code.split('.')[0] if '.' in row.ts_code else row.ts_code
         precomputed = precomputed_map.get(row.ts_code)
-        _lifecycle = lifecycle_map.get(row.ts_code)
+        _lifecycle = lifecycle_map.get(row.ts_code) or '未入选'
         if precomputed:
             tasks.append(build_signal_from_precomputed(
                 code, row.name, precomputed,
@@ -509,6 +509,11 @@ async def build_signals_from_strategy_result(
             r['ma20'] = float(detail.get('ma20', 0))
             r['volRatio'] = float(detail.get('vol_ratio', 0))
             r['20dayGain'] = float(detail.get('20day_gain', 0))
+        if strategy_key == 'baihu_v30':
+            r['strategyMode'] = detail.get('mode', '')
+            r['ma5'] = float(detail.get('ma5', 0))
+            r['ma10'] = float(detail.get('ma10', 0))
+            r['distanceToHigh20'] = float(detail.get('distance_to_high_20', 0))
         if strategy_key == 'zhushenglang':
             r['ma5'] = float(detail.get('ma5', 0))
             r['ma10'] = float(detail.get('ma10', 0))
@@ -519,5 +524,68 @@ async def build_signals_from_strategy_result(
             r['continuityDays'] = int(detail.get('continuity_days', 0))
             r['hasMainForce'] = detail.get('has_main_force', False)
             r['exitSignal'] = detail.get('exit_signal')
+        if strategy_key == 'liangjia_report':
+            # 量价报告策略：5种形态 + 3层分层 + 交易计划
+            r['pattern'] = detail.get('pattern', '')
+            r['patternDesc'] = detail.get('pattern_desc', '')
+            r['tier'] = detail.get('tier', '')
+            r['tierLabel'] = detail.get('tier_label', '')
+            r['gain5d'] = float(detail.get('gain5d', 0))
+            r['gain20d'] = float(detail.get('gain20d', 0))
+            r['volRatio20'] = float(detail.get('vol_ratio_20', 0))
+            r['distanceToHigh20'] = float(detail.get('distance_to_high_20', 0))
+            r['deviationMa20'] = float(detail.get('deviation_ma20', 0))
+            r['deviationMa5'] = float(detail.get('deviation_ma5', 0))
+            r['ma5'] = float(detail.get('ma5', 0))
+            r['ma10'] = float(detail.get('ma10', 0))
+            r['ma20'] = float(detail.get('ma20', 0))
+            r['ma20Rising'] = bool(detail.get('ma20_rising', False))
+            r['bullAlignment'] = bool(detail.get('bull_alignment', False))
+            r['tradePlan'] = detail.get('trade_plan', {})
+            r['strategyMode'] = detail.get('pattern', '')  # 复用 SignalCard 模式标签
         enriched.append(r)
+
+    # 补充自选股个股模块字段（moneyFlow/hitTags/actionHint），让 SignalCard 显示完整信息
+    await _enrich_signals_with_watchlist_extras(db, enriched)
     return enriched
+
+
+async def _enrich_signals_with_watchlist_extras(db, signals: List[dict]) -> None:
+    """为 signal 列表批量补充自选股个股模块的 3 个字段（原地修改）：
+    - moneyFlow: 4 档资金流 + 1/2/3/4/5 日累计（盘后数据）
+    - hitTags:   7 大命中标签（yuzi/strategy/trend/capital/popularity/support/accumulation）
+    - actionHint: 根据命中标签组合生成的操作方向文案
+
+    与自选股 build_watchlist 完全一致的口径，确保 SignalCard 中列资金流向模块和 HitTagBar 正常渲染。
+    """
+    if not signals:
+        return
+    # 复用 watchlist.core 的批量函数，保证口径一致
+    from api.watchlist.core import _batch_moneyflow_map, _batch_hit_tags
+
+    stock_codes = [s.get('secCode') for s in signals if s.get('secCode')]
+    if not stock_codes:
+        return
+
+    # 批量拉资金流 + 命中标签
+    moneyflow_map = _batch_moneyflow_map(db, stock_codes)
+    sectors_map = {s.get('secCode'): s.get('sector', '') for s in signals}
+    hit_tags_map = _batch_hit_tags(db, stock_codes, sectors_map)
+
+    for s in signals:
+        code = s.get('secCode')
+        if not code or len(code) != 6:
+            continue
+        ts_code = f"{code}.SH" if code[0] in ('6', '9') else f"{code}.SZ"
+        # moneyFlow（缺失时给空壳，前端显示"暂无盘后数据"）
+        if 'moneyFlow' not in s or not s.get('moneyFlow'):
+            s['moneyFlow'] = moneyflow_map.get(ts_code) or {
+                'available': False, 'main_net': 0, 'super_large': 0,
+                'large': 0, 'small': 0, 'tiny': 0, 'turnover_rate': 0,
+                'inflow_1d': 0, 'inflow_2d': 0, 'inflow_3d': 0,
+                'inflow_4d': 0, 'inflow_5d': 0, 'flow_continuity': 0,
+            }
+        # hitTags + actionHint
+        hit_info = hit_tags_map.get(ts_code, {})
+        s.setdefault('hitTags', hit_info.get('hit_tags', []))
+        s.setdefault('actionHint', hit_info.get('action_hint', ''))

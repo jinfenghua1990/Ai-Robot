@@ -11,13 +11,14 @@
 import json
 import logging
 from typing import Optional
+from collections import defaultdict
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, HTTPException, Query, Body
 from sqlalchemy import desc, func
 
 from db.session import get_db_session
-from db.models import YuziLifecycleTracker
+from db.models import YuziLifecycleTracker, YuziSeatDaily
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -43,6 +44,41 @@ def _row_to_dict(r: YuziLifecycleTracker) -> dict:
     }
 
 
+def _attach_boss_exits(db, rows: list) -> None:
+    """给每个 tracker row 附上 boss_exits: {YYYYMMDD: [{alias, net}]}
+
+    含义: D1 大佬在后续哪天卖了(根据 YuziSeatDaily side=SELL 记录)
+    用途: DayCell 上显示「💰卖」角标,直观看到大佬哪天跑了
+    """
+    if not rows:
+        return
+    ts_codes = list({r['ts_code'] for r in rows})
+    earliest = min(r['trigger_date'] for r in rows)
+    # 一次拉所有相关 SELL 记录
+    seats = db.query(YuziSeatDaily).filter(
+        YuziSeatDaily.ts_code.in_(ts_codes),
+        YuziSeatDaily.trade_date >= earliest,
+        YuziSeatDaily.side == 'SELL',
+    ).all()
+    # 按 ts_code 分组
+    by_code = defaultdict(list)
+    for s in seats:
+        by_code[s.ts_code].append(s)
+    # 给每个 row 配对
+    for r in rows:
+        bosses = set(r['boss_list_d1'] or [])
+        code_seats = by_code.get(r['ts_code'], [])
+        exits = defaultdict(list)
+        for s in code_seats:
+            # 匹配 D1 大佬 + 触发日及之后的卖出 (含 D1 当天卖出 = 当天买当天跑)
+            if s.yuzi_alias in bosses and s.trade_date >= r['trigger_date']:
+                exits[s.trade_date].append({
+                    'alias': s.yuzi_alias,
+                    'net': round(float(s.net_amount or 0), 2),
+                })
+        r['boss_exits'] = dict(exits)
+
+
 @router.get("/api/yuzi/tracker")
 def get_tracker(
     min_score: float = 0.0,
@@ -53,6 +89,7 @@ def get_tracker(
     """
     20 天跟踪矩阵数据(供心电图前端)
     默认拉最近 30 天的所有 tracker, 覆盖 20 个交易日
+    每行包含 boss_exits: D1 大佬在后续哪天卖了
     """
     with get_db_session() as db:
         cutoff = (datetime.now() - timedelta(days=days_back)).strftime('%Y%m%d')
@@ -65,6 +102,8 @@ def get_tracker(
             q = q.filter(YuziLifecycleTracker.final_outcome == outcome)
         rows = q.order_by(desc(YuziLifecycleTracker.quant_score_d1)).limit(limit or 200).all()
         data = [_row_to_dict(r) for r in rows]
+        # 附上大佬卖出记录(D2+ 哪天卖了)
+        _attach_boss_exits(db, data)
 
         # 汇总统计
         total = len(data)

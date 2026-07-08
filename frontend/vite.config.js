@@ -17,7 +17,12 @@ export default defineConfig({
       output: {
         entryFileNames: 'assets/[name].[hash].js',
         chunkFileNames: 'assets/[name].[hash].js',
-        assetFileNames: 'assets/[name].[hash][extname]'
+        assetFileNames: 'assets/[name].[hash][extname]',
+        manualChunks: {
+          'react-vendor': ['react', 'react-dom', 'react-router-dom'],
+          'echarts-vendor': ['echarts', 'echarts-for-react'],
+          'charts-vendor': ['lightweight-charts'],
+        }
       }
     }
   }

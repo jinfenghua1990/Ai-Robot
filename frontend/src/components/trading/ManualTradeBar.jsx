@@ -128,7 +128,7 @@ export default function ManualTradeBar({ children }) {
           )}
         </div>
         {selected && (
-          <span className="text-xs px-2 py-1 rounded" style={{ background: 'rgba(59,130,246,0.1)', color: '#3b82f6)' }}>
+          <span className="text-xs px-2 py-1 rounded" style={{ background: 'rgba(59,130,246,0.1)', color: '#3b82f6' }}>
             已选: {selected.name} {selected.code}
           </span>
         )}

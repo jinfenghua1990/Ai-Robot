@@ -138,8 +138,12 @@ def _process_one_day(trade_date: str) -> Dict:
         return {'date': trade_date, 'top_list': len(top_list), 'top_inst': 0,
                 'matched': 0, 'signals': 0, 'seats': 0}
 
-    # 2) 整理 top_list 上下文
+    # 2) 整理 top_list 上下文 (过滤 ST/*ST 股票,不入库)
     tl_map = {r['ts_code']: r for r in top_list if r.get('ts_code')}
+    st_codes = [c for c, r in tl_map.items() if 'ST' in (r.get('name') or '')]
+    if st_codes:
+        logger.info(f'[{trade_date}] 过滤 ST 股票 {len(st_codes)} 只: {st_codes[:10]}')
+        tl_map = {c: r for c, r in tl_map.items() if c not in st_codes}
 
     with get_db_session() as db:
         yuzi_map = _get_yuzi_mapping(db)
@@ -148,10 +152,13 @@ def _process_one_day(trade_date: str) -> Dict:
             return {'date': trade_date, 'top_list': len(top_list), 'top_inst': len(top_inst),
                     'matched': 0, 'signals': 0, 'seats': 0}
 
-        # 3) 匹配游资席位 → 按 ts_code 聚合
+        # 3) 匹配游资席位 → 按 ts_code 聚合 (跳过 ST 股票)
         matched_rows: List[dict] = []
         unmatched_seats = set()
         for inst in top_inst:
+            # ST 股票整体跳过(不入 seat_daily / signal)
+            if inst.get('ts_code') not in tl_map:
+                continue
             ex_name = inst.get('ex_name', '') or ''
             yd = yuzi_map.get(ex_name)
             if not yd:
@@ -295,17 +302,18 @@ def run_today(force_date: Optional[str] = None) -> Dict:
     """
     target = force_date
     if not target:
-        # 默认取最近一个交易日（Tushare 通常 18:00 后才出当日数据）
+        # 优先尝试今天（Tushare 18:00 后出当日数据）
         from collectors.tdx_collector import call_tushare_mcp
+        today_str = datetime.now().strftime('%Y%m%d')
         rows = call_tushare_mcp(
             api_name='top_list',
-            params={},
-            fields=['trade_date'],
+            params={'trade_date': today_str},
+            fields=['ts_code', 'trade_date'],
         )
         if rows:
-            target = max(r.get('trade_date', '') for r in rows if r.get('trade_date'))
+            target = today_str
         else:
-            # 退到上一个工作日
+            # 今天无数据，退到昨天
             target = (datetime.now() - timedelta(days=1)).strftime('%Y%m%d')
 
     return _process_one_day(target)

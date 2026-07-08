@@ -48,10 +48,17 @@ export default function TradeModal({ stockCode, stockName, type, positionCount =
     return () => { active = false; };
   }, [stockCode]);
 
+  // 安全访问行情字段，避免 undefined.toFixed() 崩溃
+  const qPrice = quote?.price ?? null;
+  const qChange = quote?.change ?? null;
+  const qChangePct = quote?.changePct ?? null;
+  const qYesterdayClose = quote?.yesterdayClose ?? null;
+  const qOpen = quote?.open ?? null;
+
   // 涨跌停价格计算（A股±10%，ST股±5%）
-  const priceLimit = quote ? {
-    upper: quote.yesterdayClose * 1.1,
-    lower: quote.yesterdayClose * 0.9,
+  const priceLimit = qYesterdayClose ? {
+    upper: qYesterdayClose * 1.1,
+    lower: qYesterdayClose * 0.9,
   } : null;
 
   const handleSubmit = useCallback(async () => {
@@ -105,7 +112,7 @@ export default function TradeModal({ stockCode, stockName, type, positionCount =
   }, [useMarketPrice, price, quantity, type, stockCode, onConfirm, onClose, priceLimit, quote, isSell, maxSellQty]);
 
   // 预计金额
-  const currentPrice = useMarketPrice ? quote?.price : (parseFloat(price) || 0);
+  const currentPrice = useMarketPrice ? (qPrice ?? 0) : (parseFloat(price) || 0);
   const estimatedAmount = currentPrice * (parseInt(quantity) || 0);
 
   // 买入全仓可买数量 = floor(可用资金 / 单价 / 100) * 100
@@ -171,19 +178,19 @@ export default function TradeModal({ stockCode, stockName, type, positionCount =
               <div className="flex items-center justify-between">
                 <div>
                   <div className="text-xs" style={{ color: 'var(--text-muted)' }}>当前价</div>
-                  <div className="text-xl font-bold" style={{ color: quote.change >= 0 ? '#ef4444' : '#22c55e' }}>
-                    {quote.price.toFixed(2)}
+                  <div className="text-xl font-bold" style={{ color: (qChange ?? 0) >= 0 ? '#ef4444' : '#22c55e' }}>
+                    {qPrice != null ? qPrice.toFixed(2) : '--'}
                   </div>
                 </div>
                 <div className="text-right space-y-0.5">
-                  <div className="text-xs" style={{ color: quote.change >= 0 ? '#ef4444' : '#22c55e' }}>
-                    {quote.change >= 0 ? '+' : ''}{quote.change} ({quote.changePct}%)
+                  <div className="text-xs" style={{ color: (qChange ?? 0) >= 0 ? '#ef4444' : '#22c55e' }}>
+                    {qChange != null ? `${qChange >= 0 ? '+' : ''}${qChange.toFixed(2)}` : '--'} ({qChangePct != null ? qChangePct.toFixed(2) : '--'}%)
                   </div>
                   <div className="text-xs" style={{ color: 'var(--text-muted)' }}>
-                    昨收 {quote.yesterdayClose.toFixed(2)} · 开 {quote.open.toFixed(2)}
+                    昨收 {qYesterdayClose != null ? qYesterdayClose.toFixed(2) : '--'} · 开 {qOpen != null ? qOpen.toFixed(2) : '--'}
                   </div>
                   <div className="text-xs" style={{ color: 'var(--text-muted)' }}>
-                    涨停 <span style={{ color: '#ef4444' }}>{(quote.yesterdayClose * 1.1).toFixed(2)}</span> · 跌停 <span style={{ color: '#22c55e' }}>{(quote.yesterdayClose * 0.9).toFixed(2)}</span>
+                    涨停 <span style={{ color: '#ef4444' }}>{qYesterdayClose ? (qYesterdayClose * 1.1).toFixed(2) : '--'}</span> · 跌停 <span style={{ color: '#22c55e' }}>{qYesterdayClose ? (qYesterdayClose * 0.9).toFixed(2) : '--'}</span>
                   </div>
                 </div>
               </div>
