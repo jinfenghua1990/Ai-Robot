@@ -560,6 +560,12 @@ async def build_signals_from_strategy_result(
     return enriched
 
 
+# 缓存 _enrich_signals_with_watchlist_extras 的中间结果（moneyflow_map + hit_tags_map）
+# 这些都是盘后数据，2 分钟内不会变化；避免 81 只股票的 11+ 次 DB 查询重复执行（首次 6-9s → 命中 <100ms）
+_enrich_extras_cache = {}  # key: frozenset(codes) -> (timestamp, moneyflow_map, hit_tags_map)
+_ENRICH_EXTRAS_CACHE_TTL = 120  # 2 分钟
+
+
 async def _enrich_signals_with_watchlist_extras(db, signals: List[dict]) -> None:
     """为 signal 列表批量补充自选股个股模块的 3 个字段（原地修改）：
     - moneyFlow: 4 档资金流 + 1/2/3/4/5 日累计（盘后数据）
@@ -577,25 +583,34 @@ async def _enrich_signals_with_watchlist_extras(db, signals: List[dict]) -> None
     if not stock_codes:
         return
 
-    # 批量拉资金流 + 命中标签
-    moneyflow_map = _batch_moneyflow_map(db, stock_codes)
-    sectors_map = {s.get('secCode'): s.get('sector', '') for s in signals}
-    hit_tags_map = _batch_hit_tags(db, stock_codes, sectors_map)
+    # 检查缓存（盘后数据，2 分钟 TTL）
+    cache_key = frozenset(stock_codes)
+    now = time.time()
+    cached = _enrich_extras_cache.get(cache_key)
+    if cached and now - cached[0] < _ENRICH_EXTRAS_CACHE_TTL:
+        moneyflow_map, hit_tags_map = cached[1], cached[2]
+    else:
+        # 批量拉资金流 + 命中标签（11+ 次 DB 查询，首次 6-9s）
+        moneyflow_map = _batch_moneyflow_map(db, stock_codes)
+        sectors_map = {s.get('secCode'): s.get('sector', '') for s in signals}
+        hit_tags_map = _batch_hit_tags(db, stock_codes, sectors_map)
+        _enrich_extras_cache[cache_key] = (now, moneyflow_map, hit_tags_map)
 
     for s in signals:
         code = s.get('secCode')
         if not code or len(code) != 6:
             continue
         ts_code = f"{code}.SH" if code[0] in ('6', '9') else f"{code}.SZ"
-        # moneyFlow（缺失时给空壳，前端显示"暂无盘后数据"）
+        # moneyFlow（缺失时给空壳，前端显示"暂无盘后数据"）；浅拷贝避免污染缓存
         if 'moneyFlow' not in s or not s.get('moneyFlow'):
-            s['moneyFlow'] = moneyflow_map.get(ts_code) or {
+            mf = moneyflow_map.get(ts_code)
+            s['moneyFlow'] = dict(mf) if mf else {
                 'available': False, 'main_net': 0, 'super_large': 0,
                 'large': 0, 'small': 0, 'tiny': 0, 'turnover_rate': 0,
                 'inflow_1d': 0, 'inflow_2d': 0, 'inflow_3d': 0,
                 'inflow_4d': 0, 'inflow_5d': 0, 'flow_continuity': 0,
             }
-        # hitTags + actionHint
+        # hitTags + actionHint；浅拷贝 list 避免污染缓存
         hit_info = hit_tags_map.get(ts_code, {})
-        s.setdefault('hitTags', hit_info.get('hit_tags', []))
+        s.setdefault('hitTags', list(hit_info.get('hit_tags', [])))
         s.setdefault('actionHint', hit_info.get('action_hint', ''))

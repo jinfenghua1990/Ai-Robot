@@ -9,7 +9,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.gzip import GZipMiddleware
 from contextlib import asynccontextmanager
@@ -17,8 +17,9 @@ from contextlib import asynccontextmanager
 # 启用慢查询监听（>200ms 记录到 logger）
 import utils.slow_query_logger  # noqa: F401
 
-from api import heatmap, rotation, lifecycle, lifecycle_v2, lifecycle_v3, money_flow, screener, portfolio, baihu, trading, analysis, bs_signals, realtime, quality, watchlist, bs_screener, bs_backtest, leader_system, leader_history, mx_skills, sync_pkg, sina_sync, stock_research, focus_stocks, panorama, concept_sector, strategy_tags, auto_trading, mx_trading, trading_system, yuzi, yuzi_tracker, super_panel, money_flow_detail, index_flow, liangjia_report, strategy_resonance, global_market, market_stage, git_push
+from api import heatmap, rotation, lifecycle, lifecycle_v2, lifecycle_v3, money_flow, screener, portfolio, baihu, trading, analysis, bs_signals, realtime, quality, watchlist, bs_screener, bs_backtest, leader_system, leader_history, mx_skills, sync_pkg, sina_sync, stock_research, focus_stocks, panorama, concept_sector, strategy_tags, auto_trading, mx_trading, trading_system, yuzi, yuzi_tracker, super_panel, money_flow_detail, index_flow, liangjia_report, strategy_resonance, global_market, market_stage, git_push, alerts, report
 from api.rate_limit import RateLimitMiddleware
+from api import vibe, scheduler_api
 from collectors.scheduler import start_scheduler, scheduler
 from db.connection import get_db
 from db.session import get_db_session
@@ -223,6 +224,7 @@ async def cache_static_assets(request: Request, call_next):
     return response
 
 # API路由
+app.include_router(alerts.router)
 app.include_router(heatmap.router)
 app.include_router(rotation.router)
 app.include_router(lifecycle.router)
@@ -263,6 +265,9 @@ app.include_router(strategy_resonance.router)
 app.include_router(global_market.router)
 app.include_router(market_stage.router)
 app.include_router(git_push.router)
+app.include_router(vibe.router)
+app.include_router(report.router)
+app.include_router(scheduler_api.router)
 
 
 @app.get("/api/health")
@@ -294,6 +299,162 @@ def latest_date():
         if result:
             return {"date": result.strftime('%Y-%m-%d')}
         return {"date": None}
+
+
+# Vibe-Research 子系统静态资源（独立构建产物，browser-router SPA）
+# 挂载到 /_vibe/ 避免和 AIROBOT 前端 /vibe/* 路由冲突；iframe 通过 /_vibe/* 加载原生 Vibe 页面
+vibe_static = os.path.join(os.path.dirname(__file__), 'static', 'vibe')
+if os.path.exists(vibe_static):
+    app.mount("/_vibe/assets", StaticFiles(directory=os.path.join(vibe_static, 'assets')), name="vibe_assets")
+
+    @app.get("/_vibe/{full_path:path}")
+    async def serve_vibe(full_path: str):
+        # Vibe 内部 API 不存在时返回真实 404（StaticFiles 会处理 /vibe/assets）
+        if full_path.startswith('api/'):
+            raise HTTPException(status_code=404, detail="Not found")
+        index_path = os.path.join(vibe_static, 'index.html')
+        if os.path.exists(index_path):
+            return FileResponse(index_path, media_type='text/html', headers={
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Pragma": "no-cache",
+                "Expires": "0",
+            })
+        return JSONResponse({"error": "Vibe frontend not built"}, status_code=503)
+
+
+# ---------------------------------------------------------------------------
+# daily_stock_analysis (DSA) 子系统集成
+# DSA 后端作为独立子进程运行在 127.0.0.1:8000（与 AIROBOT 9000 隔离，避免依赖冲突）
+# AIROBOT 反向代理 /api/v1/* 和 /stocks.index.json 到 8000，托管 DSA 前端静态资源
+# ---------------------------------------------------------------------------
+import httpx as _httpx
+DSA_BACKEND_URL = os.environ.get("DSA_BACKEND_URL", "http://127.0.0.1:8000")
+
+async def _dsa_proxy(request: Request, path: str):
+    """反向代理到 DSA 后端 8000。后端未启动时返回 503。"""
+    target = f"{DSA_BACKEND_URL}/{path}"
+    if request.url.query:
+        target = f"{target}?{request.url.query}"
+    method = request.method
+    # 简化 headers：仅透传必要头，避免 httpx 对 list 类型调用 .items()
+    skip_req = {'host', 'content-length', 'transfer-encoding', 'connection'}
+    headers = {}
+    for k, v in request.headers.items():
+        if k.lower() not in skip_req:
+            headers[k] = v
+    body = await request.body()
+    client: _httpx.AsyncClient = app.state.http_client
+    try:
+        upstream = await client.request(
+            method, target, headers=headers, content=body or None, timeout=60,
+        )
+        # 过滤 hop-by-hop 头，用 dict 传给 Response
+        skip_resp = {'content-encoding', 'transfer-encoding', 'connection', 'content-length'}
+        resp_headers = {}
+        for k, v in upstream.headers.items():
+            if k.lower() not in skip_resp:
+                resp_headers[k] = v
+        return Response(
+            content=upstream.content,
+            status_code=upstream.status_code,
+            headers=resp_headers,
+            media_type=upstream.headers.get('content-type'),
+        )
+    except Exception as e:
+        return JSONResponse(
+            {"error": "DSA backend unavailable", "detail": str(e), "hint": "请启动 DSA 后端：./start_dsa.sh (端口 8000)"},
+            status_code=503,
+        )
+
+@app.api_route("/api/v1/{full_path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"])
+async def dsa_api_proxy(full_path: str, request: Request):
+    return await _dsa_proxy(request, f"api/v1/{full_path}")
+
+@app.api_route("/stocks.index.json", methods=["GET", "HEAD"], include_in_schema=False)
+async def dsa_stock_index_proxy(request: Request):
+    return await _dsa_proxy(request, "stocks.index.json")
+
+# DSA 前端静态资源
+dsa_static = os.path.join(os.path.dirname(__file__), 'static', 'dsa')
+if os.path.exists(dsa_static):
+    app.mount("/_dsa/assets", StaticFiles(directory=os.path.join(dsa_static, 'assets')), name="dsa_assets")
+
+    @app.get("/_dsa/{full_path:path}")
+    async def serve_dsa(full_path: str):
+        if full_path.startswith('api/'):
+            raise HTTPException(status_code=404, detail="Not found")
+        index_path = os.path.join(dsa_static, 'index.html')
+        if os.path.exists(index_path):
+            return FileResponse(index_path, media_type='text/html', headers={
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Pragma": "no-cache",
+                "Expires": "0",
+            })
+        return JSONResponse({"error": "DSA frontend not built"}, status_code=503)
+
+
+# ---------------------------------------------------------------------------
+# Hermes Cockpit 子系统集成
+# Hermes 后端独立运行在 127.0.0.1:8788
+# AIROBOT 反向代理 /_hermes/api/* 到 8788，托管 Hermes 前端静态资源
+# ---------------------------------------------------------------------------
+HERMES_BACKEND_URL = os.environ.get("HERMES_BACKEND_URL", "http://127.0.0.1:8788")
+
+async def _hermes_proxy(request: Request, path: str):
+    """反向代理到 Hermes 后端 8788。后端未启动时返回 503。"""
+    target = f"{HERMES_BACKEND_URL}/{path}"
+    if request.url.query:
+        target = f"{target}?{request.url.query}"
+    method = request.method
+    skip_req = {'host', 'content-length', 'transfer-encoding', 'connection'}
+    headers = {}
+    for k, v in request.headers.items():
+        if k.lower() not in skip_req:
+            headers[k] = v
+    body = await request.body()
+    client: _httpx.AsyncClient = app.state.http_client
+    try:
+        upstream = await client.request(
+            method, target, headers=headers, content=body or None, timeout=60,
+        )
+        skip_resp = {'content-encoding', 'transfer-encoding', 'connection', 'content-length'}
+        resp_headers = {}
+        for k, v in upstream.headers.items():
+            if k.lower() not in skip_resp:
+                resp_headers[k] = v
+        return Response(
+            content=upstream.content,
+            status_code=upstream.status_code,
+            headers=resp_headers,
+            media_type=upstream.headers.get('content-type'),
+        )
+    except Exception as e:
+        return JSONResponse(
+            {"error": "Hermes backend unavailable", "detail": str(e), "hint": "请启动 Hermes 后端：./start_hermes.sh (端口 8788)"},
+            status_code=503,
+        )
+
+@app.api_route("/_hermes/api/{full_path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"])
+async def hermes_api_proxy(full_path: str, request: Request):
+    return await _hermes_proxy(request, f"api/{full_path}")
+
+# Hermes 前端静态资源
+hermes_static = os.path.join(os.path.dirname(__file__), 'static', 'hermes')
+if os.path.exists(hermes_static):
+    app.mount("/_hermes/assets", StaticFiles(directory=os.path.join(hermes_static, 'assets')), name="hermes_assets")
+
+    @app.get("/_hermes/{full_path:path}")
+    async def serve_hermes(full_path: str):
+        if full_path.startswith('api/'):
+            raise HTTPException(status_code=404, detail="Not found")
+        index_path = os.path.join(hermes_static, 'index.html')
+        if os.path.exists(index_path):
+            return FileResponse(index_path, media_type='text/html', headers={
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Pragma": "no-cache",
+                "Expires": "0",
+            })
+        return JSONResponse({"error": "Hermes frontend not built"}, status_code=503)
 
 
 # 前端静态资源（构建后存在）

@@ -212,3 +212,21 @@ async def refresh_all_market_state():
 
     asyncio.create_task(_bg())
     return {"success": True, "total": len(codes), "message": "后台更新中，约需1-2分钟"}
+
+
+# ===================== 研究采集手动触发 =====================
+
+@router.post("/api/research/collect/{code}")
+async def trigger_research_one(code: str):
+    """手动触发单只股票研究采集（资讯+数据+AI基线分析落库）"""
+    from collectors.research_collector import run_research_for_stock
+    name = await run_research_for_stock(code)
+    return {"success": True, "code": code, "name": name}
+
+
+@router.post("/api/research/collect-all")
+async def trigger_research_all():
+    """手动触发全目标池研究采集"""
+    from collectors.research_collector import run_research_collection
+    n = await run_research_collection()
+    return {"success": True, "count": n}

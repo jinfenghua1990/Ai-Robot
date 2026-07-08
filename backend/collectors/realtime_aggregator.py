@@ -194,23 +194,38 @@ def collect_realtime_snapshot():
     )
     from sqlalchemy import distinct
 
-    # 1) 拉取需要监控的股票列表
+    # 1) 拉取全市场股票列表 + 重点池
     codes = set()
+    priority_codes = set()
     try:
         with get_db_session() as db:
+            # 全市场：以今日 StockFlow 为准（约 5500 只）
+            today_str = datetime.now().strftime('%Y%m%d')
+            from db.models import StockFlow
+            for r in db.query(distinct(StockFlow.ts_code)).filter(StockFlow.trade_date == today_str).all():
+                codes.add(r[0])
+
+            # 重点池：自选股 / 20天跟踪 / 今日共振高分股
             # 自选股
-            for r in db.query(distinct(Watchlist.stock_code)).limit(500).all():
-                codes.add(_normalize_code(r[0]))
+            for r in db.query(distinct(Watchlist.stock_code)).all():
+                code = _normalize_code(r[0])
+                if code:
+                    priority_codes.add(code)
+                    codes.add(code)
             # 20天跟踪 active(30 天窗口, 覆盖 20 个交易日)
             for r in db.query(distinct(YuziLifecycleTracker.ts_code)).filter(
                 YuziLifecycleTracker.trigger_date >= (datetime.now() - timedelta(days=30)).strftime('%Y%m%d')
-            ).limit(500).all():
-                codes.add(r[0])
+            ).all():
+                if r[0]:
+                    priority_codes.add(r[0])
+                    codes.add(r[0])
             # 今日共振高分股
             for r in db.query(distinct(YuziQuantSignal.ts_code)).filter(
                 YuziQuantSignal.quant_score >= 70
-            ).limit(200).all():
-                codes.add(r[0])
+            ).all():
+                if r[0]:
+                    priority_codes.add(r[0])
+                    codes.add(r[0])
     except Exception as e:
         logger.warning(f'[realtime_aggregator] load watchlist failed: {e}')
         return
@@ -218,12 +233,13 @@ def collect_realtime_snapshot():
     if not codes:
         return
 
-    codes = list(codes)[:300]   # 限制单次最多 300 只
-    logger.info(f'[realtime_aggregator] collecting {len(codes)} stocks')
+    codes = list(codes)
+    priority_codes = list(priority_codes)
+    logger.info(f'[realtime_aggregator] collecting {len(codes)} stocks ({len(priority_codes)} priority)')
 
     # 2) 批量拉取(已有 realtime_collector 封装,直接复用)
     try:
-        quotes = _collect_realtime_intraday(codes)
+        quotes = _collect_realtime_intraday(codes, priority_codes=priority_codes)
     except Exception as e:
         logger.error(f'[realtime_aggregator] quote fetch failed: {e}', exc_info=True)
         return
@@ -298,7 +314,8 @@ def _normalize_code(code: str) -> str:
     return f'{code}.SZ'
 
 
-def _collect_realtime_intraday(ts_codes: list) -> dict:
+def _collect_realtime_intraday(ts_codes: list, priority_codes: Optional[list] = None,
+                               tencent_batch_size: int = 400) -> dict:
     """
     批量拉取 ts_codes 列表的实时行情 + 五档
     返回: {ts_code: {
@@ -306,34 +323,42 @@ def _collect_realtime_intraday(ts_codes: list) -> dict:
         bid1..bid5, ask1..ask5, bid_vol1..bid_vol5, ask_vol1..ask_vol5,
         main_force_inflow, source
     }}
-    多源降级: 腾讯批量(主) → 东方财富 push2(单股,慢但含五档)
+    多源降级: 腾讯批量(主, 分 400 只一批) → 东方财富 push2(单股,慢但含五档,仅重点池)
     """
     out = {}
     if not ts_codes:
         return out
+    priority_set = set(priority_codes or [])
 
     # 1) 腾讯批量拉价格 + 涨跌幅 + 昨收(快,无封IP)
     try:
         from collectors.astock_collector import tencent_quote
         codes = [tc.split('.')[0] for tc in ts_codes]
-        batch = tencent_quote(codes)
-        for tc, raw in zip(ts_codes, [batch.get(c) for c in codes]):
-            if not raw:
+        for i in range(0, len(codes), tencent_batch_size):
+            batch_codes = codes[i:i + tencent_batch_size]
+            batch_tcs = ts_codes[i:i + tencent_batch_size]
+            try:
+                batch = tencent_quote(batch_codes)
+            except Exception as e:
+                logger.warning(f'[realtime_aggregator] tencent batch {i}-{i+len(batch_codes)} failed: {e}')
                 continue
-            out[tc] = {
-                'price': raw.get('price', 0),
-                'pct_chg': raw.get('change_pct', 0),
-                'last_close': raw.get('last_close', 0),
-                'volume': int(raw.get('amount_wan', 0) / max(raw.get('price', 1), 0.01) * 100) if raw.get('price') else 0,
-                'amount': float(raw.get('amount_wan', 0)) * 10000,  # 万 → 元
-                'turnover_rate': raw.get('turnover_pct', 0),
-                'source': 'tencent',
-            }
+            for tc, raw in zip(batch_tcs, [batch.get(c) for c in batch_codes]):
+                if not raw:
+                    continue
+                out[tc] = {
+                    'price': raw.get('price', 0),
+                    'pct_chg': raw.get('change_pct', 0),
+                    'last_close': raw.get('last_close', 0),
+                    'volume': int(raw.get('amount_wan', 0) / max(raw.get('price', 1), 0.01) * 100) if raw.get('price') else 0,
+                    'amount': float(raw.get('amount_wan', 0)) * 10000,  # 万 → 元
+                    'turnover_rate': raw.get('turnover_pct', 0),
+                    'source': 'tencent',
+                }
     except Exception as e:
         logger.warning(f'[realtime_aggregator] tencent batch failed: {e}')
 
-    # 2) 东方财富 push2 拉五档(慢,只补齐五档和资金流向)
-    for tc in ts_codes:
+    # 2) 东方财富 push2 拉五档 + 分钟资金流向(慢,仅对重点池,避免全市场 5500*2 次请求)
+    for tc in priority_set:
         if tc not in out:
             continue
         try:
@@ -363,13 +388,13 @@ def _collect_realtime_intraday(ts_codes: list) -> dict:
 # 收盘清理
 # ============================================================
 def cleanup_realtime_after_close():
-    """收盘 15:30 后清理当日盘口数据(tick 流水保留 20 天,盘口可清)"""
+    """收盘 15:30 后清理实时数据(tick/盘口/1分钟资金流向快照均保留 30 天)"""
     from db.connection import engine
     from sqlalchemy import text
-    cutoff = datetime.now().date() - timedelta(days=20)
-    today = datetime.now().date()
+    cutoff = datetime.now().date() - timedelta(days=30)
     with engine.connect() as conn:
-        conn.execute(text("DELETE FROM stock_realtime_orderbook WHERE trade_date = :td"), {"td": today})
+        conn.execute(text("DELETE FROM stock_realtime_orderbook WHERE trade_date < :cutoff"), {"cutoff": cutoff})
         conn.execute(text("DELETE FROM stock_realtime_tick WHERE trade_date < :cutoff"), {"cutoff": cutoff})
+        conn.execute(text("DELETE FROM realtime_stock_flow WHERE trade_date < :cutoff"), {"cutoff": cutoff})
         conn.commit()
-    logger.info(f'[realtime_aggregator] cleanup done (keep tick since {cutoff})')
+    logger.info(f'[realtime_aggregator] cleanup done (keep tick/orderbook/realtime_stock_flow since {cutoff}')

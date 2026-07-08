@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <meta http-equiv="Expires" content="0" />
+    <title>Hermes Market Review Cockpit</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;600;700;900&display=swap" rel="stylesheet">
+    <script>
+      (function(){try{var t=localStorage.getItem('hermes-theme');document.documentElement.setAttribute('data-theme',t==='light'?'light':'dark')}catch(e){}})();
+    </script>
+    <script>
+      // AIROBOT 集成：拦截 /api/ 请求，重写为 /_hermes/api/ 避免与 AIROBOT API 冲突
+      (function(){
+        var _fetch = window.fetch;
+        window.fetch = function(input, init) {
+          if (typeof input === 'string' && input.startsWith('/api/')) {
+            input = '/_hermes' + input;
+          }
+          return _fetch.call(this, input, init);
+        };
+        // 主题同步：监听 AIROBOT 父页面主题
+        try {
+          var at = localStorage.getItem('airobot-theme');
+          if (at) { localStorage.setItem('hermes-theme', at === 'dark' ? 'dark' : 'light'); }
+        } catch(e) {}
+        window.addEventListener('message', function(e) {
+          if (e.origin !== window.location.origin) return;
+          if (e.data && e.data.type === 'airobot-theme') {
+            var theme = e.data.theme === 'dark' ? 'dark' : 'light';
+            localStorage.setItem('hermes-theme', theme);
+            document.documentElement.setAttribute('data-theme', theme);
+          }
+        });
+        // 从 URL 参数读取主题
+        var params = new URLSearchParams(window.location.search);
+        var ut = params.get('theme');
+        if (ut === 'light' || ut === 'dark') {
+          localStorage.setItem('hermes-theme', ut);
+          document.documentElement.setAttribute('data-theme', ut);
+        }
+      })();
+    </script>
+    <script type="module" crossorigin src="/_hermes/assets/index-DaxJtxPp.js"></script>
+    <link rel="stylesheet" crossorigin href="/_hermes/assets/index-CZoHU5MF.css">
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>

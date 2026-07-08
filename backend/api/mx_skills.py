@@ -34,6 +34,7 @@ import mx_xuangu   # noqa: E402
 import mx_search   # noqa: E402
 import mx_data     # noqa: E402
 import mx_moni     # noqa: E402
+from api.stock_research import save_news_search, save_data_query  # noqa: E402
 from api.watchlist._shared import _get_http_client
 
 router = APIRouter()

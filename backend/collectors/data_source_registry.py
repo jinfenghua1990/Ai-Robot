@@ -199,6 +199,51 @@ DATA_SOURCES = {
         'protocol': 'HTTP',
         'note': 'JoinQuant jqdatasdk，高质量A股数据，日K/财务/指数成分股，免费额度',
     },
+
+    # === Vibe-Research 深度数据源（接入 AIROBOT，作为二级数据源）===
+    # 实时行情/资金/龙虎榜/概念板块优先走 AIROBOT 自有源；
+    # 财报/估值/研报/公告/新闻/互动易/解禁/大宗/股东户数/美港股/资讯雷达优先走 Vibe。
+    'vibe_astock': {
+        'display_name': 'Vibe-Research A股深度',
+        'rate_limited': False,
+        'indicators': [
+            'valuation', 'financials', 'finance', 'financial_report', 'reports', 'research_report',
+            'news', 'announcements', 'announcement', 'disclosure', 'margin', 'block_trade',
+            'holders', 'dividend', 'fund_flow', 'dragon_tiger', 'lockup', 'blocks',
+            'hot_concepts', 'investor_qa', 'industry', 'kline', 'info',
+        ],
+        'priority': 1,
+        'available': True,
+        'protocol': 'HTTP',
+        'note': 'Vibe-Research 东财接口聚合，财报/估值/研报/公告/新闻/筹码/资金面/解禁/板块',
+    },
+    'vibe_newsradar': {
+        'display_name': 'Vibe-Research 资讯雷达',
+        'rate_limited': False,
+        'indicators': ['news_radar', 'rss_feed'],
+        'priority': 1,
+        'available': True,
+        'protocol': 'HTTP',
+        'note': 'Vibe-Research 108 赛道 RSS 资讯雷达',
+    },
+    'vibe_market': {
+        'display_name': 'Vibe-Research 市场总览',
+        'rate_limited': False,
+        'indicators': ['market_overview', 'market_emotion', 'turnover_top', 'global_indices'],
+        'priority': 2,
+        'available': True,
+        'protocol': 'HTTP',
+        'note': 'Vibe-Research 市场总览/短线情绪/成交额榜/全球指数，作为 AIROBOT 补充',
+    },
+    'vibe_gstock': {
+        'display_name': 'Vibe-Research 美港股',
+        'rate_limited': False,
+        'indicators': ['global_stock', 'us_hk_quote'],
+        'priority': 1,
+        'available': True,
+        'protocol': 'HTTP',
+        'note': 'Vibe-Research 东财域内美港股聚合，作为 AIROBOT global_market 补充',
+    },
 }
 
 

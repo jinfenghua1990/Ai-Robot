@@ -14,6 +14,52 @@ const navItems = [
   { path: '/trading', label: '模拟盘', icon: '📈' },
   { path: '/focus', label: '重点关注', icon: '🎯' },
   { path: '/watchlist', label: '自选股', icon: '⭐' },
+  { section: 'Vibe-Research', items: [
+    { path: '/vibe/intel', label: '资讯雷达', icon: '📡' },
+    { path: '/vibe/daily-review', label: '每日复盘', icon: '📰' },
+    { path: '/vibe/sectors', label: '板块中心', icon: '🔲' },
+    { path: '/vibe/stock-data', label: '个股数据', icon: '🔍' },
+    { path: '/vibe/watchlist', label: '自选股', icon: '📋' },
+    { path: '/vibe/portfolio', label: '我的持仓', icon: '💼' },
+    { path: '/vibe/my-reports', label: '我的研报', icon: '📄' },
+    { path: '/vibe/notes', label: '研究记录', icon: '📝' },
+    { path: '/vibe/settings', label: '接入 AI', icon: '⚙️' },
+  ]},
+  { section: 'DSA 智能分析', items: [
+    { path: '/dsa', label: '智能分析', icon: '🤖' },
+    { path: '/dsa/chat', label: 'Agent 问股', icon: '💬' },
+    { path: '/dsa/decision-signals', label: '决策信号', icon: '🎯' },
+    { path: '/dsa/screening', label: '选股筛选', icon: '🔬' },
+    { path: '/dsa/backtest', label: '策略回测', icon: '📊' },
+    { path: '/dsa/portfolio', label: '持仓管理', icon: '💼' },
+    { path: '/dsa/alerts', label: '实时告警', icon: '🚨' },
+    { path: '/dsa/usage', label: 'Token 用量', icon: '🔢' },
+    { path: '/dsa/settings', label: 'DSA 设置', icon: '⚙️' },
+  ]},
+  { section: 'Hermes A股', items: [
+    { path: '/hermes/today', label: '盘中实时', icon: '⚡' },
+    { path: '/hermes/main-hub', label: '主控中心', icon: '🎛️' },
+    { path: '/hermes/theme-review', label: '题材复盘', icon: '🔥' },
+    { path: '/hermes/wave-analysis', label: '波浪分析', icon: '🌊' },
+    { path: '/hermes/stock-monitor', label: '选股持仓', icon: '🎯' },
+    { path: '/hermes/stock-analysis', label: '选股分析', icon: '🔍' },
+    { path: '/hermes/strategies', label: '策略信号', icon: '🤖' },
+    { path: '/hermes/screener', label: '智能选股', icon: '🔬' },
+    { path: '/hermes/mock-trading', label: '模拟交易', icon: '📈' },
+    { path: '/hermes/strategy-position', label: '波段信号', icon: '波段' },
+  ]},
+  { section: 'Hermes 港美股', items: [
+    { path: '/hermes/us-market', label: '美股总览', icon: '🇺🇸' },
+    { path: '/hermes/us-monitor', label: '美股监控', icon: '📡' },
+    { path: '/hermes/us-analysis', label: '美股分析', icon: '📊' },
+    { path: '/hermes/us-strategies', label: '美股策略', icon: '🎯' },
+    { path: '/hermes/us-trading', label: '美股交易', icon: '💹' },
+    { path: '/hermes/hk-market', label: '港股总览', icon: '🇭🇰' },
+    { path: '/hermes/hk-monitor', label: '港股监控', icon: '📡' },
+    { path: '/hermes/hk-analysis', label: '港股分析', icon: '📊' },
+    { path: '/hermes/hk-strategies', label: '港股策略', icon: '🎯' },
+    { path: '/hermes/hk-trading', label: '港股交易', icon: '💹' },
+  ]},
 ];
 
 export default function Layout() {
@@ -75,26 +121,58 @@ export default function Layout() {
           <h1 className="text-base font-bold" style={{ color: 'var(--accent-blue)' }}>AIROBOT</h1>
           <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>市场指挥舱</p>
         </div>
-        <div className="flex-1 px-1.5 py-2 space-y-0.5">
-          {navItems.map(item => (
-            <NavLink
-              key={item.path}
-              to={item.path}
-              onClick={() => setNavOpen(false)}
-              className={({ isActive }) =>
-                `flex items-center gap-2 rounded-md px-2.5 py-1.5 text-xs transition-all ${
-                  isActive ? 'font-medium' : ''
-                }`
-              }
-              style={({ isActive }) => ({
-                background: isActive ? 'var(--bg-hover)' : 'transparent',
-                color: isActive ? 'var(--accent-blue)' : 'var(--text-secondary)',
-              })}
-            >
-              <span className="text-sm">{item.icon}</span>
-              {item.label}
-            </NavLink>
-          ))}
+        <div className="flex-1 px-1.5 py-2 space-y-0.5 overflow-auto">
+          {navItems.map((item, idx) => {
+            if (item.section) {
+              return (
+                <div key={idx} className="mt-2 pt-2 border-t" style={{ borderColor: 'var(--border-color)' }}>
+                  <div className="px-2.5 py-1 text-[10px] font-medium uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>
+                    {item.section}
+                  </div>
+                  <div className="space-y-0.5">
+                    {item.items.map(sub => (
+                      <NavLink
+                        key={sub.path}
+                        to={sub.path}
+                        onClick={() => setNavOpen(false)}
+                        className={({ isActive }) =>
+                          `flex items-center gap-2 rounded-md px-2.5 py-1.5 text-xs transition-all ${
+                            isActive ? 'font-medium' : ''
+                          }`
+                        }
+                        style={({ isActive }) => ({
+                          background: isActive ? 'var(--bg-hover)' : 'transparent',
+                          color: isActive ? 'var(--accent-blue)' : 'var(--text-secondary)',
+                        })}
+                      >
+                        <span className="text-sm">{sub.icon}</span>
+                        {sub.label}
+                      </NavLink>
+                    ))}
+                  </div>
+                </div>
+              );
+            }
+            return (
+              <NavLink
+                key={item.path}
+                to={item.path}
+                onClick={() => setNavOpen(false)}
+                className={({ isActive }) =>
+                  `flex items-center gap-2 rounded-md px-2.5 py-1.5 text-xs transition-all ${
+                    isActive ? 'font-medium' : ''
+                  }`
+                }
+                style={({ isActive }) => ({
+                  background: isActive ? 'var(--bg-hover)' : 'transparent',
+                  color: isActive ? 'var(--accent-blue)' : 'var(--text-secondary)',
+                })}
+              >
+                <span className="text-sm">{item.icon}</span>
+                {item.label}
+              </NavLink>
+            );
+          })}
         </div>
       </nav>
 
@@ -114,16 +192,6 @@ export default function Layout() {
           style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
           <div className="text-xs hidden sm:block" style={{ color: 'var(--text-secondary)' }}>{currentDate}</div>
           <div className="flex items-center gap-1 ml-auto">
-            <a
-              href={`http://${window.location.hostname}:8788/`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="hidden sm:flex px-2 py-1 rounded-md text-xs border transition-colors items-center gap-1"
-              style={{ borderColor: 'var(--border-color)', color: 'var(--text-secondary)' }}
-              title={`Hermes控制台 (http://${window.location.hostname}:8788/)`}
-            >
-              🎛️
-            </a>
             <NavLink
               to="/quality"
               className={({ isActive }) =>

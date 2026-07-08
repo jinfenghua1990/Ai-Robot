@@ -38,6 +38,20 @@ JQDATA_ACCOUNT = os.getenv("JQDATA_ACCOUNT", "")
 JQDATA_PASSWORD = os.getenv("JQDATA_PASSWORD", "")
 
 # ============================================================
+# 盘后研究采集（填补 stock_news_search / stock_data_query / ai_analysis_cache 空白）
+# ============================================================
+# 可选：AI 综合分析 LLM。留空则不调用 LLM，用妙想搜索内容作基线分析（model='mx-search-baseline'）
+AI_LLM_API_KEY = os.getenv("AI_LLM_API_KEY", "")
+AI_LLM_BASE_URL = os.getenv("AI_LLM_BASE_URL", "https://api.openai.com/v1")
+AI_LLM_MODEL = os.getenv("AI_LLM_MODEL", "gpt-4o-mini")
+# 当日强势股纳入阈值（涨幅 %），默认 9（创业板 20% 涨停也覆盖）
+RESEARCH_LIMIT_UP_PCT = float(os.getenv("RESEARCH_LIMIT_UP_PCT", "9.0"))
+# 龙头生命周期纳入的活跃阶段
+RESEARCH_ACTIVE_STAGES = [s.strip() for s in os.getenv("RESEARCH_ACTIVE_STAGES", "加速,主升,启动").split(",") if s.strip()]
+# 研究采集节流（每只股票之间的间隔秒数，避免猛打妙想导致限流/连接挂死事件循环）
+RESEARCH_THROTTLE = float(os.getenv("RESEARCH_THROTTLE", "1.0"))
+
+# ============================================================
 # 缓存 TTL 统一配置（秒）
 # ============================================================
 CACHE_TTL_QUOTE = int(os.getenv("CACHE_TTL_QUOTE", "30"))

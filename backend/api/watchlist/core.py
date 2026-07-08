@@ -12,8 +12,10 @@
 import time
 import asyncio
 import logging
+import threading
 from datetime import datetime
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 from sqlalchemy import func
 
@@ -685,11 +687,17 @@ async def refresh_watchlist_cache():
         return
     _watchlist_refreshing = True
     try:
-        await build_watchlist()
+        await run_in_threadpool(_sync_build_watchlist)
     except Exception as e:
         logger.warning(f"background watchlist refresh failed: {e}")
     finally:
         _watchlist_refreshing = False
+
+
+def _sync_build_watchlist():
+    """在线程池中运行 build_watchlist，避免同步 DB 操作阻塞主 event loop"""
+    import asyncio
+    return asyncio.run(build_watchlist())
 
 
 # ==================== Core Endpoints ====================
@@ -727,7 +735,8 @@ async def get_watchlist():
         asyncio.create_task(refresh_watchlist_cache())
         return cached
 
-    return await build_watchlist()
+    # 首次加载：在线程池中执行，避免同步 DB/计算阻塞主 event loop
+    return await run_in_threadpool(_sync_build_watchlist)
 
 
 @router.post("/api/watchlist/add")

@@ -42,7 +42,7 @@ DEVIATION_THRESHOLD_PCT = {
     'pe_pb': 0.05,        # 估值指标 5%
     'default': 0.05,      # 默认 5%
 }
-DEVIATION_THRESHOLD_ABS = 100   # 100万绝对阈值（资金流向类）
+DEVIATION_THRESHOLD_ABS = 10    # 10万绝对阈值（资金流向类）；个股主力净流入常见在几十万到几千万，10万可识别小盘股异常源
 
 
 def get_threshold(metric_type: str = 'default') -> float:

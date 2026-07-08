@@ -189,7 +189,7 @@ class RealtimeMoneyFlowSnapshot(Base):
 
 
 class RealtimeStockFlow(Base):
-    """个股实时资金流向快照"""
+    """个股实时资金流向快照（盘中 1 分钟级，保留 30 天）"""
     __tablename__ = "realtime_stock_flow"
     id = Column(Integer, primary_key=True, autoincrement=True)
     snapshot_time = Column(DateTime, nullable=False, index=True)
@@ -214,6 +214,7 @@ class RealtimeStockFlow(Base):
     __table_args__ = (
         UniqueConstraint("snapshot_time", "ts_code", name="uq_realtime_stock_time"),
         Index("ix_realtime_stock_date_code", "trade_date", "ts_code"),
+        Index("ix_realtime_stock_date_time", "trade_date", "snapshot_time"),
     )
 
 
@@ -232,6 +233,21 @@ class DataQualityLog(Base):
     quality_score = Column(Numeric(5, 2))      # 质量评分 0-100
     action = Column(String(20))                # accept/correct/reject/review
     created_at = Column(DateTime, server_default=func.now())
+
+
+class DataCollectionAlert(Base):
+    """数据采集告警（实时采集失败、断层、数据量异常等）"""
+    __tablename__ = "data_collection_alert"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    level = Column(String(10), nullable=False, index=True)      # warning/error/critical
+    category = Column(String(50), nullable=False, index=True)   # collection_gap/quantity_anomaly/source_failure
+    message = Column(String(500), nullable=False)
+    details = Column(Text)                                      # JSON
+    trade_date = Column(Date, nullable=False, index=True)
+    created_at = Column(DateTime, server_default=func.now(), index=True)
+    __table_args__ = (
+        Index("ix_data_collection_alert_date_level", "trade_date", "level"),
+    )
 
 
 class ManualReviewQueue(Base):
@@ -471,9 +487,9 @@ class StockDailyKline(Base):
 
 
 class StockRealtimeTick(Base):
-    """盘中 tick 流水（每 3 秒一条,20 天 TTL）
+    """盘中 tick 流水（每 3 秒一条,30 天 TTL）
     数据流:iTick/mootdx 拉分时 + 五档 → 大单检测 → 实时聚合
-    覆盖完整中期波段(20 个交易日)的历史回溯
+    覆盖完整中期波段(30 个交易日)的历史回溯
     """
     __tablename__ = "stock_realtime_tick"
     id = Column(BigInteger, primary_key=True, autoincrement=True)
@@ -497,7 +513,7 @@ class StockRealtimeTick(Base):
 
 
 class StockRealtimeOrderbook(Base):
-    """盘口快照（每 3 秒一条,仅保留当日,收盘后清理）"""
+    """盘口快照（每 3 秒一条,保留 30 天,收盘后清理过期数据）"""
     __tablename__ = "stock_realtime_orderbook"
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     snapshot_time = Column(DateTime, nullable=False, index=True)

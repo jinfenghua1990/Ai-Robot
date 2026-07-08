@@ -285,9 +285,6 @@ def update_lifecycle(target_date: str) -> Dict:
             if day_diff < 1 or day_diff > 20:
                 skipped += 1
                 continue
-            if day_diff <= tracker.day_filled:
-                skipped += 1  # 已填过
-                continue
 
             day_key = f'd{day_diff}'
 
@@ -296,6 +293,11 @@ def update_lifecycle(target_date: str) -> Dict:
                 lifecycle = json.loads(tracker.lifecycle_data or '{}')
             except (ValueError, TypeError):
                 lifecycle = {}
+
+            # 以实际数据是否存在为准，防御 day_filled 与实际数据不一致（如 trigger_d1 时 day_filled=1 但 lifecycle_data 为空）
+            if day_key in lifecycle:
+                skipped += 1
+                continue
 
             # 算 D-1 的大佬净买(用于 capital_retention)
             d_prev = f'd{day_diff - 1}'

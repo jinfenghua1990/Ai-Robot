@@ -13,6 +13,7 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import logging
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from db.connection import get_db
 from db.session import get_db_session
 from db.models import RealtimeSectorFlow, RealtimeStockFlow, StockFlow
@@ -90,7 +91,10 @@ def collect_realtime_stock_flow(trade_date):
     - 腾讯财经：Top50价格验证（无额度限制）
     - 通达信：Top20价格验证（TCP协议，无额度限制）
     """
+    import time
+    start_time = time.time()
     snapshot_time = _now_truncated()
+    trade_date_obj = trade_date if isinstance(trade_date, date) else datetime.strptime(trade_date, '%Y-%m-%d').date()
     print(f'[realtime] Collecting stock flow snapshot at {snapshot_time}')
 
     # 东方财富全市场个股资金流向（主源，1次批量API）
@@ -98,6 +102,29 @@ def collect_realtime_stock_flow(trade_date):
     if not stock_flows:
         print('[realtime] No stock flow data')
         return 0
+
+    # 东方财富对停牌/退市/未成交股票可能返回 price=0，用腾讯批量接口补充价格
+    # 腾讯 URL 长度限制，每批约 300 只
+    zero_price_flows = [s for s in stock_flows if (s.get('price') or 0) <= 0]
+    if zero_price_flows:
+        from collectors.astock_collector import batch_realtime_quotes
+        batch_size = 300
+        filled = 0
+        for i in range(0, len(zero_price_flows), batch_size):
+            batch = zero_price_flows[i:i + batch_size]
+            ts_codes = [s['ts_code'] for s in batch]
+            try:
+                tencent_quotes = batch_realtime_quotes(ts_codes)
+                for s in batch:
+                    q = tencent_quotes.get(s['ts_code'])
+                    if q and (q.get('price') or 0) > 0:
+                        s['price'] = q['price']
+                        if (q.get('change_pct') or 0) != 0:
+                            s['price_chg'] = q['change_pct']
+                        filled += 1
+            except Exception as e:
+                print(f'[realtime] tencent price fallback batch {i//batch_size} error: {e}')
+        print(f'[realtime] Filled {filled}/{len(zero_price_flows)} zero prices from tencent')
 
     # 按主力净流入绝对值排序，取Top进行多源验证
     sorted_flows = sorted(stock_flows, key=lambda x: abs(x.get('main_force_inflow', 0) or 0), reverse=True)
@@ -148,28 +175,40 @@ def collect_realtime_stock_flow(trade_date):
     mootdx_prices        = price_results['mootdx']
     qstock_prices        = price_results['qstock']
 
-    # 3. 东财push2资金流向（Top20，无额度限制）
-    em_push2_flows = {}
-    for s in top20_for_flow:
+    # 3. 东财push2资金流向（Top20，无额度限制）——并发请求避免串行阻塞
+    def _fetch_em_push2(s):
         code = s['ts_code'].replace('.SH', '').replace('.SZ', '').replace('.BJ', '')
         try:
             r = eastmoney_fund_flow_daily(code)
-            if r:
-                em_push2_flows[s['ts_code']] = r
+            return s['ts_code'], r
         except Exception:
-            logger.debug('handled exception', exc_info=True)
+            return s['ts_code'], None
+
+    em_push2_flows = {}
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [executor.submit(_fetch_em_push2, s) for s in top20_for_flow]
+        for future in as_completed(futures):
+            ts_code, r = future.result()
+            if r:
+                em_push2_flows[ts_code] = r
     print(f'[realtime] EM push2 flows: {len(em_push2_flows)} stocks')
 
-    # 4. 新浪财经资金流向（Top20，无额度限制）
-    sina_flows = {}
-    for s in top20_for_flow:
+    # 4. 新浪财经资金流向（Top20，无额度限制）——并发请求避免串行阻塞
+    def _fetch_sina(s):
         code = s['ts_code'].replace('.SH', '').replace('.SZ', '').replace('.BJ', '')
         try:
             r = sina_stock_fund_flow(code)
-            if r:
-                sina_flows[s['ts_code']] = r
+            return s['ts_code'], r
         except Exception:
-            logger.debug('handled exception', exc_info=True)
+            return s['ts_code'], None
+
+    sina_flows = {}
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [executor.submit(_fetch_sina, s) for s in top20_for_flow]
+        for future in as_completed(futures):
+            ts_code, r = future.result()
+            if r:
+                sina_flows[ts_code] = r
     print(f'[realtime] Sina flows: {len(sina_flows)} stocks')
 
     # 5. 国信证券资金流向（Top10，有额度限制，减少使用）
@@ -235,7 +274,9 @@ def collect_realtime_stock_flow(trade_date):
                 if ts_code in ths_flows:
                     flow_sources['ths'] = {'value': ths_flows[ts_code].get('main_force_inflow')}
                 if ts_code in jqdata_flows:
-                    flow_sources['jqdata'] = {'value': jqdata_flows[ts_code].get('main_force_inflow')}
+                    # 聚宽 net_amount_main 单位为"元"，统一转为万元后再交叉验证
+                    jq_main = jqdata_flows[ts_code].get('main_force_inflow', 0)
+                    flow_sources['jqdata'] = {'value': jq_main / 10000 if jq_main else None}
 
                 flow_result = cross_validate(
                     ts_code=ts_code, name=name, indicator='main_force_inflow',
@@ -318,6 +359,28 @@ def collect_realtime_stock_flow(trade_date):
         except Exception as e:
             db.rollback()
             logger.exception(f'[realtime] Stock save error')
+            from services.alert_service import record_alert
+            record_alert(
+                level='error',
+                category='source_failure',
+                message=f'[{trade_date_obj}] 实时个股快照数据库写入失败: {str(e)[:120]}',
+                trade_date=trade_date_obj,
+            )
+            return 0
+
+    # 采集结果异常检测（数量/耗时）
+    try:
+        duration = time.time() - start_time
+        from services.alert_service import check_collection_result
+        check_collection_result(
+            trade_date=trade_date_obj,
+            saved_count=saved,
+            expected_count=5000,
+            duration_seconds=duration,
+        )
+    except Exception as e:
+        logger.error(f'[realtime] check_collection_result error: {e}', exc_info=True)
+
     return saved
 
 
