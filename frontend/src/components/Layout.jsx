@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { NavLink, Outlet } from 'react-router-dom';
+import { apiFetch } from '../utils/request';
 
 const navItems = [
   { path: '/panorama', label: '板块全景', icon: '🔥' },
@@ -19,6 +20,8 @@ export default function Layout() {
   const [theme, setTheme] = useState('light');
   const [currentDate, setCurrentDate] = useState('');
   const [navOpen, setNavOpen] = useState(false);
+  const [pushing, setPushing] = useState(false);
+  const [pushMsg, setPushMsg] = useState('');
 
   useEffect(() => {
     const saved = localStorage.getItem('airobot-theme') || 'light';
@@ -32,6 +35,24 @@ export default function Layout() {
     setTheme(next);
     localStorage.setItem('airobot-theme', next);
     document.documentElement.setAttribute('data-theme', next);
+  };
+
+  const handlePush = async () => {
+    setPushing(true);
+    setPushMsg('');
+    try {
+      const { ok, data, error } = await apiFetch('/api/git-push', { method: 'POST' });
+      if (ok && data) {
+        setPushMsg(data.had_changes ? '✅ 已上传' : '✅ 已同步');
+      } else {
+        setPushMsg('❌ ' + (error || '失败'));
+      }
+    } catch (e) {
+      setPushMsg('❌ 网络错误');
+    } finally {
+      setPushing(false);
+      setTimeout(() => setPushMsg(''), 3000);
+    }
   };
 
   return (
@@ -128,6 +149,20 @@ export default function Layout() {
             >
               📡
             </a>
+            <button
+              onClick={handlePush}
+              disabled={pushing}
+              className="px-2 py-1 rounded-md text-xs border transition-colors flex items-center gap-1"
+              style={{
+                borderColor: pushMsg.startsWith('✅') ? 'var(--accent-green, #22c55e)' : 'var(--border-color)',
+                color: pushMsg.startsWith('✅') ? 'var(--accent-green, #22c55e)' : 'var(--text-secondary)',
+                opacity: pushing ? 0.6 : 1,
+                cursor: pushing ? 'wait' : 'pointer',
+              }}
+              title="一键上传代码到 GitHub"
+            >
+              {pushing ? '⏳' : '📤'} {pushMsg || '上传'}
+            </button>
             <button
               onClick={toggleTheme}
               className="px-2 py-1 rounded-md text-xs border transition-colors"

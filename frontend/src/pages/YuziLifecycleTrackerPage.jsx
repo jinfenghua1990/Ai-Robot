@@ -393,7 +393,7 @@ export default function YuziLifecycleTrackerPage() {
 
         {/* 汇总卡 */}
         {data && (
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-2 mt-2">
+          <div className="grid grid-cols-2 md:grid-cols-6 gap-2 mt-2">
             <div className="rounded border p-2" style={{ borderColor: 'var(--border-color)' }}>
               <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>总跟踪数</div>
               <div className="text-base font-bold" style={{ color: 'var(--accent-blue)' }}>{data.count}</div>
@@ -413,6 +413,10 @@ export default function YuziLifecycleTrackerPage() {
             <div className="rounded border p-2" style={{ borderColor: 'var(--border-color)' }}>
               <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>平均 20d 收益</div>
               <div className="text-base font-bold" style={{ color: pctColor(data.avg_20d_return) }}>{fmtPct(data.avg_20d_return)}</div>
+            </div>
+            <div className="rounded border p-2" style={{ borderColor: 'var(--border-color)' }}>
+              <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>📦 已归档</div>
+              <div className="text-base font-bold" style={{ color: '#64748b' }}>{data.archived_count || 0}</div>
             </div>
           </div>
         )}
@@ -634,6 +638,86 @@ export default function YuziLifecycleTrackerPage() {
               })}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {/* ============ 历史归档区（大佬全离场 + 3天无新入场）============ */}
+      {data?.archived_rows && data.archived_rows.length > 0 && (
+        <div className="rounded-lg border" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
+          <button
+            onClick={() => setShowArchived(!showArchived)}
+            className="w-full flex items-center justify-between px-3 py-2 text-sm font-medium"
+            style={{ color: 'var(--text-secondary)' }}
+          >
+            <span>📦 历史归档（{data.archived_rows.length}只）— 大佬全离场且3天无新入场</span>
+            <span>{showArchived ? '▲ 收起' : '▼ 展开'}</span>
+          </button>
+          {showArchived && (
+            <div className="border-t overflow-x-auto" style={{ borderColor: 'var(--border-color)' }}>
+              <table className="w-full border-collapse" style={{ minWidth: 1600 }}>
+                <thead>
+                  <tr style={{ background: 'var(--bg-hover)' }}>
+                    <th className="px-2 py-2 text-left font-bold sticky left-0 z-10" style={{ background: 'var(--bg-hover)', color: 'var(--text-primary)' }}>股票</th>
+                    <th className="px-1 py-2 text-center font-bold" style={{ color: 'var(--text-primary)' }}>触发分</th>
+                    {Array.from({ length: 20 }, (_, i) => i + 1).map(d => (
+                      <th key={d} className="px-1 py-2 text-center font-bold text-[10px]" style={{ color: 'var(--text-primary)' }}>D{d}</th>
+                    ))}
+                    <th className="px-2 py-2 text-center font-bold" style={{ color: 'var(--text-primary)' }}>最终结局</th>
+                    <th className="px-2 py-2 text-center font-bold" style={{ color: 'var(--text-primary)' }}>20d 收益</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.archived_rows.map((r, i) => {
+                    const os = outcomeStyle(r.final_outcome);
+                    return (
+                      <tr
+                        key={r.id}
+                        className="border-t cursor-pointer hover:opacity-90"
+                        style={{ borderColor: 'var(--border-color)', background: i % 2 ? 'rgba(0,0,0,0.02)' : 'transparent', opacity: 0.7 }}
+                        onClick={() => setSelected(selected?.id === r.id ? null : r)}
+                      >
+                        <td className="px-2 py-2 sticky left-0 z-10" style={{ background: i % 2 ? 'rgba(0,0,0,0.02)' : 'var(--bg-card)' }}>
+                          <div className="flex items-center gap-1">
+                            <span className="font-bold" style={{ color: 'var(--text-primary)' }}>{r.stock_name}</span>
+                            <span className="px-1 py-0.5 rounded text-[9px] font-bold" style={{ background: 'rgba(100,116,139,0.15)', color: '#64748b', border: '1px solid rgba(100,116,139,0.3)' }} title={`最后离场 ${r.last_exit_date || ''}`}>📦已归档</span>
+                          </div>
+                          <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{r.ts_code} · 触发 {r.trigger_date}</div>
+                          <div className="text-[10px] mt-0.5 flex flex-wrap gap-0.5">
+                            {r.boss_list_d1.slice(0, 3).map(b => (
+                              <span key={b} className="px-1 rounded" style={{ background: 'rgba(239,68,68,0.1)', color: UP_COLOR }}>{b}</span>
+                            ))}
+                          </div>
+                        </td>
+                        <td className="px-1 py-2 text-center">
+                          <div className="font-bold text-base" style={{ color: '#6b7280' }}>{r.quant_score_d1?.toFixed(0)}</div>
+                        </td>
+                        {Array.from({ length: 20 }, (_, i) => i + 1).map(d => {
+                          const dd = r.lifecycle_data?.[`d${d}`];
+                          const dayDate = dd?.date || '';
+                          return (
+                            <td key={d} className="px-0.5 py-1 text-center">
+                              <div className="text-[9px] font-bold mb-0.5" style={{ color: dayDate ? 'var(--text-secondary)' : 'var(--text-muted)' }}>
+                                {dayDate ? dayDate.slice(4, 6) + '-' + dayDate.slice(6, 8) : ''}
+                              </div>
+                              <DayCell data={dd} dayNum={d} bossExits={r.boss_exits} />
+                            </td>
+                          );
+                        })}
+                        <td className="px-2 py-2 text-center">
+                          <div className="px-2 py-1 rounded font-bold text-xs inline-block" style={{ background: os.bg, color: os.color }}>
+                            {os.emoji} {os.label}
+                          </div>
+                        </td>
+                        <td className="px-2 py-2 text-center">
+                          <div className="font-bold text-base" style={{ color: pctColor(r.net_return_20d) }}>{fmtPct(r.net_return_20d)}</div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       )}
 

@@ -446,28 +446,24 @@ def collect_realtime_concept_sector_flow(trade_date):
                     calc_net = abs(calc_val['net_flow'])
                     if coverage >= 0.3 and sina_net > 0 and abs(sina_net - calc_net) / max(sina_net, calc_net, 1) < 0.5:
                         final_net = (sina_val['net_flow'] + calc_val['net_flow']) / 2
-                        final_inflow = (sina_val['money_inflow'] or 0 + calc_val['money_inflow']) / 2
-                        final_outflow = (sina_val['money_outflow'] or 0 + calc_val['money_outflow']) / 2
                         source = 'merged'
                         merged_count += 1
                     else:
                         final_net = sina_val['net_flow']
-                        final_inflow = sina_val['money_inflow']
-                        final_outflow = sina_val['money_outflow']
                         source = 'sina'
                     final_rise = sina_val.get('rise_ratio') or calc_val['rise_ratio']
                 elif sina_val:
                     final_net = sina_val['net_flow']
-                    final_inflow = sina_val['money_inflow']
-                    final_outflow = sina_val['money_outflow']
                     final_rise = sina_val['rise_ratio']
                     source = 'sina'
                 else:
                     final_net = calc_val['net_flow']
-                    final_inflow = calc_val['money_inflow']
-                    final_outflow = calc_val['money_outflow']
                     final_rise = calc_val['rise_ratio']
                     source = 'computed'
+
+                # 统一从 final_net 反推 inflow/outflow，保证 inflow-outflow=net_flow 恒等
+                final_inflow = max(float(final_net or 0), 0)
+                final_outflow = max(-float(final_net or 0), 0)
 
                 cid = concept_map.get(name)
                 if cid is None:

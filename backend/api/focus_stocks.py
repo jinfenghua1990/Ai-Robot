@@ -294,6 +294,10 @@ async def get_focus_stocks():
                 if not isinstance(r, Exception) and r is not None:
                     all_signals.append(r)
 
+        # 批量补充 moneyFlow/hitTags/actionHint（与自选股 build_watchlist 完全一致口径）
+        from services.signal_builder import _enrich_signals_with_watchlist_extras
+        await _enrich_signals_with_watchlist_extras(db, all_signals)
+
         # 按赛道分组
         signal_map = {s['secCode']: s for s in all_signals}
         sectors_result = []
@@ -368,6 +372,46 @@ async def add_focus_to_watchlist(req: AddFocusStockRequest):
             db.add(item)
             db.commit()
             return {'success': True, 'message': f'{req.stockName} 已添加到自选股'}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/api/focus-stocks/batch-add-to-watchlist")
+async def batch_add_to_watchlist(req: dict):
+    """批量将选中的重点关注股票添加到自选股"""
+    from db.session import get_db_session
+    from db.models import Watchlist
+
+    stock_codes = req.get("stock_codes", [])
+    if not stock_codes:
+        return {'success': True, 'added': 0, 'skipped': 0}
+
+    focus_map = {}
+    for sector_data in FOCUS_STOCKS:
+        for s in sector_data["stocks"]:
+            focus_map[s["code"]] = s["name"]
+
+    added = 0
+    skipped = 0
+    try:
+        with get_db_session() as db:
+            for code in stock_codes:
+                name = focus_map.get(code, '')
+                existing = db.query(Watchlist).filter_by(stock_code=code).first()
+                if existing:
+                    skipped += 1
+                    continue
+                item = Watchlist(
+                    stock_code=code,
+                    stock_name=name,
+                    note='重点关注',
+                    group_name='重点关注',
+                )
+                db.add(item)
+                added += 1
+            db.commit()
+            return {'success': True, 'added': added, 'skipped': skipped}
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))

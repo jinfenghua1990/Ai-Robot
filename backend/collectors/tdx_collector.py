@@ -448,6 +448,8 @@ def get_concept_sector_money_flow(trade_date):
     """
     获取概念板块资金流向数据（新浪财经 fenlei=1）
     返回格式与 get_sector_money_flow 一致
+    注意: 新浪 inamount/outamount/netamount 三字段口径不一致（in-out≠net），
+    统一以 netamount 为权威净额反推 inflow/outflow，保证 inflow-outflow=net_flow 恒等。
     """
     try:
         items = _sina_fetch_sectors(fenlei=1)  # 概念板块
@@ -457,14 +459,12 @@ def get_concept_sector_money_flow(trade_date):
             if not name:
                 continue
             net_flow = float(item.get('netamount', 0) or 0) / 10000  # 元→万元
-            in_amount = float(item.get('inamount', 0) or 0) / 10000
-            out_amount = float(item.get('outamount', 0) or 0) / 10000
             rise_ratio = float(item.get('avg_changeratio', 0) or 0) * 100
             results.append({
                 'sector': name,
                 'net_flow': net_flow,
-                'money_inflow': in_amount,
-                'money_outflow': out_amount,
+                'money_inflow': max(net_flow, 0),
+                'money_outflow': max(-net_flow, 0),
                 'rise_ratio': rise_ratio,
                 'avg_chg': rise_ratio,
             })
@@ -482,6 +482,8 @@ def get_sector_money_flow(trade_date):
     返回格式: [{'sector': '银行', 'money_inflow': 100000, 'money_outflow': 50000, 'net_flow': 50000, ...}, ...]
     """
     # === 1. 新浪财经（主数据源）===
+    # 注意: 新浪 inamount/outamount/netamount 三字段口径不一致（in-out≠net），
+    # 统一以 netamount 为权威净额反推 inflow/outflow，保证 inflow-outflow=net_flow 恒等。
     try:
         items = _sina_fetch_sectors(fenlei=0)  # 行业板块
         results = []
@@ -489,16 +491,14 @@ def get_sector_money_flow(trade_date):
             name = item.get('name', '')
             if not name:
                 continue
-            # netamount=主力净额(元), avg_changeratio=涨跌幅(小数), inamount=流入(元), outamount=流出(元)
+            # netamount=主力净额(元), avg_changeratio=涨跌幅(小数)
             net_flow = float(item.get('netamount', 0) or 0) / 10000  # 元→万元
-            in_amount = float(item.get('inamount', 0) or 0) / 10000
-            out_amount = float(item.get('outamount', 0) or 0) / 10000
             rise_ratio = float(item.get('avg_changeratio', 0) or 0) * 100  # 小数→百分比
             results.append({
                 'sector': name,
                 'net_flow': net_flow,
-                'money_inflow': in_amount,
-                'money_outflow': out_amount,
+                'money_inflow': max(net_flow, 0),
+                'money_outflow': max(-net_flow, 0),
                 'rise_ratio': rise_ratio,
                 'avg_chg': rise_ratio,  # 新浪avg_changeratio=板块平均涨幅，与rise_ratio同值
             })
@@ -510,6 +510,7 @@ def get_sector_money_flow(trade_date):
         logger.error(f'[sina] error: {e}, 尝试东方财富')
 
     # === 2. 东方财富（降级）===
+    # f62=主力净流入(元), 以其为权威净额反推 inflow/outflow 保证自洽
     try:
         items, total = _em_fetch_all('m:90 t:2')
         results = []
@@ -520,13 +521,12 @@ def get_sector_money_flow(trade_date):
             if any(suffix in name for suffix in ['Ⅱ', 'Ⅲ', 'Ⅳ', 'Ⅴ']):
                 continue
             net_flow = float(item.get('f62', 0) or 0) / 10000
-            elg_flow = float(item.get('f66', 0) or 0) / 10000
             rise_ratio = float(item.get('f3', 0) or 0) / 100
             results.append({
                 'sector': name,
                 'net_flow': net_flow,
-                'money_inflow': elg_flow if elg_flow > 0 else 0,
-                'money_outflow': -elg_flow if elg_flow < 0 else 0,
+                'money_inflow': max(net_flow, 0),
+                'money_outflow': max(-net_flow, 0),
                 'rise_ratio': rise_ratio,
             })
         logger.info(f'[em] Got {len(results)} sector flows from 东方财富 (total raw: {total})')

@@ -17,7 +17,7 @@ from contextlib import asynccontextmanager
 # 启用慢查询监听（>200ms 记录到 logger）
 import utils.slow_query_logger  # noqa: F401
 
-from api import heatmap, rotation, lifecycle, lifecycle_v2, lifecycle_v3, money_flow, screener, portfolio, baihu, trading, analysis, bs_signals, realtime, quality, watchlist, bs_screener, bs_backtest, leader_system, leader_history, mx_skills, sync_pkg, sina_sync, stock_research, focus_stocks, panorama, concept_sector, strategy_tags, auto_trading, mx_trading, trading_system, yuzi, yuzi_tracker, super_panel, money_flow_detail, index_flow, liangjia_report, strategy_resonance, global_market, market_stage
+from api import heatmap, rotation, lifecycle, lifecycle_v2, lifecycle_v3, money_flow, screener, portfolio, baihu, trading, analysis, bs_signals, realtime, quality, watchlist, bs_screener, bs_backtest, leader_system, leader_history, mx_skills, sync_pkg, sina_sync, stock_research, focus_stocks, panorama, concept_sector, strategy_tags, auto_trading, mx_trading, trading_system, yuzi, yuzi_tracker, super_panel, money_flow_detail, index_flow, liangjia_report, strategy_resonance, global_market, market_stage, git_push
 from api.rate_limit import RateLimitMiddleware
 from collectors.scheduler import start_scheduler, scheduler
 from db.connection import get_db
@@ -213,6 +213,15 @@ app.add_middleware(GZipMiddleware, minimum_size=512)
 # 限流中间件
 app.add_middleware(RateLimitMiddleware)
 
+# 静态资源缓存：/assets 是 Vite 内容哈希产物（文件名即版本，内容变更必换名），
+# 可安全长期缓存。index.html 走 serve_frontend 的 no-cache，不受影响。
+@app.middleware("http")
+async def cache_static_assets(request: Request, call_next):
+    response = await call_next(request)
+    if request.url.path.startswith("/assets/"):
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    return response
+
 # API路由
 app.include_router(heatmap.router)
 app.include_router(rotation.router)
@@ -253,6 +262,7 @@ app.include_router(liangjia_report.router)
 app.include_router(strategy_resonance.router)
 app.include_router(global_market.router)
 app.include_router(market_stage.router)
+app.include_router(git_push.router)
 
 
 @app.get("/api/health")

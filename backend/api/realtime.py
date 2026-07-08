@@ -75,18 +75,29 @@ def _query_latest_sectors(target_date):
             trade_date=target_date, snapshot_time=latest_time
         ).order_by(desc(RealtimeSectorFlow.net_flow)).all()
 
+        _list = []
+        for s in sectors:
+            _in = float(s.money_inflow or 0)
+            _out = float(s.money_outflow or 0)
+            _net = float(s.net_flow or 0)
+            # 资金流三字段自洽性修正：确保 net_flow = money_inflow - money_outflow
+            if abs((_in - _out) - _net) > 1.0 and abs(_out) < 1e-6:
+                _out = max(0.0, _in - _net)
+                if _in < _net:
+                    _in = _net + _out
+            _list.append({
+                "sector": s.sector,
+                "net_flow": _net,
+                "money_inflow": _in,
+                "money_outflow": _out,
+                "rise_ratio": float(s.rise_ratio or 0),
+                "source": s.source,
+            })
         return {
             "snapshot_time": latest_time.strftime('%Y-%m-%d %H:%M:%S'),
             "trade_date": target_date.isoformat(),
             "count": len(sectors),
-            "sectors": [{
-                "sector": s.sector,
-                "net_flow": float(s.net_flow or 0),
-                "money_inflow": float(s.money_inflow or 0),
-                "money_outflow": float(s.money_outflow or 0),
-                "rise_ratio": float(s.rise_ratio or 0),
-                "source": s.source,
-            } for s in sectors],
+            "sectors": _list,
         }
 
 
@@ -168,18 +179,28 @@ def _query_concept_sectors(target_date):
             trade_date=target_date, snapshot_time=latest_time
         ).order_by(desc(RealtimeConceptSectorFlow.net_flow)).all()
 
+        _list = []
+        for s in sectors:
+            _in = float(s.money_inflow or 0)
+            _out = float(s.money_outflow or 0)
+            _net = float(s.net_flow or 0)
+            if abs((_in - _out) - _net) > 1.0 and abs(_out) < 1e-6:
+                _out = max(0.0, _in - _net)
+                if _in < _net:
+                    _in = _net + _out
+            _list.append({
+                "sector": s.concept_name,
+                "net_flow": _net,
+                "money_inflow": _in,
+                "money_outflow": _out,
+                "rise_ratio": float(s.rise_ratio or 0),
+                "source": s.source,
+            })
         return {
             "snapshot_time": latest_time.strftime('%Y-%m-%d %H:%M:%S'),
             "trade_date": target_date.isoformat(),
             "count": len(sectors),
-            "sectors": [{
-                "sector": s.concept_name,
-                "net_flow": float(s.net_flow or 0),
-                "money_inflow": float(s.money_inflow or 0),
-                "money_outflow": float(s.money_outflow or 0),
-                "rise_ratio": float(s.rise_ratio or 0),
-                "source": s.source,
-            } for s in sectors],
+            "sectors": _list,
         }
 
 
