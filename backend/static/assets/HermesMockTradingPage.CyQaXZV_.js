@@ -1,0 +1,1 @@
+import{j as r}from"./index.BraBnPkH.js";import{H as t}from"./HermesEmbed.DqFdw5DQ.js";import"./react-vendor.BSdSoFln.js";function a(){return r.jsx(t,{path:"/mock-trading",title:"模拟交易"})}export{a as default};

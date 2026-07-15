@@ -171,7 +171,7 @@ def _build_baseline(code6, name, news_content, data_tables) -> dict:
             if rows:
                 sections.append({"title": "关键财务/数据", "content": "\n".join(rows)})
         except Exception:
-            pass
+            logger.debug("research: financial data section skip", exc_info=False)
     if not sections:
         return None
     return {

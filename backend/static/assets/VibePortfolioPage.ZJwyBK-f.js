@@ -1,0 +1,1 @@
+import{j as o}from"./index.BraBnPkH.js";import{V as t}from"./VibeEmbed.CTGylCM1.js";import"./react-vendor.BSdSoFln.js";function m(){return o.jsx(t,{path:"/portfolio",title:"Vibe 我的持仓"})}export{m as default};

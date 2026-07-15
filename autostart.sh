@@ -36,10 +36,27 @@ fi
 
 # === 3. 启动后端 uvicorn（前台运行，由 LaunchAgent KeepAlive 管理）===
 echo "[$(ts)] 启动后端 uvicorn (9000)..." >> "$LOG"
+
+# 端口预检：若 9000 仍被占用（上一轮未完全退出 / 孤儿进程），先回收，
+# 避免 KeepAlive 重启时因 address already in use 而启动失败
+PORT_PID=$(/usr/sbin/lsof -nP -iTCP:9000 -sTCP:LISTEN -t 2>/dev/null | head -1)
+if [ -n "${PORT_PID:-}" ]; then
+  echo "[$(ts)] 9000 仍被 PID $PORT_PID 占用，回收残留进程..." >> "$LOG"
+  kill "$PORT_PID" 2>/dev/null || true
+  for i in $(seq 1 10); do
+    /usr/sbin/lsof -nP -iTCP:9000 -sTCP:LISTEN -t >/dev/null 2>&1 || break
+    sleep 1
+  done
+  /usr/sbin/lsof -nP -iTCP:9000 -sTCP:LISTEN -t >/dev/null 2>&1 \
+    && echo "[$(ts)] ⚠️ 9000 仍被占用，uvicorn 可能启动失败" >> "$LOG" \
+    || echo "[$(ts)] 9000 已释放" >> "$LOG"
+fi
+
 cd /Users/gino/Projects/AIROBOT/backend
-exec /usr/bin/python3 -m uvicorn main:app \
+# 日志轮转：单文件 10MB，保留 7 个备份（-l 本地时间，-f 启动时立即打开）
+/usr/bin/python3 -m uvicorn main:app \
   --host 0.0.0.0 \
   --port 9000 \
   --limit-concurrency 200 \
   --timeout-keep-alive 15 \
-  --no-access-log
+  --no-access-log 2>&1 | /usr/sbin/rotatelogs -l -f -n 7 /tmp/airobot_backend.log 10M

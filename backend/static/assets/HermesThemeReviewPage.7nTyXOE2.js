@@ -1,0 +1,1 @@
+import{j as e}from"./index.BraBnPkH.js";import{H as t}from"./HermesEmbed.DqFdw5DQ.js";import"./react-vendor.BSdSoFln.js";function o(){return e.jsx(t,{path:"/theme-review",title:"题材复盘"})}export{o as default};

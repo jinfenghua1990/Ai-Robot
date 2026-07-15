@@ -1,0 +1,1 @@
+import{j as t}from"./index.CsuYT-kk.js";import{H as e}from"./HermesEmbed.FQlHVKXP.js";import"./react-vendor.BSdSoFln.js";function i(){return t.jsx(e,{path:"/main-hub",title:"主控中心"})}export{i as default};

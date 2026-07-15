@@ -187,7 +187,7 @@ export default function StageBar({
       {showLabels && (
         <div className="flex gap-px">
           {order.map((s, i) => (
-            <div key={s} className="flex-1 text-center text-[8px] leading-tight" style={{
+            <div key={s} className="flex-1 text-center text-[10px] leading-tight" style={{
               color: i === currentIdx ? colors[s] : 'var(--text-muted)',
               fontWeight: i === currentIdx ? 700 : 400,
             }}>

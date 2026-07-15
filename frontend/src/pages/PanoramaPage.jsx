@@ -172,15 +172,13 @@ export default function PanoramaPage() {
       <MarketStageBar date={selectedDate} />
 
       {/* 通栏 1：资金流向分析 · 全通栏 */}
-      <div className="rounded-xl border p-3" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
-        <AfterCapitalSection
+      <AfterCapitalSection
           selectedDate={selectedDate} setSelectedDate={setSelectedDate} changeDate={changeDate}
           lookbackDays={lookbackDays} setLookbackDays={setLookbackDays}
           selectedSector={selectedSector} onSelectSector={handleSelectSector}
           showSankey={false}
           showFlowLine={false}
         />
-      </div>
 
       {/* 通栏 2：板块资金轮动 · 盘后 vs 实时 排名 */}
       <ModuleGroup
@@ -188,20 +186,6 @@ export default function PanoramaPage() {
         badge={selectedDate ? `${selectedDate.slice(5).replace('-', '月')}日 盘后 vs 实时` : ''}
         contentHeight="480px"
       >
-        <ModuleGroup.Header
-          left={
-            <div className="flex items-center gap-2">
-              <span className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>盘后板块轮动</span>
-              <span className="px-1.5 py-0.5 rounded text-[10px]" style={{ background: 'rgba(234,179,8,0.1)', color: '#eab308' }}>盘后数据</span>
-            </div>
-          }
-          right={
-            <div className="flex items-center gap-2">
-              <span className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>实时资金流向</span>
-              <span className="px-1.5 py-0.5 rounded text-[10px]" style={{ background: 'rgba(34,197,94,0.1)', color: '#22c55e' }}>盘中数据</span>
-            </div>
-          }
-        />
         <ModuleGroup.Content
           left={
             <PostMarketSankeySection
@@ -231,20 +215,6 @@ export default function PanoramaPage() {
           />
         }
       >
-        <ModuleGroup.Header
-          left={
-            <div className="flex items-center gap-2">
-              <span className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>盘后概念板块趋势</span>
-              <span className="px-1.5 py-0.5 rounded text-[10px]" style={{ background: 'rgba(234,179,8,0.1)', color: '#eab308' }}>盘后数据</span>
-            </div>
-          }
-          right={
-            <div className="flex items-center gap-2">
-              <span className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>实时概念板块走势</span>
-              <span className="px-1.5 py-0.5 rounded text-[10px]" style={{ background: 'rgba(34,197,94,0.1)', color: '#22c55e' }}>盘中数据</span>
-            </div>
-          }
-        />
         <ModuleGroup.SubHeader
           left={
             <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
@@ -282,20 +252,6 @@ export default function PanoramaPage() {
         badge={selectedDate ? `${selectedDate.slice(5).replace('-', '月')}日 盘后 vs 实时` : ''}
         extra={heatExtra}
       >
-        <ModuleGroup.Header
-          left={
-            <div className="flex items-center gap-2">
-              <span className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>主线热力图</span>
-              <span className="px-1.5 py-0.5 rounded text-[10px]" style={{ background: 'rgba(234,179,8,0.1)', color: '#eab308' }}>盘后数据</span>
-            </div>
-          }
-          right={
-            <div className="flex items-center gap-2">
-              <span className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>实时板块热度</span>
-              <span className="px-1.5 py-0.5 rounded text-[10px]" style={{ background: 'rgba(34,197,94,0.1)', color: '#22c55e' }}>盘中数据</span>
-            </div>
-          }
-        />
         <ModuleGroup.SubHeader
           left={
             <div className="flex flex-col gap-1.5">
@@ -364,20 +320,6 @@ export default function PanoramaPage() {
         title="板块动向"
         badge={selectedDate ? `${selectedDate.slice(5).replace('-', '月')}日 盘后 vs 实时` : ''}
       >
-        <ModuleGroup.Header
-          left={
-            <div className="flex items-center gap-2">
-              <span className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>盘后板块动向</span>
-              <span className="px-1.5 py-0.5 rounded text-[10px]" style={{ background: 'rgba(234,179,8,0.1)', color: '#eab308' }}>盘后数据</span>
-            </div>
-          }
-          right={
-            <div className="flex items-center gap-2">
-              <span className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>实时板块动向</span>
-              <span className="px-1.5 py-0.5 rounded text-[10px]" style={{ background: 'rgba(34,197,94,0.1)', color: '#22c55e' }}>盘中数据</span>
-            </div>
-          }
-        />
         <ModuleGroup.SubHeader
           right={
             <div className="flex items-center justify-end gap-2 text-[10px]" style={{ color: 'var(--text-muted)' }}>

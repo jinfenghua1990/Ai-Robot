@@ -121,130 +121,74 @@ def analyze_position(pos: dict, sector_trend: dict, config: dict, total_assets: 
     """
     多维度评分系统：每个维度独立计分，最终信号由总分决定
     正分 = 看多因素，负分 = 看空因素
-    """
-    score = 0
-    reasons = []
-    positive_factors = []   # 看多因素
-    negative_factors = []   # 看空因素
 
+    12 个评分维度统一为规则表（_RULES），新增/调整只需修改规则表，无需改主逻辑。
+    """
     profit_pct = pos.get("profitPct", 0)
     pos_pct = pos.get("posPct", 0)
     day_profit = pos.get("dayProfit", 0)
     day_profit_pct = pos.get("dayProfitPct", 0)
-
     sector_ok = sector_trend.get("available", False)
+    sector_name = sector_trend.get("sector", "未知")
 
-    # ========== 看空维度（负分）==========
+    # ========== 规则表：12 个评分维度（看空 7 + 看多 5）==========
+    # 每条规则 (condition, factor_name, weight, detail_fmt)：
+    #   - condition: 命中条件（lambda 闭包）
+    #   - factor_name: 因素中文名
+    #   - weight: 权重（正=看多，负=看空）
+    #   - detail_fmt: 详情格式化函数 (接收 self 绑定的 pos/st_dict/config) -> str
+    _RULES = [
+        # 看空维度
+        (lambda: profit_pct <= config["stop_loss_pct"],
+         "止损亏损", -3,
+         lambda: f"亏损 {profit_pct:.1f}% 超过止损线 {config['stop_loss_pct']}%"),
+        (lambda: sector_ok and sector_trend.get("decline_days", 0) >= config["sector_decline_days"],
+         "板块下行", -2,
+         lambda: f"板块「{sector_name}」热度连续 {sector_trend['decline_days']} 天下滑（当前 {sector_trend['latest_heat']}）"),
+        (lambda: sector_ok and sector_trend.get("latest_heat", 100) < config["sector_heat_threshold"],
+         "板块低温", -1,
+         lambda: f"板块「{sector_name}」热度 {sector_trend['latest_heat']} 低于预警线 {config['sector_heat_threshold']}"),
+        (lambda: profit_pct >= config["take_profit_pct"],
+         "止盈区间", -1,
+         lambda: f"盈利 {profit_pct:.1f}% 达到止盈线 {config['take_profit_pct']}%，可减仓锁定利润"),
+        (lambda: pos_pct > config["max_position_pct"],
+         "仓位过重", -1,
+         lambda: f"仓位 {pos_pct:.1f}% 超过上限 {config['max_position_pct']}%"),
+        (lambda: sector_ok and sector_trend.get("flow_direction") == "outflow",
+         "资金流出", -1,
+         lambda: f"板块「{sector_name}」资金净流出 {abs(sector_trend.get('total_net_flow', 0)):.0f} 万"),
+        (lambda: day_profit_pct <= -3,
+         "当日大跌", -1,
+         lambda: f"当日跌幅 {day_profit_pct:.1f}%，短期承压"),
 
-    # 维度1：止损亏损（-3分，但不直接清仓）
-    if profit_pct <= config["stop_loss_pct"]:
-        score -= 3
-        negative_factors.append({
-            "factor": "止损亏损",
-            "detail": f"亏损 {profit_pct:.1f}% 超过止损线 {config['stop_loss_pct']}%",
-            "weight": -3,
-        })
+        # 看多维度
+        (lambda: sector_ok and sector_trend.get("heat_trend") == "up",
+         "板块上升", 2,
+         lambda: f"板块「{sector_name}」热度上升（当前 {sector_trend['latest_heat']}，均值 {sector_trend['avg_heat']}）"),
+        (lambda: sector_ok and sector_trend.get("flow_direction") == "inflow",
+         "资金流入", 1,
+         lambda: f"板块「{sector_name}」资金净流入 {sector_trend.get('total_net_flow', 0):.0f} 万"),
+        (lambda: profit_pct >= config["add_position_pct"] and profit_pct < config["take_profit_pct"],
+         "盈利良好", 1,
+         lambda: f"盈利 {profit_pct:.1f}%，处于健康区间"),
+        (lambda: sector_ok and sector_trend.get("latest_avg_chg", 0) > 0,
+         "板块涨势", 1,
+         lambda: f"板块当日平均涨幅 +{sector_trend['latest_avg_chg']:.2f}%"),
+        (lambda: pos_pct < config["max_position_pct"] * 0.5,
+         "仓位较低", 1,
+         lambda: f"仓位 {pos_pct:.1f}% 远低于上限 {config['max_position_pct']}%，有加仓空间"),
+    ]
 
-    # 维度2：板块连续下行（-2分）
-    if sector_ok and sector_trend.get("decline_days", 0) >= config["sector_decline_days"]:
-        score -= 2
-        negative_factors.append({
-            "factor": "板块下行",
-            "detail": f"板块「{sector_trend['sector']}」热度连续 {sector_trend['decline_days']} 天下滑（当前 {sector_trend['latest_heat']}）",
-            "weight": -2,
-        })
-
-    # 维度3：板块热度低温（-1分）
-    if sector_ok and sector_trend.get("latest_heat", 100) < config["sector_heat_threshold"]:
-        score -= 1
-        negative_factors.append({
-            "factor": "板块低温",
-            "detail": f"板块「{sector_trend['sector']}」热度 {sector_trend['latest_heat']} 低于预警线 {config['sector_heat_threshold']}",
-            "weight": -1,
-        })
-
-    # 维度4：止盈减仓（-1分，锁定利润而非清仓）
-    if profit_pct >= config["take_profit_pct"]:
-        score -= 1
-        negative_factors.append({
-            "factor": "止盈区间",
-            "detail": f"盈利 {profit_pct:.1f}% 达到止盈线 {config['take_profit_pct']}%，可减仓锁定利润",
-            "weight": -1,
-        })
-
-    # 维度5：仓位过重（-1分）
-    if pos_pct > config["max_position_pct"]:
-        score -= 1
-        negative_factors.append({
-            "factor": "仓位过重",
-            "detail": f"仓位 {pos_pct:.1f}% 超过上限 {config['max_position_pct']}%",
-            "weight": -1,
-        })
-
-    # 维度6：资金净流出（-1分）
-    if sector_ok and sector_trend.get("flow_direction") == "outflow":
-        score -= 1
-        negative_factors.append({
-            "factor": "资金流出",
-            "detail": f"板块「{sector_trend['sector']}」资金净流出 {abs(sector_trend.get('total_net_flow', 0)):.0f} 万",
-            "weight": -1,
-        })
-
-    # 维度7：当日大跌（-1分，短期风险信号）
-    if day_profit_pct <= -3:
-        score -= 1
-        negative_factors.append({
-            "factor": "当日大跌",
-            "detail": f"当日跌幅 {day_profit_pct:.1f}%，短期承压",
-            "weight": -1,
-        })
-
-    # ========== 看多维度（正分）==========
-
-    # 维度8：板块热度上升（+2分）
-    if sector_ok and sector_trend.get("heat_trend") == "up":
-        score += 2
-        positive_factors.append({
-            "factor": "板块上升",
-            "detail": f"板块「{sector_trend['sector']}」热度上升（当前 {sector_trend['latest_heat']}，均值 {sector_trend['avg_heat']}）",
-            "weight": 2,
-        })
-
-    # 维度9：板块资金净流入（+1分）
-    if sector_ok and sector_trend.get("flow_direction") == "inflow":
-        score += 1
-        positive_factors.append({
-            "factor": "资金流入",
-            "detail": f"板块「{sector_trend['sector']}」资金净流入 {sector_trend.get('total_net_flow', 0):.0f} 万",
-            "weight": 1,
-        })
-
-    # 维度10：盈利状态良好（+1分）
-    if profit_pct >= config["add_position_pct"] and profit_pct < config["take_profit_pct"]:
-        score += 1
-        positive_factors.append({
-            "factor": "盈利良好",
-            "detail": f"盈利 {profit_pct:.1f}%，处于健康区间",
-            "weight": 1,
-        })
-
-    # 维度11：板块涨势（+1分）
-    if sector_ok and sector_trend.get("latest_avg_chg", 0) > 0:
-        score += 1
-        positive_factors.append({
-            "factor": "板块涨势",
-            "detail": f"板块当日平均涨幅 +{sector_trend['latest_avg_chg']:.2f}%",
-            "weight": 1,
-        })
-
-    # 维度12：仓位较低有空间（+1分）
-    if pos_pct < config["max_position_pct"] * 0.5:
-        score += 1
-        positive_factors.append({
-            "factor": "仓位较低",
-            "detail": f"仓位 {pos_pct:.1f}% 远低于上限 {config['max_position_pct']}%，有加仓空间",
-            "weight": 1,
-        })
+    # ========== 规则评估：单循环计算 score + 分类 factors ==========
+    score = 0
+    positive_factors: list = []
+    negative_factors: list = []
+    for cond, factor, weight, detail_fn in _RULES:
+        if not cond():
+            continue
+        score += weight
+        factor_obj = {"factor": factor, "detail": detail_fn(), "weight": weight}
+        (negative_factors if weight < 0 else positive_factors).append(factor_obj)
 
     # ========== 信号判定 ==========
     if score <= SCORE_STRONG_SELL:
@@ -265,6 +209,7 @@ def analyze_position(pos: dict, sector_trend: dict, config: dict, total_assets: 
         risk_level = "low"
 
     # ========== 生成理由 ==========
+    reasons = []
     # 看空因素
     for f in negative_factors:
         reasons.append(f"[-{abs(f['weight'])}] {f['factor']}：{f['detail']}")

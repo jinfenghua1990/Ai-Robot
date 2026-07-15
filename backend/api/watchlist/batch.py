@@ -32,6 +32,9 @@ class BatchMoveRequest(BaseModel):
 async def batch_delete(req: BatchDeleteRequest):
     if not req.stock_codes:
         return {'success': True, 'deleted': 0}
+    from .watchlist_local import remove_stock
+    for code in req.stock_codes:
+        remove_stock(code)
     with get_db_session() as db:
         deleted = db.query(Watchlist).filter(Watchlist.stock_code.in_(req.stock_codes)).delete(synchronize_session=False)
         db.commit()
@@ -44,6 +47,9 @@ async def batch_move_group(req: BatchMoveRequest):
     if not req.stock_codes:
         return {'success': True, 'moved': 0}
     target = (req.target_group or '').strip() or '默认'
+    from .watchlist_local import update_stock
+    for code in req.stock_codes:
+        update_stock(code, group=target)
     with get_db_session() as db:
         moved = db.query(Watchlist).filter(Watchlist.stock_code.in_(req.stock_codes)).update({'group_name': target}, synchronize_session=False)
         db.commit()

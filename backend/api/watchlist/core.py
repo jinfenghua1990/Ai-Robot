@@ -17,7 +17,7 @@ from datetime import datetime
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
-from sqlalchemy import func
+from sqlalchemy import func, text
 
 from db.connection import get_db
 from db.session import get_db_session
@@ -36,11 +36,16 @@ from ._shared import (
 def _batch_moneyflow_map(db, stock_codes: list) -> dict:
     """批量查所有自选股的最新一日 4 档资金流 + 1/2/3/4/5 日累计 + 连续天数
 
-    用 2 次批量 IN 查询避免 N+1, 替代每卡片单独请求 stock-flow-detail。
+    用 3 个独立查询并行执行（ThreadPoolExecutor），将首次耗时 6-9s 降到 2-3s。
+    每个线程使用独立 Session（SQLAlchemy Session 非线程安全）。
     返回 {ts_code: {main_net(万), super_large(万), large(万), small(万), tiny(万),
                     inflow_1d/2d/3d/4d/5d(元), flow_continuity, available}}
     """
     from db.models import StockMoneyFlowDetail, StockFeaturesDaily
+    from db.connection import SessionLocal
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from sqlalchemy import func as sa_func
+
     if not stock_codes:
         return {}
     valid_codes = [c for c in stock_codes if c and len(c) == 6]
@@ -48,21 +53,94 @@ def _batch_moneyflow_map(db, stock_codes: list) -> dict:
         return {}
     ts_codes = [f"{c}.SH" if c[0] in ('6', '9') else f"{c}.SZ" for c in valid_codes]
 
-    # 第 1 次查询: StockMoneyFlowDetail 最新一日的 4 档(特大/大/小/散)
-    latest = db.query(StockMoneyFlowDetail.trade_date)\
-        .order_by(StockMoneyFlowDetail.trade_date.desc()).first()
     out = {ts: {'available': False, 'main_net': 0, 'super_large': 0, 'large': 0,
                 'small': 0, 'tiny': 0, 'turnover_rate': 0,
+                'main_buy': 0, 'main_sell': 0, 'retail_buy': 0, 'retail_sell': 0,
+                'super_large_pct': 0, 'large_pct': 0, 'small_pct': 0, 'tiny_pct': 0,
                 'inflow_1d': 0, 'inflow_2d': 0, 'inflow_3d': 0, 'inflow_4d': 0, 'inflow_5d': 0,
+                'inflow_6d': 0, 'inflow_7d': 0, 'inflow_8d': 0, 'inflow_9d': 0, 'inflow_10d': 0,
                 'flow_continuity': 0}
            for ts in ts_codes}
-    if latest:
-        td = latest[0]
-        rows = db.query(StockMoneyFlowDetail).filter(
-            StockMoneyFlowDetail.trade_date == td,
-            StockMoneyFlowDetail.ts_code.in_(ts_codes),
-        ).all()
-        for r in rows:
+
+    # === Q1: 取最新交易日期（必须先获取，Q2 依赖）===
+    latest = db.query(StockMoneyFlowDetail.trade_date)\
+        .order_by(StockMoneyFlowDetail.trade_date.desc()).first()
+    td = latest[0] if latest else None
+
+    def _q2_latest_details():
+        """Q2: 最新一日 StockMoneyFlowDetail 的 4 档资金流"""
+        if not td:
+            return []
+        thread_db = SessionLocal()
+        try:
+            return thread_db.query(StockMoneyFlowDetail).filter(
+                StockMoneyFlowDetail.trade_date == td,
+                StockMoneyFlowDetail.ts_code.in_(ts_codes),
+            ).all()
+        except Exception as e:
+            logger.warning(f'[moneyflow] Q2 latest details failed: {e}')
+            return []
+        finally:
+            thread_db.close()
+
+    def _q3_features_daily():
+        """Q3: StockFeaturesDaily 最新一日的 1/3/5 日累计 + 连续天数"""
+        thread_db = SessionLocal()
+        try:
+            latest_sub = thread_db.query(
+                StockFeaturesDaily.stock_code,
+                sa_func.max(StockFeaturesDaily.trade_date).label('max_date')
+            ).filter(
+                StockFeaturesDaily.stock_code.in_(valid_codes)
+            ).group_by(StockFeaturesDaily.stock_code).subquery()
+
+            return thread_db.query(StockFeaturesDaily).join(
+                latest_sub,
+                (StockFeaturesDaily.stock_code == latest_sub.c.stock_code) &
+                (StockFeaturesDaily.trade_date == latest_sub.c.max_date)
+            ).all()
+        except Exception as e:
+            logger.warning(f'[moneyflow] Q3 features daily failed: {e}')
+            return []
+        finally:
+            thread_db.close()
+
+    def _q4_history_10d():
+        """Q4: 最近 10 个交易日的 main_net 用于累计 1d..10d"""
+        thread_db = SessionLocal()
+        try:
+            recent_dates = thread_db.query(StockMoneyFlowDetail.trade_date)\
+                .distinct().order_by(StockMoneyFlowDetail.trade_date.desc()).limit(10).all()
+            if not recent_dates:
+                return [], []
+            date_objs = [d[0] for d in recent_dates]
+            rows = thread_db.query(
+                StockMoneyFlowDetail.ts_code, StockMoneyFlowDetail.trade_date,
+                StockMoneyFlowDetail.main_net
+            ).filter(
+                StockMoneyFlowDetail.trade_date.in_(date_objs),
+                StockMoneyFlowDetail.ts_code.in_(ts_codes),
+            ).all()
+            return rows, date_objs
+        except Exception as e:
+            logger.warning(f'[moneyflow] Q4 10d history failed: {e}')
+            return [], []
+        finally:
+            thread_db.close()
+
+    # === 并行执行 3 个独立查询 ===
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        f_details = executor.submit(_q2_latest_details)
+        f_features = executor.submit(_q3_features_daily)
+        f_history = executor.submit(_q4_history_10d)
+
+        details_rows = f_details.result()
+        feat_rows = f_features.result()
+        hist_rows, _ = f_history.result()
+
+    # === 合并 Q2: 最新一日 4 档资金流 ===
+    if td:
+        for r in details_rows:
             def y2w(v):
                 return round(float(v or 0) / 10000, 2)
             out[r.ts_code].update({
@@ -75,24 +153,16 @@ def _batch_moneyflow_map(db, stock_codes: list) -> dict:
                 'tiny': y2w(r.tiny_net),
                 'main_buy': y2w(r.main_buy),
                 'main_sell': y2w(r.main_sell),
+                'retail_buy': y2w(r.retail_buy),
+                'retail_sell': y2w(r.retail_sell),
+                'super_large_pct': float(r.super_large_pct or 0),
+                'large_pct': float(r.large_pct or 0),
+                'small_pct': float(r.small_pct or 0),
+                'tiny_pct': float(r.tiny_pct or 0),
                 'turnover_rate': float(r.turnover_rate or 0),
             })
 
-    # 第 2 次查询: StockFeaturesDaily 取最新一日的 1/3/5 日累计 + 连续天数
-    # 用子查询取每个 stock_code 的最大 trade_date,再 join 回原表
-    from sqlalchemy import func as sa_func
-    latest_sub = db.query(
-        StockFeaturesDaily.stock_code,
-        sa_func.max(StockFeaturesDaily.trade_date).label('max_date')
-    ).filter(
-        StockFeaturesDaily.stock_code.in_(valid_codes)
-    ).group_by(StockFeaturesDaily.stock_code).subquery()
-
-    feat_rows = db.query(StockFeaturesDaily).join(
-        latest_sub,
-        (StockFeaturesDaily.stock_code == latest_sub.c.stock_code) &
-        (StockFeaturesDaily.trade_date == latest_sub.c.max_date)
-    ).all()
+    # === 合并 Q3: features daily 1/3/5 日累计 ===
     for r in feat_rows:
         ts = f"{r.stock_code}.SH" if r.stock_code[0] in ('6', '9') else f"{r.stock_code}.SZ"
         if ts in out:
@@ -103,33 +173,24 @@ def _batch_moneyflow_map(db, stock_codes: list) -> dict:
                 'flow_continuity': int(r.flow_continuity or 0),
             })
 
-    # 第 3 次查询: 取最近 5 个交易日(含最新日)的 main_net, 按日累计得 2d/4d
-    # 用一次批量 IN 查询 + 内存聚合, 避免 N+1
-    try:
-        recent_dates = db.query(StockMoneyFlowDetail.trade_date)\
-            .distinct().order_by(StockMoneyFlowDetail.trade_date.desc()).limit(5).all()
-        if recent_dates:
-            date_objs = [d[0] for d in recent_dates]
-            hist_rows = db.query(StockMoneyFlowDetail.ts_code, StockMoneyFlowDetail.trade_date,
-                                 StockMoneyFlowDetail.main_net).filter(
-                StockMoneyFlowDetail.trade_date.in_(date_objs),
-                StockMoneyFlowDetail.ts_code.in_(ts_codes),
-            ).all()
-            from collections import defaultdict
-            hist_by_ts = defaultdict(list)
-            for r in hist_rows:
-                hist_by_ts[r.ts_code].append((r.trade_date, float(r.main_net or 0) / 10000))
-            for ts, items in hist_by_ts.items():
-                # 按日期倒序(最新在前)
-                items_sorted = sorted(items, key=lambda x: x[0], reverse=True)
-                cum = 0.0
-                for i, (_, v) in enumerate(items_sorted[:5]):
-                    cum += v
-                    day_key = f'inflow_{i+1}d'
-                    if day_key in out[ts]:
-                        out[ts][day_key] = round(cum, 2)
-    except Exception as e:
-        logger.warning(f'[watchlist] moneyflow 5日聚合失败: {e}')
+    # === 合并 Q4: 10 日累计 ===
+    from collections import defaultdict
+    hist_by_ts = defaultdict(list)
+    for r in hist_rows:
+        hist_by_ts[r.ts_code].append((r.trade_date, float(r.main_net or 0) / 10000))
+    for ts, items in hist_by_ts.items():
+        items_sorted = sorted(items, key=lambda x: x[0], reverse=True)
+        cum = 0.0
+        for i, (_, v) in enumerate(items_sorted[:10]):
+            cum += v
+            day_key = f'inflow_{i+1}d'
+            if day_key in out[ts]:
+                out[ts][day_key] = round(cum, 2)
+        if len(items_sorted) < 10:
+            for i in range(len(items_sorted), 10):
+                day_key = f'inflow_{i+1}d'
+                if day_key in out[ts]:
+                    out[ts][day_key] = None
 
     # 数据不足时降级：2d 默认继承 1d, 4d 默认继承 3d，避免前端显示 0/None
     for ts in ts_codes:
@@ -385,30 +446,55 @@ def _gen_action_hint(tags: list) -> str:
 
 
 def _batch_hit_tags(db, stock_codes: list, sectors_map: dict) -> dict:
-    """批量计算 7 大命中标签，返回 {ts_code: {hit_tags: [], action_hint: ''}}"""
+    """批量计算 7 大命中标签，返回 {ts_code: {hit_tags: [], action_hint: ''}}
+
+    7 个批量查询相互独立，并行执行（ThreadPoolExecutor）将首次耗时 6-9s 降到 1-2s。
+    每个线程使用独立 Session（SQLAlchemy Session 非线程安全）。
+    """
     if not stock_codes:
         return {}
     valid_codes = [c for c in stock_codes if c and len(c) == 6]
     ts_codes = [f"{c}.SH" if c[0] in ('6', '9') else f"{c}.SZ" for c in valid_codes]
     code_to_ts = {c: (f"{c}.SH" if c[0] in ('6', '9') else f"{c}.SZ") for c in valid_codes}
 
-    # 7 个批量查询（各自 try-except，单个失败不阻塞整体）
-    sets = {}
-    for name, fn, args in [
-        ('yuzi', _hit_yuzi, (db, ts_codes)),
-        ('strategy', _hit_strategy, (db, valid_codes)),
-        ('trend', _hit_trend, (db, valid_codes)),
-        ('capital', _hit_capital, (db, ts_codes)),
-        ('popularity', _hit_popularity, (db, sectors_map)),
-        ('support', _hit_support, (db, ts_codes)),
-        ('accumulation', _hit_accumulation, (db, ts_codes)),
-    ]:
+    from db.connection import SessionLocal
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    hit_tasks = [
+        ('yuzi',         _hit_yuzi,         (ts_codes,)),
+        ('strategy',     _hit_strategy,     (valid_codes,)),
+        ('trend',        _hit_trend,        (valid_codes,)),
+        ('capital',      _hit_capital,      (ts_codes,)),
+        ('popularity',   _hit_popularity,   (sectors_map,)),
+        ('support',      _hit_support,      (ts_codes,)),
+        ('accumulation', _hit_accumulation, (ts_codes,)),
+    ]
+    sets = {name: set() for name, _, _ in hit_tasks}
+
+    def _run_in_thread(name, fn, args):
+        # 每个线程独占一个 Session，避免 SQLAlchemy 状态污染
+        thread_db = SessionLocal()
         try:
-            sets[name] = fn(*args)
+            return name, fn(thread_db, *args)
         except Exception as e:
             logger.warning(f'_hit_{name} failed: {e}')
-            db.rollback()
-            sets[name] = set()
+            try:
+                thread_db.rollback()
+            except Exception:
+                logger.debug(f'_hit_{name} rollback failed', exc_info=True)
+            return name, set()
+        finally:
+            thread_db.close()
+
+    with ThreadPoolExecutor(max_workers=7) as executor:
+        future_to_name = {executor.submit(_run_in_thread, name, fn, args): name
+                          for name, fn, args in hit_tasks}
+        for future in as_completed(future_to_name):
+            try:
+                name, result = future.result()
+                sets[name] = result or set()
+            except Exception as e:
+                logger.warning(f'_hit task future failed: {e}')
 
     out = {}
     for code in valid_codes:
@@ -567,8 +653,8 @@ async def build_watchlist() -> dict:
                 if len(buy_top) < 9:
                     buy_top.append({"code": item.stock_code, "name": stock_name})
             elif bs_signal == 'S':
-                signal_label = '回避'
-                signal_color = '#22c55e'
+                signal_label = '减仓防守'
+                signal_color = '#f97316'
                 signal_type = 'SELL'
                 sell_count += 1
             else:
@@ -656,8 +742,28 @@ async def build_watchlist() -> dict:
             last_signal['risk'] = calc_risk(ms_features, bp_data, None)
             last_signal['momentum'] = calc_momentum(sector_trend, ms_features)
             last_signal['mainForce'] = calc_main_force(quote, ms_features, sector_trend)
-            last_signal['technical'] = calc_technical(ms_features)
+            technical_result = calc_technical(ms_features)
+            last_signal['technical'] = technical_result
             last_signal['sectorResonance'] = calc_sector_resonance(sector_trend, ms_features)
+
+            # 根据 technical stage 覆写信号标签：让卖出信号更犀利、基于技术指标
+            if bs_signal == 'S' and technical_result:
+                tech_stage = technical_result.get('stage', '')
+                main_net_val = last_signal.get('moneyFlow', {}).get('main_net', 0) or 0
+                is_main_inflow = main_net_val >= 5000 or (last_signal.get('hitTags') or []).count('capital') > 0
+                if tech_stage == '破位':
+                    if is_main_inflow:
+                        last_signal['signalLabel'] = '破位：抛 / 减仓'
+                        last_signal['signalColor'] = '#FF4D4F'
+                    else:
+                        last_signal['signalLabel'] = '破位：果断清仓'
+                        last_signal['signalColor'] = '#FF4D4F'
+                elif tech_stage == '弱势':
+                    last_signal['signalLabel'] = '弱势：果断减仓'
+                    last_signal['signalColor'] = '#f97316'
+                elif tech_stage == '震荡':
+                    last_signal['signalLabel'] = '震荡：暂避不加'
+                    last_signal['signalColor'] = '#eab308'
 
         result = {
             'signals': signals,
@@ -741,10 +847,28 @@ async def get_watchlist():
 
 @router.post("/api/watchlist/add")
 async def add_to_watchlist(req: AddStockRequest):
+    # 1. 先写本地 JSON（唯一真相源）
+    from .watchlist_local import add_stock
+    add_stock(req.stockCode, req.stockName, req.note, req.group)
+    # 2. 同步到 DB
     with get_db_session() as db:
         existing = db.query(Watchlist).filter_by(stock_code=req.stockCode).first()
         if existing:
-            raise HTTPException(status_code=400, detail="该股票已在自选列表中")
+            # JSON 已更新，DB 也更新
+            if req.stockName:
+                existing.stock_name = req.stockName
+            if req.note:
+                existing.note = req.note
+            if req.group:
+                existing.group_name = req.group
+            db.commit()
+            reset_watchlist_cache()
+            try:
+                from api.sync_pkg import trigger_cloud_sync
+                trigger_cloud_sync(f"update {req.stockCode}")
+            except Exception as e:
+                logger.debug(f"cloud sync trigger failed: {e}")
+            return {'success': True, 'id': existing.id}
         item = Watchlist(
             stock_code=req.stockCode,
             stock_name=req.stockName,
@@ -765,6 +889,10 @@ async def add_to_watchlist(req: AddStockRequest):
 @router.delete("/api/watchlist/{stock_code}")
 async def remove_from_watchlist(stock_code: str):
     """从自选列表移除指定股票（含云端删除触发）"""
+    # 1. 先从本地 JSON 删除
+    from .watchlist_local import remove_stock
+    remove_stock(stock_code)
+    # 2. 再从 DB 删除
     with get_db_session() as db:
         item = db.query(Watchlist).filter_by(stock_code=stock_code).first()
         if not item:
@@ -783,6 +911,10 @@ async def remove_from_watchlist(stock_code: str):
 
 @router.patch("/api/watchlist/{stock_code}")
 async def update_watchlist_note(stock_code: str, note: str = Query('')):
+    # 1. 先更新本地 JSON
+    from .watchlist_local import update_stock
+    update_stock(stock_code, note=note)
+    # 2. 再更新 DB
     with get_db_session() as db:
         item = db.query(Watchlist).filter_by(stock_code=stock_code).first()
         if not item:
@@ -794,6 +926,8 @@ async def update_watchlist_note(stock_code: str, note: str = Query('')):
 
 @router.put("/api/watchlist/{code}/note")
 async def update_note(code: str, req: UpdateNoteRequest):
+    from .watchlist_local import update_stock
+    update_stock(code, note=req.note[:200])
     with get_db_session() as db:
         item = db.query(Watchlist).filter_by(stock_code=code).first()
         if not item:
@@ -901,6 +1035,8 @@ async def pin_stock(code: str):
 @router.post("/api/watchlist/{code}/move-group")
 async def move_single_group(code: str, req: MoveGroupRequest):
     target = (req.target_group or '').strip() or '默认'
+    from .watchlist_local import update_stock
+    update_stock(code, group=target)
     with get_db_session() as db:
         item = db.query(Watchlist).filter_by(stock_code=code).first()
         if not item:
@@ -909,3 +1045,159 @@ async def move_single_group(code: str, req: MoveGroupRequest):
         db.commit()
         reset_watchlist_cache()
         return {'success': True, 'code': code, 'group': target}
+
+
+@router.get("/api/watchlist/realtime-flow/{code}")
+async def get_realtime_fund_flow(code: str):
+    """获取个股实时资金流（从 realtime_stock_flow 沉淀数据读取）"""
+    from datetime import date as _date
+    td = _date.today()
+    market = "SH" if code.startswith("6") else "SZ"
+    ts_code_pattern = f"{code}.{market}"
+
+    with get_db_session() as db:
+        row = db.execute(text("""
+            SELECT * FROM realtime_stock_flow
+            WHERE ts_code = :ts AND trade_date = :td
+            ORDER BY snapshot_time DESC LIMIT 1
+        """), {"ts": ts_code_pattern, "td": td}).fetchone()
+
+    if not row:
+        return {"success": False, "data": None, "source": "no_data"}
+
+    d = dict(row._mapping)
+    return {
+        "success": True,
+        "source": "db",
+        "data": {
+            "ts_code": d["ts_code"],
+            "name": d["name"],
+            "main_buy": 0,
+            "main_sell": 0,
+            "main_net": float(d.get("main_force_inflow", 0) or 0) * 10000,
+            "retail_buy": 0,
+            "retail_sell": 0,
+            "retail_net": float(d.get("retail_flow", 0) or 0) * 10000,
+            "turnover": 0,
+            "price": float(d.get("price", 0) or 0),
+            "price_chg": float(d.get("price_chg", 0) or 0),
+            "snapshot_time": str(d["snapshot_time"]),
+            "confidence": d.get("confidence"),
+            "sources_count": d.get("sources_count"),
+        },
+    }
+
+
+@router.get("/api/watchlist/realtime-flow/{code}/history")
+async def get_realtime_fund_flow_history(code: str, date_str: str = None):
+    """获取个股全天分钟级资金流快照历史（从 realtime_stock_flow 沉淀数据读取）
+
+    date_str: YYYYMMDD，默认今天
+    """
+    from datetime import date as _date
+    td = _date.today() if not date_str else _date(
+        int(date_str[:4]), int(date_str[4:6]), int(date_str[6:8])
+    )
+    market = "SH" if code.startswith("6") else "SZ"
+    ts_code_pattern = f"{code}.{market}"
+
+    with get_db_session() as db:
+        rows = db.execute(text("""
+            SELECT snapshot_time, main_force_inflow, retail_flow,
+                   price, price_chg
+            FROM realtime_stock_flow
+            WHERE ts_code = :ts AND trade_date = :td
+            ORDER BY snapshot_time ASC
+        """), {"ts": ts_code_pattern, "td": td}).fetchall()
+
+        return {
+            "success": True,
+            "ts_code": ts_code_pattern,
+            "trade_date": str(td),
+            "total_snapshots": len(rows),
+            "snapshots": [
+                {
+                    "time": str(r.snapshot_time),
+                    "main_buy": 0,
+                    "main_sell": 0,
+                    "main_net": float(r.main_force_inflow or 0) * 10000,
+                    "retail_buy": 0,
+                    "retail_sell": 0,
+                    "retail_net": float(r.retail_flow or 0) * 10000,
+                    "turnover": 0,
+                    "price": float(r.price or 0),
+                    "price_chg": float(r.price_chg or 0),
+                }
+                for r in rows
+            ],
+        }
+
+
+@router.get("/api/watchlist/realtime-flow-batch")
+async def get_realtime_fund_flow_batch(codes: str = Query(..., description="逗号分隔的股票代码,如 002245,600519")):
+    """批量获取自选股实时资金流（emdatah5 口径）
+
+    从 stock_money_flow_realtime 表查询每只股票的最新快照。
+    无数据的股票自动触发实时拉取+写入沉淀。
+    返回 { code -> { ts_code, main_buy, main_sell, main_net, ... } }
+    """
+    from datetime import date as _date
+    from collectors.emdatah5_collector import fetch_realtime_fund_flow, save_realtime_snapshot
+
+    raw_codes = [c.strip() for c in codes.split(",") if c.strip()]
+    if not raw_codes:
+        return {"success": True, "data": {}}
+
+    td = _date.today()
+    result = {}
+
+    with get_db_session() as db:
+        for code in raw_codes:
+            market = "SH" if code.startswith("6") else "SZ"
+            ts_pattern = f"{code}.{market}"
+
+            row = db.execute(text("""
+                SELECT ts_code, name, main_buy, main_sell, main_net,
+                       retail_buy, retail_sell, retail_net, turnover
+                FROM stock_money_flow_realtime
+                WHERE ts_code = :ts AND trade_date = :td
+                ORDER BY snapshot_time DESC LIMIT 1
+            """), {"ts": ts_pattern, "td": td}).fetchone()
+
+            if row:
+                d = dict(row._mapping)
+                result[code] = {
+                    "ts_code": d["ts_code"],
+                    "name": d["name"],
+                    "main_buy": float(d["main_buy"]),
+                    "main_sell": float(d["main_sell"]),
+                    "main_net": float(d["main_net"]),
+                    "retail_buy": float(d["retail_buy"]),
+                    "retail_sell": float(d["retail_sell"]),
+                    "retail_net": float(d["retail_net"]),
+                    "turnover": float(d["turnover"]),
+                    "available": True,
+                }
+            else:
+                flow = fetch_realtime_fund_flow(code)
+                if flow:
+                    save_realtime_snapshot(code)
+                    result[code] = {
+                        "ts_code": flow["ts_code"],
+                        "name": flow["name"],
+                        "main_buy": flow["main_buy"],
+                        "main_sell": flow["main_sell"],
+                        "main_net": flow["main_net"],
+                        "retail_buy": flow["retail_buy"],
+                        "retail_sell": flow["retail_sell"],
+                        "retail_net": flow["retail_net"],
+                        "turnover": flow["turnover"],
+                        "available": True,
+                    }
+                else:
+                    result[code] = {"available": False, "name": code}
+
+    return {"success": True, "data": result}
+
+
+

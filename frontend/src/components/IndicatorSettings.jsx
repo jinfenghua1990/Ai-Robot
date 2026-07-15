@@ -135,7 +135,7 @@ export default function IndicatorSettings({ open, onClose, settings, onChange })
                   <div className="text-xs" style={{ color: 'var(--text-primary)' }}>
                     {meta.label}
                   </div>
-                  <div className="text-[9px]" style={{ color: 'var(--text-muted)' }}>
+                  <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
                     {meta.desc}
                   </div>
                 </div>
@@ -162,7 +162,7 @@ export default function IndicatorSettings({ open, onClose, settings, onChange })
                   <div className="text-xs" style={{ color: 'var(--text-primary)' }}>
                     {meta.label}
                   </div>
-                  <div className="text-[9px]" style={{ color: 'var(--text-muted)' }}>
+                  <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
                     {meta.desc}
                   </div>
                 </div>

@@ -153,7 +153,7 @@ export default function StockCompareSection({ selectedDate, rtStocks, selectedSt
                   style={{ left: `calc(${Math.max(postPct, 3)}% - 5px)`, background: postPositive ? '#ef4444' : '#22c55e', borderColor: 'var(--bg-card)' }} />
               </>
             ) : (
-              <div className="w-full text-center text-[9px]" style={{ color: 'var(--text-muted)' }}>盘后未上榜</div>
+              <div className="w-full text-center text-[10px]" style={{ color: 'var(--text-muted)' }}>盘后未上榜</div>
             )}
           </div>
           <span className="text-[10px] w-16 text-right font-semibold tabular-nums flex-shrink-0"
@@ -174,7 +174,7 @@ export default function StockCompareSection({ selectedDate, rtStocks, selectedSt
                   style={{ left: `calc(${Math.max(rtPct, 3)}% - 5px)`, background: rtPositive ? '#3b82f6' : '#06b6d4', borderColor: 'var(--bg-card)' }} />
               </>
             ) : (
-              <div className="w-full text-center text-[9px]" style={{ color: 'var(--text-muted)' }}>无实时快照</div>
+              <div className="w-full text-center text-[10px]" style={{ color: 'var(--text-muted)' }}>无实时快照</div>
             )}
           </div>
           <span className="text-[10px] w-16 text-right font-semibold tabular-nums flex-shrink-0"

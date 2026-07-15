@@ -356,6 +356,7 @@ async def add_focus_to_watchlist(req: AddFocusStockRequest):
     """将重点关注股票添加到自选股"""
     from db.session import get_db_session
     from db.models import Watchlist
+    from api.watchlist.watchlist_local import add_stock
 
     try:
         with get_db_session() as db:
@@ -363,6 +364,7 @@ async def add_focus_to_watchlist(req: AddFocusStockRequest):
             if existing:
                 return {'success': True, 'message': '已在自选股中', 'already_exists': True}
 
+            add_stock(req.stockCode, req.stockName, '重点关注', req.group)
             item = Watchlist(
                 stock_code=req.stockCode,
                 stock_name=req.stockName,
@@ -382,6 +384,7 @@ async def batch_add_to_watchlist(req: dict):
     """批量将选中的重点关注股票添加到自选股"""
     from db.session import get_db_session
     from db.models import Watchlist
+    from api.watchlist.watchlist_local import add_stock
 
     stock_codes = req.get("stock_codes", [])
     if not stock_codes:
@@ -402,6 +405,7 @@ async def batch_add_to_watchlist(req: dict):
                 if existing:
                     skipped += 1
                     continue
+                add_stock(code, name, '重点关注', '重点关注')
                 item = Watchlist(
                     stock_code=code,
                     stock_name=name,
@@ -422,6 +426,7 @@ async def batch_add_focus_stocks(req: dict):
     """批量添加赛道内所有股票到自选股"""
     from db.session import get_db_session
     from db.models import Watchlist
+    from api.watchlist.watchlist_local import add_stock
 
     sector_name = req.get("sector", "")
     group = req.get("group", "重点关注")
@@ -440,6 +445,7 @@ async def batch_add_focus_stocks(req: dict):
                 if existing:
                     skipped.append(stock["name"])
                     continue
+                add_stock(stock["code"], stock["name"], f'重点关注-{sector_name}', group)
                 item = Watchlist(
                     stock_code=stock["code"],
                     stock_name=stock["name"],

@@ -1,0 +1,18 @@
+{
+  "id": "recap_2026-07-10",
+  "stock_code": "MARKET",
+  "stock_name": "A股市场",
+  "source": "recap",
+  "created_at": "2026-07-10T18:18:27.595355",
+  "report_type": "盘后复盘报告",
+  "date": "2026-07-10",
+  "indices": {},
+  "summary": {
+    "rating": "中性",
+    "confidence": "低",
+    "key_points": [
+      "2026-07-10 市场复盘报告（盘后数据）"
+    ]
+  },
+  "disclaimer": "仅供参考，不构成投资建议"
+}

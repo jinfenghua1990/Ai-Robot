@@ -1,0 +1,1 @@
+import{j as e}from"./index.BraBnPkH.js";import{V as s}from"./VibeEmbed.CTGylCM1.js";import{h as r}from"./react-vendor.BSdSoFln.js";function m(){const{key:t}=r();return e.jsx(s,{path:t?`/sectors/${t}`:"/sectors",title:"Vibe 板块中心"})}export{m as default};

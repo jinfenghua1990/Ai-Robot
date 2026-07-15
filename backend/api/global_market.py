@@ -8,11 +8,13 @@ Global Market API — 港股/美股行情（迁移自 hermes-cockpit）
 - 增强版监控: 含 MA5/MA10/MA20/RSI/区间涨跌幅/均线偏离
 - 批量K线: 迷你图用
 
-依赖: requests (走本地代理 127.0.0.1:7897)
+默认直连 Yahoo Finance；如需代理，设置环境变量 YAHOO_PROXY_URL，
+例如 http://127.0.0.1:7897。
 """
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime
 from typing import Any, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -72,8 +74,15 @@ MARKET_INDICES = {
 
 # ─── Yahoo Finance 辅助函数 ─────────────────────────────────────────────────────
 
-_YAHOO_PROXIES = {"http": "http://127.0.0.1:7897", "https": "http://127.0.0.1:7897"}
 _YAHOO_HEADERS = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"}
+
+
+def _get_yahoo_proxies() -> dict[str, str] | None:
+    """从环境变量读取可选代理，默认直连。"""
+    proxy_url = os.environ.get("YAHOO_PROXY_URL") or os.environ.get("HTTP_PROXY") or os.environ.get("HTTPS_PROXY")
+    if proxy_url:
+        return {"http": proxy_url, "https": proxy_url}
+    return None
 
 
 def _yahoo_fetch(symbol: str, range_str: str = "5d") -> list[dict] | None:
@@ -85,7 +94,7 @@ def _yahoo_fetch(symbol: str, range_str: str = "5d") -> list[dict] | None:
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
     params = {"range": range_str, "interval": "1d"}
     try:
-        resp = requests.get(url, params=params, headers=_YAHOO_HEADERS, proxies=_YAHOO_PROXIES, timeout=15)
+        resp = requests.get(url, params=params, headers=_YAHOO_HEADERS, proxies=_get_yahoo_proxies(), timeout=15)
         resp.raise_for_status()
         data = resp.json()
         result = data["chart"]["result"][0]

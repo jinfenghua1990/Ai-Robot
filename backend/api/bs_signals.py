@@ -11,22 +11,20 @@ BS点生成逻辑（SuperTrend单信号源）：
 - 单信号源天然交替(B→S→B→S)，无需去噪
 """
 import time
-import httpx
 from datetime import datetime
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Query
 from config import MX_APIKEY, MX_API_URL
 from db.connection import get_db
 from db.session import get_db_session
 from db.models import StockFlow
 from analyzers.strategy_engine import _find_sector_for_stock, _get_sector_trend
 from utils import stock_code_to_sina
+from utils.cache import BoundedDict
 from services.indicators import (
     calc_ma as _calc_ma_impl,
-    calc_ema as _calc_ema_impl,
     calc_macd as _calc_macd_impl,
     calc_rsi as _calc_rsi_impl,
     calc_kdj as _calc_kdj_impl,
-    calc_atr as _calc_atr_impl,
     calc_supertrend as _calc_supertrend_impl,
 )
 
@@ -39,11 +37,6 @@ router = APIRouter()
 
 # 计算用历史数据天数（需远大于EMA26周期，确保EMA收敛）
 CALC_DATALEN = 150
-
-
-def _stock_code_to_sina(stock_code: str) -> str:
-    """DEPRECATED: use utils.stock_code_to_sina"""
-    return stock_code_to_sina(stock_code)
 
 
 async def _fetch_kline(stock_code: str, datalen: int = CALC_DATALEN):
@@ -116,7 +109,7 @@ async def _fetch_kline(stock_code: str, datalen: int = CALC_DATALEN):
             if klines and len(klines) >= 100:
                 return klines[:datalen] if datalen < len(klines) else klines
         except Exception:
-            pass
+            logger.debug("bs_signals: cache op failed", exc_info=False)
 
     sina_code = _stock_code_to_sina(stock_code)
     url = f"https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData?symbol={sina_code}&scale=240&ma=no&datalen={datalen}"
@@ -146,56 +139,25 @@ async def _fetch_kline(stock_code: str, datalen: int = CALC_DATALEN):
             with open(cache_file, 'w', encoding='utf-8') as f:
                 _json.dump(klines, f, ensure_ascii=False)
         except Exception:
-            pass
+            logger.debug("bs_signals: cache op failed", exc_info=False)
 
     return klines
 
 
-def _calc_ema(values, period):
-    """DEPRECATED: use services.indicators.calc_ema directly"""
-    return _calc_ema_impl(values, period)
-
-
-def _calc_macd(klines):
-    """DEPRECATED: use services.indicators.calc_macd directly"""
-    closes = [k['close'] for k in klines]
-    return _calc_macd_impl(closes)
-
-
 def _calc_ma(klines, period):
-    """DEPRECATED: use services.indicators.calc_ma directly"""
+    """DEPRECATED: use services.indicators.calc_ma directly
+    仍有外部引用: api/bs_screener/core.py, api/bs_backtest/engine.py
+    """
     closes = [k['close'] for k in klines]
     return _calc_ma_impl(closes, period)
 
 
 def _calc_rsi(klines, period=14):
-    """DEPRECATED: use services.indicators.calc_rsi directly"""
+    """DEPRECATED: use services.indicators.calc_rsi directly
+    仍有外部引用: api/bs_screener/core.py, api/bs_backtest/engine.py
+    """
     closes = [k['close'] for k in klines]
     return _calc_rsi_impl(closes, period)
-
-
-def _calc_kdj(klines, n=9, m1=3, m2=3):
-    """DEPRECATED: use services.indicators.calc_kdj directly"""
-    highs = [k['high'] for k in klines]
-    lows = [k['low'] for k in klines]
-    closes = [k['close'] for k in klines]
-    return _calc_kdj_impl(highs, lows, closes, n, m1, m2)
-
-
-def _calc_atr(klines, period=10):
-    """DEPRECATED: use services.indicators.calc_atr directly"""
-    highs = [k['high'] for k in klines]
-    lows = [k['low'] for k in klines]
-    closes = [k['close'] for k in klines]
-    return _calc_atr_impl(highs, lows, closes, period)
-
-
-def _calc_supertrend(klines, period=10, multiplier=3):
-    """DEPRECATED: use services.indicators.calc_supertrend directly"""
-    highs = [k['high'] for k in klines]
-    lows = [k['low'] for k in klines]
-    closes = [k['close'] for k in klines]
-    return _calc_supertrend_impl(highs, lows, closes, period, multiplier)
 
 
 def _generate_bs_signals(klines, period=10, multiplier=1.0):
@@ -207,14 +169,18 @@ def _generate_bs_signals(klines, period=10, multiplier=1.0):
     单信号源，天然交替(B→S→B→S)，无需去噪
     可配置参数: period(ATR周期), multiplier(乘数)
     """
+    closes = [k['close'] for k in klines]
+    highs = [k['high'] for k in klines]
+    lows = [k['low'] for k in klines]
+
     # 主信号源: SuperTrend
-    support, resistance, trend, atr = _calc_supertrend(klines, period, multiplier)
+    support, resistance, trend, atr = _calc_supertrend_impl(highs, lows, closes, period, multiplier)
 
     # 辅助指标(用于reason和indicators返回)
-    dif, dea, macd = _calc_macd(klines)
-    ma5 = _calc_ma(klines, 5)
-    ma20 = _calc_ma(klines, 20)
-    k_vals, d_vals, j_vals = _calc_kdj(klines, 9, 3, 3)
+    dif, dea, macd = _calc_macd_impl(closes)
+    ma5 = _calc_ma_impl(closes, 5)
+    ma20 = _calc_ma_impl(closes, 20)
+    k_vals, d_vals, j_vals = _calc_kdj_impl(highs, lows, closes, 9, 3, 3)
 
     signals = []
     for i in range(1, len(klines)):
@@ -422,7 +388,7 @@ async def _fetch_sector_today_intraday(sector: str):
         logger.debug(f'[bs_signals] 板块成分股查询失败 {sector}: {e}')
         return []
 
-    sina_codes = [c for c in (_stock_code_to_sina(c) for c in codes) if c]
+    sina_codes = [c for c in (stock_code_to_sina(c) for c in codes) if c]
     if not sina_codes:
         return []
 
@@ -474,7 +440,7 @@ async def _fetch_sector_today_intraday(sector: str):
     return [{"time": datetime.fromtimestamp(t).strftime('%H:%M'), "value": v, "ts": t} for t, v in cache]
 
 
-_intraday_cache = {}  # code -> (data, ts)
+_intraday_cache = BoundedDict(maxsize=200)  # code -> (data, ts)
 
 
 @router.get("/api/trading/intraday/{code}")
@@ -487,7 +453,7 @@ async def get_intraday(code: str):
     if cached and time.time() - cached[1] < 30:
         return cached[0]
 
-    sina_code = _stock_code_to_sina(code)
+    sina_code = stock_code_to_sina(code)
     if not sina_code:
         raise HTTPException(status_code=400, detail="无效的股票代码")
 

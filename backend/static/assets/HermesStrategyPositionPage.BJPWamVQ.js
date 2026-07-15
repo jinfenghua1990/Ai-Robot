@@ -1,0 +1,1 @@
+import{j as t}from"./index.CsuYT-kk.js";import{H as e}from"./HermesEmbed.FQlHVKXP.js";import"./react-vendor.BSdSoFln.js";function i(){return t.jsx(e,{path:"/strategy-position",title:"波段信号"})}export{i as default};

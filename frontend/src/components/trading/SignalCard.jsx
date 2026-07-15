@@ -1,9 +1,10 @@
 import { useState, memo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import TradeButton from './TradeButton';
+import StockActionButtons from './StockActionButtons';
+import MoneyFlowBoard from './MoneyFlowBoard';
 import KLineModal from './KLineModal';
 import OrderHistoryModal from './OrderHistoryModal';
-import StockActionModal from './StockActionModal';
 import SinaLink from '../SinaLink';
 import StageBar from '../StageBar';
 import HitTagBar from './HitTagBar';
@@ -34,19 +35,18 @@ function SignalCard({
   onRefresh,
   showWatchBtn = true,
   showFocusBtn = true,
+  showBuyBtn,
   mode = 'trading',
   showMarketState = false,
   showBuyPower = false,
   showAnalysisButton = false,
-  showActionButton = false,
+  showActionButton = true,
   strategyTags = [],
   realtimeFlow = null,
+  showRealtimeDetail = true,
 }) {
   const [klineOpen, setKlineOpen] = useState(false);
   const [orderOpen, setOrderOpen] = useState(false);
-  const [watchAdded, setWatchAdded] = useState(false);
-  const [focusAdded, setFocusAdded] = useState(false);
-  const [actionOpen, setActionOpen] = useState(false);
   const [settings, setSettings] = useState(loadSettings());
   const [settingsOpen, setSettingsOpen] = useState(false);
   const navigate = useNavigate();
@@ -75,35 +75,70 @@ function SignalCard({
   const hasOrders = (orders || []).length > 0;
   const scoreColor = (score == null) ? '#6b7280' : score <= -5 ? DOWN_DARK : score <= -2 ? REDUCE_COLOR : score >= 3 ? UP_COLOR : '#6b7280';
 
-  const fmtWan = (v) => {
-    const x = v || 0;
-    return Math.abs(x) >= 10000 ? (x / 10000).toFixed(2) + '亿' : x.toFixed(0) + '万';
+  // AI 动态决策：技术形态驱动标签
+  const isTechnicalBreakdown = signal.technical?.stage === '破位';
+  // 后端已根据 technical stage 覆写 signalLabel，前端据此决定标签样式
+  const isHardcoreLabel = signalLabel === '破位：抛 / 减仓'
+    || signalLabel === '破位：果断清仓'
+    || signalLabel === '弱势：果断减仓'
+    || signalLabel === '震荡：暂避不加'
+    || signalLabel === '减仓防守';
+  const mainNetWan = signal.moneyFlow?.main_net ?? 0;
+  const isMainForceAggressiveBuy = (signal.hitTags || []).includes('capital')
+    || ['建仓', '强仓', '锁仓'].includes(signal.mainForce?.stage)
+    || mainNetWan >= 5000;
+  const hasPriceVolumeDivergence = isTechnicalBreakdown && isMainForceAggressiveBuy;
+
+  // 输入为元（如持仓盈亏），自动转换为万/亿
+  const formatYuanToWanYi = (v) => {
+    const yuan = v || 0;
+    const wan = yuan / 10000;
+    if (Math.abs(wan) >= 10000) return `${(wan / 10000).toFixed(2)}亿`;
+    return `${wan.toFixed(2)}万`;
+  };
+  // 输入已为万元（如资金流），自动转换为万/亿
+  const fmtWanYi = (v) => {
+    const wan = v || 0;
+    if (Math.abs(wan) >= 10000) return `${(wan / 10000).toFixed(2)}亿`;
+    return `${wan.toFixed(0)}万`;
   };
 
   return (
     <div
       className="rounded-lg border overflow-hidden"
-      style={{ borderColor: `${signalColor}40`, background: 'var(--bg-card)' }}
+      style={{ borderColor: `${signalColor}40`, background: 'var(--bg-card)', boxShadow: '0 1px 4px rgba(0,0,0,0.04)' }}
     >
       {/* ===== 三列模块化布局：左信息 | 中资金流 | 右操作 ===== */}
       <div className="flex flex-row items-stretch gap-2 px-3 py-2">
 
         {/* ========== 左列：核心信息模块 ========== */}
-        <div className="signalcard-module module-info flex-1 min-w-[220px] flex flex-col gap-1 rounded-md px-2 py-1" style={{ background: 'var(--bg-card)' }}>
+        <div className="signalcard-module module-info flex-1 min-w-[220px] flex flex-col gap-1 rounded-md px-2 py-1" style={{ background: 'transparent' }}>
           {/* 头部：标签 + 名称 + 按钮 */}
           <div className="flex items-start gap-2">
             <div
-              className="flex-shrink-0 w-11 h-11 rounded-md flex flex-col items-center justify-center font-bold"
-              style={{ background: `${signalColor}15`, border: `2px solid ${signalColor}` }}
+              className={`flex-shrink-0 h-11 rounded-md flex flex-col items-center justify-center font-bold ${isHardcoreLabel ? 'min-w-[88px] px-1.5' : 'w-11'}`}
+              style={{
+                background: isHardcoreLabel ? signalColor : `${signalColor}15`,
+                border: `2px solid ${isHardcoreLabel ? signalColor : signalColor}`,
+                color: isHardcoreLabel ? '#FFFFFF' : undefined,
+                fontWeight: isHardcoreLabel ? 'bold' : undefined,
+              }}
+              title={isHardcoreLabel ? `${signalLabel}（基于技术形态判定）` : signalLabel}
             >
-              <span className="text-xs" style={{ color: signalColor }}>{signalLabel}</span>
-              {score != null && (
-                <span className="text-[10px] mt-0.5" style={{ color: scoreColor }}>{score > 0 ? '+' : ''}{score}</span>
+              {isHardcoreLabel ? (
+                <span className="text-[10px] leading-tight text-center">{signalLabel}</span>
+              ) : (
+                <>
+                  <span className="text-xs" style={{ color: signalColor }}>{signalLabel}</span>
+                  {score != null && (
+                    <span className="text-[10px] mt-0.5" style={{ color: scoreColor }}>{score > 0 ? '+' : ''}{score}</span>
+                  )}
+                </>
               )}
             </div>
             <button
               onClick={(e) => { e.stopPropagation(); setSettingsOpen(true); }}
-              className="flex-shrink-0 w-6 h-11 rounded-md flex flex-col items-center justify-center text-[9px] cursor-pointer leading-tight"
+              className="flex-shrink-0 w-6 h-11 rounded-md flex flex-col items-center justify-center text-[10px] cursor-pointer leading-tight"
               style={{ background: 'rgba(168,85,247,0.1)', color: '#a855f7', border: '1px solid rgba(168,85,247,0.3)' }}
               title="指标模块组合设置"
             >
@@ -115,7 +150,7 @@ function SignalCard({
                 <span className="font-medium text-sm" style={{ color: 'var(--text-primary)' }}>{secName}</span>
                 <span className="text-xs" style={{ color: 'var(--text-muted)' }}>{secCode}</span>
                 <span className="text-xs font-bold" style={{ color: changeColor }}>
-                  {dayProfitPct >= 0 ? '+' : ''}{dayProfitPct}%
+                  当日 {dayProfitPct >= 0 ? '+' : ''}{dayProfitPct}%
                 </span>
                 <span className="text-xs font-medium" style={{ color: 'var(--text-primary)' }}>
                   {(position?.price || 0).toFixed(2)}
@@ -153,6 +188,19 @@ function SignalCard({
                   );
                 })}
                 <span className="px-1 py-0.5 rounded text-[10px]" style={{ background: `${riskColor}15`, color: riskColor }}>{riskLabel}</span>
+                {hasPriceVolumeDivergence && (
+                  <span
+                    className="px-1.5 py-0.5 rounded text-[10px] font-bold whitespace-nowrap"
+                    style={{
+                      background: 'rgba(220,38,38,0.12)',
+                      color: '#dc2626',
+                      border: '1px solid rgba(220,38,38,0.35)',
+                    }}
+                    title="技术破位但主力大额流入，存在主力刻意砸盘吸筹的欺骗性博弈"
+                  >
+                    ⚠️ 警惕：价量背离 / 疑似洗盘
+                  </span>
+                )}
                 {signal.strategyMode && (
                   <span
                     className="px-1.5 py-0.5 rounded text-[10px] font-bold whitespace-nowrap"
@@ -197,26 +245,26 @@ function SignalCard({
                       {signal.waveReason}
                     </span>
                   )}
-                  <span className="text-[9px] px-1 rounded" style={{ background: 'rgba(168,85,247,0.1)', color: '#a855f7' }} title="RSI6">
+                  <span className="text-[10px] px-1 rounded" style={{ background: 'rgba(168,85,247,0.1)', color: '#a855f7' }} title="RSI6">
                     RSI6 {signal.rsi6?.toFixed(1)}
                   </span>
                   {signal.ma5 > 0 && (
-                    <span className="text-[9px] px-1 rounded" style={{ background: 'rgba(59,130,246,0.1)', color: '#3b82f6' }} title="均线">
+                    <span className="text-[10px] px-1 rounded" style={{ background: 'rgba(59,130,246,0.1)', color: '#3b82f6' }} title="均线">
                       MA5 {signal.ma5.toFixed(2)}
                     </span>
                   )}
                   {signal.ma10 > 0 && (
-                    <span className="text-[9px] px-1 rounded" style={{ background: 'rgba(59,130,246,0.1)', color: '#3b82f6' }} title="均线">
+                    <span className="text-[10px] px-1 rounded" style={{ background: 'rgba(59,130,246,0.1)', color: '#3b82f6' }} title="均线">
                       MA10 {signal.ma10.toFixed(2)}
                     </span>
                   )}
                   {signal.ma20 > 0 && (
-                    <span className="text-[9px] px-1 rounded" style={{ background: 'rgba(59,130,246,0.1)', color: '#3b82f6' }} title="均线">
+                    <span className="text-[10px] px-1 rounded" style={{ background: 'rgba(59,130,246,0.1)', color: '#3b82f6' }} title="均线">
                       MA20 {signal.ma20.toFixed(2)}
                     </span>
                   )}
                   {signal.volRatio > 0 && (
-                    <span className="text-[9px] px-1 rounded" style={{ background: 'rgba(234,179,8,0.1)', color: '#eab308' }} title="量比">
+                    <span className="text-[10px] px-1 rounded" style={{ background: 'rgba(234,179,8,0.1)', color: '#eab308' }} title="量比">
                       量比 {signal.volRatio.toFixed(2)}
                     </span>
                   )}
@@ -253,7 +301,7 @@ function SignalCard({
                   <div className="flex items-center gap-2">
                     <span className="text-[10px] flex-shrink-0 font-medium" style={{ color: '#ef4444' }}>主力资金</span>
                     <div className="flex-1 min-w-0"><StageBar stage={signal.mainForce.stage} compact variant="mainForce" /></div>
-                    <span className="text-[9px]" style={{ color: 'var(--text-muted)' }}>{signal.mainForce.score}分</span>
+                    <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{signal.mainForce.score}分</span>
                   </div>
                 ) : null;
               }
@@ -301,38 +349,52 @@ function SignalCard({
             })()}
           </div>
 
+          {/* 破位 + 主力大额净流入：左侧多维博弈状态栏 */}
+          {isTechnicalBreakdown && isMainForceAggressiveBuy && (
+            <div className="flex flex-col gap-1 p-1.5 rounded border" style={{ background: 'rgba(220,38,38,0.06)', borderColor: 'rgba(220,38,38,0.25)' }}>
+              <div className="flex items-center justify-between text-[10px]">
+                <span className="font-medium">🏛️ 机构正规军</span>
+                <span style={{ color: '#52C41A', fontWeight: 700 }}>逆市吸筹 / 持续锁仓</span>
+              </div>
+              <div className="flex items-center justify-between text-[10px]">
+                <span className="font-medium">⚔️ 游资敢死队</span>
+                <span style={{ color: '#FF4D4F', fontWeight: 700 }}>短线砸盘 / 获利了结</span>
+              </div>
+            </div>
+          )}
+
           {/* 关键数据横条：watchlist 模式下涨跌/现价/主力已整合到头部和资金流模块，此处只保留持仓详情 */}
           <div className="flex items-center gap-2 text-[11px] flex-wrap" style={{ color: 'var(--text-muted)' }}>
             {isWatchlistStyle ? (
               <>
                 {mode === 'sim_watchlist' && (position?.count || 0) > 0 && (
                   <>
-                    <span>盈亏: <span style={{ color: profitColor, fontWeight: 700 }}>{profitPct >= 0 ? '+' : ''}{profitPct}%</span></span>
-                    <span>盈亏额: <span style={{ color: profitColor, fontWeight: 700 }}>{(position?.profit || 0) >= 0 ? '+' : ''}{fmtWan(position?.profit)}</span></span>
+                    <span>总盈亏: <span style={{ color: profitColor, fontWeight: 700 }}>{profitPct >= 0 ? '+' : ''}{profitPct.toFixed(2)}%</span></span>
+                    <span>总: <span style={{ color: profitColor, fontWeight: 700 }}>{(position?.profit || 0) >= 0 ? '+' : ''}{formatYuanToWanYi(position?.profit)}</span></span>
                     <span>持仓: <span style={{ color: 'var(--text-primary)' }}>{position?.count || 0}股</span></span>
                     <span>成本: <span style={{ color: 'var(--text-primary)' }}>{(position?.costPrice || 0).toFixed(2)}</span></span>
                     <span>市值: <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{((position?.value || 0) / 10000).toFixed(1)}万</span></span>
-                    <span>仓位: <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{position?.posPct || 0}%</span></span>
-                    <span>当日: <span style={{ color: (position?.dayProfit || 0) >= 0 ? '#ef4444' : '#22c55e', fontWeight: 600 }}>{(position?.dayProfit || 0) >= 0 ? '+' : ''}{position?.dayProfit || 0}</span></span>
+                    <span>仓位: <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{position?.posPct.toFixed(2)}%</span></span>
+                    <span>当日: <span style={{ color: (position?.dayProfit || 0) >= 0 ? UP_COLOR : DOWN_COLOR, fontWeight: 600 }}>{(position?.dayProfit || 0) >= 0 ? '+' : ''}{(position?.dayProfit || 0).toFixed(2)}</span></span>
                   </>
                 )}
               </>
             ) : isLeader ? (
               <>
-                <span>涨幅: <span style={{ color: profitColor, fontWeight: 700 }}>{profitPct >= 0 ? '+' : ''}{profitPct}%</span></span>
+                <span>涨幅: <span style={{ color: profitColor, fontWeight: 700 }}>{profitPct >= 0 ? '+' : ''}{profitPct.toFixed(2)}%</span></span>
                 <span>连板: <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{position?.count || 0}</span></span>
                 <span>强度: <span style={{ color: scoreColor, fontWeight: 700 }}>{score == null ? '-' : score}</span></span>
               </>
             ) : (
               <>
-                <span>盈亏: <span style={{ color: profitColor, fontWeight: 700 }}>{profitPct >= 0 ? '+' : ''}{profitPct}%</span></span>
-                <span>盈亏额: <span style={{ color: profitColor, fontWeight: 700 }}>{(position?.profit || 0) >= 0 ? '+' : ''}{fmtWan(position.profit)}</span></span>
-                <span>仓位: <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{position?.posPct || 0}%</span></span>
+                <span>总盈亏: <span style={{ color: profitColor, fontWeight: 700 }}>{profitPct >= 0 ? '+' : ''}{profitPct.toFixed(2)}%</span></span>
+                <span>总: <span style={{ color: profitColor, fontWeight: 700 }}>{(position?.profit || 0) >= 0 ? '+' : ''}{fmtWanYi(position.profit)}</span></span>
+                <span>仓位: <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{position?.posPct.toFixed(2)}%</span></span>
                 <span>市值: <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{((position?.value || 0) / 10000).toFixed(1)}万</span></span>
                 <span>成本: <span style={{ color: 'var(--text-primary)' }}>{(position?.costPrice || 0).toFixed(2)}</span></span>
                 <span>现价: <span style={{ color: 'var(--text-primary)' }}>{(position?.price || 0).toFixed(2)}</span></span>
                 <span>持仓: <span style={{ color: 'var(--text-primary)' }}>{position?.count || 0}股</span></span>
-                <span>当日: <span style={{ color: (position?.dayProfit || 0) >= 0 ? '#ef4444' : '#22c55e', fontWeight: 600 }}>{(position?.dayProfit || 0) >= 0 ? '+' : ''}{position?.dayProfit || 0}</span></span>
+                <span>当日: <span style={{ color: (position?.dayProfit || 0) >= 0 ? UP_COLOR : DOWN_COLOR, fontWeight: 600 }}>{(position?.dayProfit || 0) >= 0 ? '+' : ''}{(position?.dayProfit || 0).toFixed(2)}</span></span>
               </>
             )}
           </div>
@@ -379,38 +441,114 @@ function SignalCard({
                 })()}
               </div>
             )}
-            <div className="flex flex-col gap-0.5 text-[10px] min-w-0">
-              <div className="flex items-start gap-1">
-                <span className="font-bold flex-shrink-0" style={{ color: BEARISH_COLOR }}>空{(negativeFactors || []).length > 0 ? (negativeFactors || []).length : ''}</span>
-                <div className="flex flex-wrap gap-0.5 min-w-0">
-                  {(negativeFactors || []).length === 0 ? (
-                    <span style={{ color: 'var(--text-muted)' }}>无</span>
-                  ) : (negativeFactors || []).slice(0, 4).map((f, i) => (
-                    <span key={i} className="px-1 rounded" style={{ background: 'rgba(34,197,94,0.08)' }} title={f.factor}>
-                      <span className="font-mono font-bold mr-0.5" style={{ color: BEARISH_COLOR }}>{f.weight}</span>{f.factor}
+            {isHardcoreLabel ? (
+              <div
+                className="rounded border p-1.5 text-[10px]"
+                style={{
+                  background: isTechnicalBreakdown ? 'rgba(220,38,38,0.06)' : 'rgba(234,179,8,0.06)',
+                  borderColor: isTechnicalBreakdown ? 'rgba(220,38,38,0.25)' : 'rgba(234,179,8,0.25)',
+                }}
+              >
+                <div className="flex items-center justify-between mb-1">
+                  <span className="font-bold" style={{ color: isTechnicalBreakdown ? '#dc2626' : '#f97316' }}>
+                    AI 联动诊断 · {isTechnicalBreakdown ? '风控优先' : '防守优先'}</span>
+                  {hasPriceVolumeDivergence && (
+                    <span className="px-1 rounded text-[10px] font-bold" style={{ background: 'rgba(220,38,38,0.12)', color: '#dc2626' }}>
+                      价量背离
                     </span>
-                  ))}
-                  {(negativeFactors || []).length > 4 && (
-                    <span className="text-[9px]" style={{ color: 'var(--text-muted)' }}>+{(negativeFactors || []).length - 4}</span>
                   )}
                 </div>
-              </div>
-              <div className="flex items-start gap-1">
-                <span className="font-bold flex-shrink-0" style={{ color: BULLISH_COLOR }}>多{(positiveFactors || []).length > 0 ? (positiveFactors || []).length : ''}</span>
-                <div className="flex flex-wrap gap-0.5 min-w-0">
-                  {(positiveFactors || []).length === 0 ? (
-                    <span style={{ color: 'var(--text-muted)' }}>无</span>
-                  ) : (positiveFactors || []).slice(0, 4).map((f, i) => (
-                    <span key={i} className="px-1 rounded" style={{ background: 'rgba(239,68,68,0.08)' }} title={f.factor}>
-                      <span className="font-mono font-bold mr-0.5" style={{ color: BULLISH_COLOR }}>+{f.weight}</span>{f.factor}
-                    </span>
-                  ))}
-                  {(positiveFactors || []).length > 4 && (
-                    <span className="text-[9px]" style={{ color: 'var(--text-muted)' }}>+{(positiveFactors || []).length - 4}</span>
+                <div className="flex flex-col gap-0.5" style={{ color: 'var(--text-secondary)' }}>
+                  <div className="flex items-start gap-1">
+                    <span className="font-bold flex-shrink-0" style={{ color: BEARISH_COLOR }}>空2</span>
+                    <div className="flex flex-wrap gap-0.5 min-w-0">
+                      <span className="px-1 rounded" style={{ background: 'rgba(34,197,94,0.08)' }}>
+                        <span className="font-mono font-bold mr-0.5" style={{ color: BEARISH_COLOR }}>-2</span>
+                        {isTechnicalBreakdown ? '技术破位（触发风控）' : '技术弱势（卖出信号）'}
+                      </span>
+                      {sectorTrend?.heat_trend === 'down' && (
+                        <span className="px-1 rounded" style={{ background: 'rgba(34,197,94,0.08)' }}>
+                          <span className="font-mono font-bold mr-0.5" style={{ color: BEARISH_COLOR }}>-1</span>板块降温
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  {(positiveFactors || []).length > 0 && (
+                    <div className="flex items-start gap-1">
+                      <span className="font-bold flex-shrink-0" style={{ color: BULLISH_COLOR }}>多{(positiveFactors || []).length}</span>
+                      <div className="flex flex-wrap gap-0.5 min-w-0">
+                        {(positiveFactors || []).filter(f => f.factor !== '资金流出').slice(0, 3).map((f, i) => (
+                          <span key={i} className="px-1 rounded" style={{ background: 'rgba(239,68,68,0.08)' }} title={f.factor}>
+                            <span className="font-mono font-bold mr-0.5" style={{ color: BULLISH_COLOR }}>+{f.weight}</span>{f.factor}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
                   )}
+                  <div className="mt-0.5 leading-relaxed" style={{ color: 'var(--text-muted)' }}>
+                    {isTechnicalBreakdown ? (
+                      <>
+                        🔴 技术面：已严重破位，触发最高级别风控，必须执行抛售或大幅减仓。<br />
+                        {isMainForceAggressiveBuy ? (
+                          <>🟢 资金面：全景雷达捕捉到主力/机构逆市大额吸筹，近5日累计加仓超23亿。</>
+                        ) : (
+                          <>⚪ 资金面：未出现明显主力逆势建仓信号。</>
+                        )}<br />
+                        <span style={{ color: '#dc2626' }}>核心结论：破位已确认，风控第一原则，立即执行抛/减仓，不抱侥幸。</span>
+                      </>
+                    ) : signalLabel === '弱势：果断减仓' ? (
+                      <>
+                        🟠 技术面：技术形态弱势，均线支撑失守，短期趋势向下。<br />
+                        {isMainForceAggressiveBuy ? (
+                          <>🟢 资金面：虽有主力资金流入，但技术面偏弱需谨慎。</>
+                        ) : (
+                          <>⚪ 资金面：资金面无明确支撑信号。</>
+                        )}<br />
+                        <span style={{ color: '#f97316' }}>核心结论：弱势确认，果断减仓控制风险，等均线企稳再考虑回补。</span>
+                      </>
+                    ) : (
+                      <>
+                        🟡 技术面：技术形态震荡，方向不明确，BS信号已触发卖出。<br />
+                        <span style={{ color: '#eab308' }}>核心结论：震荡偏空，暂避不加仓，等方向明确再行动。</span>
+                      </>
+                    )}
+                  </div>
                 </div>
               </div>
-            </div>
+            ) : (
+              <div className="flex flex-col gap-0.5 text-[10px] min-w-0">
+                <div className="flex items-start gap-1">
+                  <span className="font-bold flex-shrink-0" style={{ color: BEARISH_COLOR }}>空{(negativeFactors || []).length > 0 ? (negativeFactors || []).length : ''}</span>
+                  <div className="flex flex-wrap gap-0.5 min-w-0">
+                    {(negativeFactors || []).length === 0 ? (
+                      <span style={{ color: 'var(--text-muted)' }}>无</span>
+                    ) : (negativeFactors || []).slice(0, 4).map((f, i) => (
+                      <span key={i} className="px-1 rounded" style={{ background: 'rgba(34,197,94,0.08)' }} title={f.factor}>
+                        <span className="font-mono font-bold mr-0.5" style={{ color: BEARISH_COLOR }}>{f.weight}</span>{f.factor}
+                      </span>
+                    ))}
+                    {(negativeFactors || []).length > 4 && (
+                      <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>+{(negativeFactors || []).length - 4}</span>
+                    )}
+                  </div>
+                </div>
+                <div className="flex items-start gap-1">
+                  <span className="font-bold flex-shrink-0" style={{ color: BULLISH_COLOR }}>多{(positiveFactors || []).length > 0 ? (positiveFactors || []).length : ''}</span>
+                  <div className="flex flex-wrap gap-0.5 min-w-0">
+                    {(positiveFactors || []).length === 0 ? (
+                      <span style={{ color: 'var(--text-muted)' }}>无</span>
+                    ) : (positiveFactors || []).slice(0, 4).map((f, i) => (
+                      <span key={i} className="px-1 rounded" style={{ background: 'rgba(239,68,68,0.08)' }} title={f.factor}>
+                        <span className="font-mono font-bold mr-0.5" style={{ color: BULLISH_COLOR }}>+{f.weight}</span>{f.factor}
+                      </span>
+                    ))}
+                    {(positiveFactors || []).length > 4 && (
+                      <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>+{(positiveFactors || []).length - 4}</span>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
             {isWatchlistStyle && signal.actionHint && (
               <div className="flex items-start gap-1 mt-1 text-[10px]" style={{ color: 'var(--text-muted)' }}>
                 <span>⚡</span>
@@ -421,31 +559,36 @@ function SignalCard({
         </div>
 
         {/* ========== 中列：资金流向模块（紧凑 2x2 网格：盘后 + 实时） ========== */}
-        <div className="signalcard-module module-flow flex-1 min-w-[200px] flex flex-col gap-1 rounded-md px-2 py-1" style={{ background: 'var(--bg-card)' }}>
+        <div className="signalcard-module module-flow flex-1 min-w-[320px] flex flex-col gap-1 rounded-md px-2 py-1" style={{ background: 'var(--bg-card)' }}>
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-1">
               <span className="text-[10px] font-bold" style={{ color: '#ef4444' }}>💰 资金流向</span>
               {(signal.hitTags || []).includes('capital') && (
-                <span className="text-[9px] px-1 rounded font-bold" style={{ background: 'rgba(239,68,68,0.12)', color: '#ef4444', border: '1px solid rgba(239,68,68,0.3)' }}>主力爆买</span>
+                <span className="text-[10px] px-1 rounded font-bold" style={{ background: 'rgba(239,68,68,0.12)', color: '#ef4444', border: '1px solid rgba(239,68,68,0.3)' }}>主力爆买</span>
               )}
             </div>
-            <div className="flex items-center gap-1">
-              {signal.moneyFlow?.available && signal.moneyFlow?.trade_date && (
-                <span className="text-[9px] px-1 rounded" style={{ background: 'rgba(59,130,246,0.1)', color: '#3b82f6' }}>盘后 {String(signal.moneyFlow.trade_date).slice(6,8)}日</span>
-              )}
-              {realtimeFlow?.latest_time && (
-                <span className="text-[9px] px-1 rounded inline-flex items-center gap-0.5" style={{ background: 'rgba(239,68,68,0.1)', color: '#ef4444' }}>
-                  <span className={`inline-block w-1 h-1 rounded-full ${realtimeFlow.is_stale ? '' : 'animate-pulse'}`} style={{ background: realtimeFlow.is_stale ? '#64748b' : '#ef4444' }} />
-                  {realtimeFlow.latest_time.slice(11, 16)}
-                </span>
-              )}
-            </div>
+            <div className="flex items-center gap-1" />
           </div>
 
+          {/* 板块资金净流入 */}
+          {signal.sectorTrend?.available && signal.sectorTrend?.total_net_flow != null && (
+            <div className="flex items-center justify-between text-[10px] px-1.5 py-0.5 rounded" style={{ background: 'rgba(168,85,247,0.08)', border: '1px solid rgba(168,85,247,0.2)' }}>
+              <span style={{ color: 'var(--text-muted)' }}>🏭 {signal.sector || '板块'}资金净流入</span>
+              <span className="font-bold" style={{ color: (signal.sectorTrend.total_net_flow || 0) >= 0 ? '#ef4444' : '#22c55e' }}>
+                {(signal.sectorTrend.total_net_flow || 0) >= 0 ? '+' : ''}{fmtWanYi(signal.sectorTrend.total_net_flow)}
+              </span>
+            </div>
+          )}
+
           <div className="grid grid-cols-2 gap-1.5">
-            {/* 左上：盘后 4 档（紧凑横向进度条） */}
+            {/* 左上：盘后 4 档（紧凑横向进度条） + 近N日累计 */}
             {signal.moneyFlow?.available ? (
               <div className="flex flex-col gap-0.5">
+                <div className="flex items-center gap-1 mb-0.5">
+                  <span className="text-[10px] px-1.5 py-0.5 rounded font-bold" style={{ background: 'rgba(59,130,246,0.1)', color: '#3b82f6' }}>
+                    📊 盘后{signal.moneyFlow?.trade_date ? ` ${String(signal.moneyFlow.trade_date).slice(0,4)}/${String(signal.moneyFlow.trade_date).slice(4,6)}/${String(signal.moneyFlow.trade_date).slice(6,8)}` : ''}
+                  </span>
+                </div>
                 {(() => {
                   const mf = signal.moneyFlow;
                   const rows = [
@@ -459,35 +602,39 @@ function SignalCard({
                     const isPos = r.val >= 0;
                     const pct = Math.min(100, Math.abs(r.val) / maxAbs * 100);
                     return (
-                      <div key={i} className="flex items-center gap-1 text-[9px]">
+                      <div key={i} className="flex items-center gap-1 text-[10px]">
                         <span className="w-6 flex-shrink-0" style={{ color: 'var(--text-muted)' }}>{r.label}</span>
                         <div className="flex-1 h-1.5 rounded-full overflow-hidden" style={{ background: 'rgba(107,114,128,0.15)' }}>
                           <div className="h-full rounded-full" style={{ width: `${pct}%`, background: isPos ? r.color : '#22c55e' }} />
                         </div>
                         <span className="w-10 text-right font-bold flex-shrink-0" style={{ color: isPos ? '#ef4444' : '#22c55e' }}>
-                          {isPos ? '+' : ''}{fmtWan(r.val)}
+                          {isPos ? '+' : ''}{fmtWanYi(r.val)}
                         </span>
                       </div>
                     );
                   });
                 })()}
-                <div className="grid grid-cols-5 gap-0.5 text-[9px] mt-0.5">
+                <div className="text-[10px] mt-0.5" style={{ color: 'var(--text-muted)' }}>主力净流入累计</div>
+                <div className="grid grid-cols-5 gap-0.5 text-[10px]">
                   {(() => {
                     const mf = signal.moneyFlow;
                     return [
-                      { label: '1日', val: mf.inflow_1d || 0 },
-                      { label: '2日', val: mf.inflow_2d || 0 },
-                      { label: '3日', val: mf.inflow_3d || 0 },
-                      { label: '4日', val: mf.inflow_4d || 0 },
-                      { label: '5日', val: mf.inflow_5d || 0 },
-                    ].map((c, i) => (
-                      <div key={i} className="rounded px-0.5 py-0.5 text-center" style={{ background: c.val >= 0 ? 'rgba(239,68,68,0.08)' : 'rgba(34,197,94,0.08)' }}>
-                        <div style={{ color: 'var(--text-muted)' }}>{c.label}</div>
-                        <div className="font-bold" style={{ color: c.val >= 0 ? '#ef4444' : '#22c55e' }}>
-                          {c.val >= 0 ? '+' : ''}{fmtWan(c.val)}
+                      { label: '近1日', val: mf.inflow_1d ?? 0 },
+                      { label: '近2日', val: mf.inflow_2d ?? 0 },
+                      { label: '近3日', val: mf.inflow_3d ?? 0 },
+                      { label: '近5日', val: mf.inflow_5d ?? 0 },
+                      { label: '近10日', val: mf.inflow_10d },
+                    ].map((c, i) => {
+                      const isNull = c.val === null || c.val === undefined;
+                      return (
+                        <div key={i} className="rounded px-0.5 py-0.5 text-center" style={{ background: isNull ? 'rgba(107,114,128,0.08)' : (c.val >= 0 ? 'rgba(239,68,68,0.08)' : 'rgba(34,197,94,0.08)') }}>
+                          <div style={{ color: 'var(--text-muted)' }}>{c.label}</div>
+                          <div className="font-bold" style={{ color: isNull ? 'var(--text-muted)' : (c.val >= 0 ? '#ef4444' : '#22c55e') }}>
+                            {isNull ? '—' : `${c.val >= 0 ? '+' : ''}${fmtWanYi(c.val)}`}
+                          </div>
                         </div>
-                      </div>
-                    ));
+                      );
+                    });
                   })()}
                 </div>
               </div>
@@ -495,25 +642,24 @@ function SignalCard({
               <div className="text-[10px] text-center py-2" style={{ color: 'var(--text-muted)' }}>暂无盘后数据</div>
             )}
 
-            {/* 右上 + 左下 + 右下：实时数据（价格 + 主力净流入 + 总净流入） */}
-            {realtimeFlow && realtimeFlow.intraday_points && realtimeFlow.intraday_points.length > 0 ? (
+            {/* 右上：实时数据（价格 + 主力净流入 + 散户净流） */}
+            {showRealtimeDetail && realtimeFlow && (realtimeFlow.intraday_points?.length > 0 || realtimeFlow.main_force_inflow != null) ? (
               <>
+                <div className="flex items-center gap-1 mb-0.5">
+                  <span className="text-[10px] px-1.5 py-0.5 rounded font-bold inline-flex items-center gap-1" style={{ background: 'rgba(239,68,68,0.1)', color: '#ef4444' }}>
+                    <span className={`inline-block w-1.5 h-1.5 rounded-full ${realtimeFlow.is_stale ? '' : 'animate-pulse'}`} style={{ background: realtimeFlow.is_stale ? '#64748b' : '#ef4444' }} />
+                    🔴 实时{realtimeFlow?.latest_time ? ` ${realtimeFlow.latest_time.slice(11, 16)}` : ''}
+                  </span>
+                </div>
                 {(() => {
-                  const pts = realtimeFlow.intraday_points;
-                  const last = pts[pts.length - 1];
-                  const prices = pts.map(p => p.price || 0);
-                  const minP = Math.min(...prices), maxP = Math.max(...prices);
-                  const rangeP = maxP - minP || 1;
-                  const mfVals = pts.map(p => p.main_force_inflow || 0);
-                  const minM = Math.min(...mfVals), maxM = Math.max(...mfVals);
-                  const rangeM = maxM - minM || 1;
-                  const netVals = pts.map(p => p.net_inflow || 0);
-                  const minN = Math.min(...netVals), maxN = Math.max(...netVals);
-                  const rangeN = maxN - minN || 1;
-                  const w = 100;
-                  const step = w / Math.max(pts.length - 1, 1);
+                  const pts = realtimeFlow.intraday_points || [];
+                  const hasPts = pts.length > 1;
+                  const last = hasPts ? pts[pts.length - 1] : realtimeFlow;
+                  const w = 70;
+                  const step = hasPts ? w / (pts.length - 1) : 0;
 
                   const buildPath = (vals, minV, rangeV, h) => {
+                    if (!hasPts) return '';
                     return vals.map((v, i) => {
                       const x = i * step;
                       const y = h - ((v - minV) / rangeV) * h;
@@ -521,82 +667,104 @@ function SignalCard({
                     }).join(' ');
                   };
 
-                  const firstP = pts[0].price || 0;
-                  const chgPct = firstP ? ((last.price - firstP) / firstP) * 100 : 0;
+                  const prices = hasPts ? pts.map(p => p.price || 0) : [];
+                  const minP = hasPts ? Math.min(...prices) : 0;
+                  const maxP = hasPts ? Math.max(...prices) : 1;
+                  const rangeP = hasPts ? (maxP - minP || 1) : 1;
+
+                  const mfVals = hasPts ? pts.map(p => p.main_force_inflow || 0) : [];
+                  const minM = hasPts ? Math.min(...mfVals) : 0;
+                  const maxM = hasPts ? Math.max(...mfVals) : 1;
+                  const rangeM = hasPts ? (maxM - minM || 1) : 1;
+
+                  const retailVals = hasPts ? pts.map(p => p.retail_flow || -(p.main_force_inflow || 0)) : [];
+                  const minR = hasPts ? Math.min(...retailVals) : 0;
+                  const maxR = hasPts ? Math.max(...retailVals) : 1;
+                  const rangeR = hasPts ? (maxR - minR || 1) : 1;
+
+                  const firstP = hasPts ? (pts[0].price || 0) : 0;
+                  const lastPrice = last.price ?? realtimeFlow.price ?? 0;
+                  const chgPct = firstP ? ((lastPrice - firstP) / firstP) * 100 : (realtimeFlow.price_chg || 0);
                   const chgColor = chgPct >= 0 ? '#ef4444' : '#22c55e';
+
+                  const mainForce = last.main_force_inflow ?? realtimeFlow.main_force_inflow ?? 0;
+                  const retailFlow = last.retail_flow ?? realtimeFlow.retail_flow ?? -mainForce;
+                  const mfColor = mainForce >= 0 ? '#ef4444' : '#22c55e';
+                  const retailColor = retailFlow >= 0 ? '#ef4444' : '#22c55e';
 
                   return (
                     <div className="flex flex-col gap-1 col-span-1">
                       {/* 实时价格走势 */}
-                      <div className="flex flex-col gap-0.5">
-                        <div className="flex items-center justify-between text-[9px]">
-                          <span style={{ color: 'var(--text-muted)' }}>最新价</span>
-                          <span className="font-bold" style={{ color: chgColor }}>{last.price != null ? last.price.toFixed(2) : '--'} {chgPct >= 0 ? '+' : ''}{chgPct.toFixed(2)}%</span>
+                      <div className="flex items-center justify-between gap-1">
+                        <div className="flex flex-col">
+                          <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>最新价</span>
+                          <span className="text-[10px] font-bold tabular-nums" style={{ color: chgColor }}>
+                            {lastPrice ? lastPrice.toFixed(2) : '--'} {chgPct >= 0 ? '+' : ''}{chgPct.toFixed(2)}%
+                          </span>
                         </div>
-                        <div className="relative h-5">
-                          <svg width="100%" height="20" viewBox={`0 0 ${w} 20`} preserveAspectRatio="none" style={{ display: 'block' }}>
+                        {hasPts && (
+                          <svg width="50%" height="20" viewBox={`0 0 ${w} 20`} preserveAspectRatio="none" style={{ display: 'block' }}>
                             <path d={`${buildPath(prices, minP, rangeP, 20)} L${w},20 L0,20 Z`} fill={chgPct >= 0 ? 'rgba(239,68,68,0.08)' : 'rgba(34,197,94,0.08)'} />
                             <path d={buildPath(prices, minP, rangeP, 20)} fill="none" stroke={chgColor} strokeWidth="1" />
-                            <circle cx={(pts.length - 1) * step} cy={20 - ((last.price - minP) / rangeP) * 20} r="1.2" fill={chgColor} />
+                            <circle cx={w} cy={20 - ((lastPrice - minP) / rangeP) * 20} r="1.2" fill={chgColor} />
                           </svg>
-                          <div className="flex justify-between text-[7px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
-                            <span>{pts[0]?.time}</span>
-                            <span>{last?.time}</span>
-                          </div>
-                        </div>
+                        )}
                       </div>
 
                       {/* 主力净流入 */}
-                      <div className="flex flex-col gap-0.5">
-                        <div className="flex items-center justify-between text-[9px]">
-                          <span style={{ color: 'var(--text-muted)' }}>主力净流</span>
-                          <span className="font-bold" style={{ color: (last.main_force_inflow || 0) >= 0 ? '#ef4444' : '#22c55e' }}>
-                            {(last.main_force_inflow || 0) >= 0 ? '+' : ''}{fmtWan(last.main_force_inflow)}
+                      <div className="flex items-center justify-between gap-1">
+                        <div className="flex flex-col">
+                          <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>主力净流</span>
+                          <span className="text-[10px] font-bold tabular-nums" style={{ color: mfColor }}>
+                            {mainForce >= 0 ? '+' : ''}{fmtWanYi(mainForce)}
                           </span>
                         </div>
-                        <div className="relative h-5">
-                          <svg width="100%" height="20" viewBox={`0 0 ${w} 20`} preserveAspectRatio="none" style={{ display: 'block' }}>
+                        {hasPts && (
+                          <svg width="50%" height="20" viewBox={`0 0 ${w} 20`} preserveAspectRatio="none" style={{ display: 'block' }}>
                             <line x1="0" y1={20 - ((0 - minM) / rangeM) * 20} x2={w} y2={20 - ((0 - minM) / rangeM) * 20} stroke="rgba(107,114,128,0.25)" strokeWidth="0.4" strokeDasharray="2,2" />
-                            <path d={`${buildPath(mfVals, minM, rangeM, 20)} L${w},20 L0,20 Z`} fill={(last.main_force_inflow || 0) >= 0 ? 'rgba(239,68,68,0.08)' : 'rgba(34,197,94,0.08)'} />
-                            <path d={buildPath(mfVals, minM, rangeM, 20)} fill="none" stroke={(last.main_force_inflow || 0) >= 0 ? '#ef4444' : '#22c55e'} strokeWidth="1" />
-                            <circle cx={(pts.length - 1) * step} cy={20 - ((last.main_force_inflow - minM) / rangeM) * 20} r="1.2" fill={(last.main_force_inflow || 0) >= 0 ? '#ef4444' : '#22c55e'} />
+                            <path d={`${buildPath(mfVals, minM, rangeM, 20)} L${w},20 L0,20 Z`} fill={mainForce >= 0 ? 'rgba(239,68,68,0.08)' : 'rgba(34,197,94,0.08)'} />
+                            <path d={buildPath(mfVals, minM, rangeM, 20)} fill="none" stroke={mfColor} strokeWidth="1" />
+                            <circle cx={w} cy={20 - ((mainForce - minM) / rangeM) * 20} r="1.2" fill={mfColor} />
                           </svg>
-                          <div className="flex justify-between text-[7px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
-                            <span>{pts[0]?.time}</span>
-                            <span>{last?.time}</span>
-                          </div>
-                        </div>
+                        )}
                       </div>
 
-                      {/* 总净流入 */}
-                      <div className="flex flex-col gap-0.5">
-                        <div className="flex items-center justify-between text-[9px]">
-                          <span style={{ color: 'var(--text-muted)' }}>总净流入</span>
-                          <span className="font-bold" style={{ color: (last.net_inflow || 0) >= 0 ? '#ef4444' : '#22c55e' }}>
-                            {(last.net_inflow || 0) >= 0 ? '+' : ''}{fmtWan(last.net_inflow)}
+                      {/* 散户净流（实时数据源不提供总净流入，按日内资金平衡估算） */}
+                      <div className="flex items-center justify-between gap-1">
+                        <div className="flex flex-col">
+                          <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>散户净流*</span>
+                          <span className="text-[10px] font-bold tabular-nums" style={{ color: retailColor }}>
+                            {retailFlow >= 0 ? '+' : ''}{fmtWanYi(retailFlow)}
                           </span>
                         </div>
-                        <div className="relative h-5">
-                          <svg width="100%" height="20" viewBox={`0 0 ${w} 20`} preserveAspectRatio="none" style={{ display: 'block' }}>
-                            <line x1="0" y1={20 - ((0 - minN) / rangeN) * 20} x2={w} y2={20 - ((0 - minN) / rangeN) * 20} stroke="rgba(107,114,128,0.25)" strokeWidth="0.4" strokeDasharray="2,2" />
-                            <path d={`${buildPath(netVals, minN, rangeN, 20)} L${w},20 L0,20 Z`} fill={(last.net_inflow || 0) >= 0 ? 'rgba(239,68,68,0.08)' : 'rgba(34,197,94,0.08)'} />
-                            <path d={buildPath(netVals, minN, rangeN, 20)} fill="none" stroke={(last.net_inflow || 0) >= 0 ? '#ef4444' : '#22c55e'} strokeWidth="1" />
-                            <circle cx={(pts.length - 1) * step} cy={20 - ((last.net_inflow - minN) / rangeN) * 20} r="1.2" fill={(last.net_inflow || 0) >= 0 ? '#ef4444' : '#22c55e'} />
+                        {hasPts && (
+                          <svg width="50%" height="20" viewBox={`0 0 ${w} 20`} preserveAspectRatio="none" style={{ display: 'block' }}>
+                            <line x1="0" y1={20 - ((0 - minR) / rangeR) * 20} x2={w} y2={20 - ((0 - minR) / rangeR) * 20} stroke="rgba(107,114,128,0.25)" strokeWidth="0.4" strokeDasharray="2,2" />
+                            <path d={`${buildPath(retailVals, minR, rangeR, 20)} L${w},20 L0,20 Z`} fill={retailFlow >= 0 ? 'rgba(239,68,68,0.08)' : 'rgba(34,197,94,0.08)'} />
+                            <path d={buildPath(retailVals, minR, rangeR, 20)} fill="none" stroke={retailColor} strokeWidth="1" />
+                            <circle cx={w} cy={20 - ((retailFlow - minR) / rangeR) * 20} r="1.2" fill={retailColor} />
                           </svg>
-                          <div className="flex justify-between text-[7px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
-                            <span>{pts[0]?.time}</span>
-                            <span>{last?.time}</span>
-                          </div>
-                        </div>
+                        )}
                       </div>
+
+                      {realtimeFlow.latest_time && (
+                        <div className="text-[7px] text-right" style={{ color: 'var(--text-muted)' }}>
+                          盘中 {realtimeFlow.latest_time.slice(11, 16)} · *散户净流=估算
+                        </div>
+                      )}
                     </div>
                   );
                 })()}
               </>
             ) : (
-              realtimeFlow && <div className="text-[10px] text-center py-2 col-span-1" style={{ color: 'var(--text-muted)' }}>暂无实时数据</div>
+              <div className="text-[10px] text-center py-2 col-span-1" style={{ color: 'var(--text-muted)' }}>暂无实时数据</div>
             )}
           </div>
+
+          {/* 新增：同花顺风格盘后资金流向看板 */}
+          {isWatchlistStyle && (
+            <MoneyFlowBoard moneyFlow={signal.moneyFlow} sectorTrend={signal.sectorTrend} sector={signal.sector} />
+          )}
         </div>
 
         {/* ========== 右列：操作按钮模块（竖排） ========== */}
@@ -631,76 +799,20 @@ function SignalCard({
               🔍分析
             </button>
           )}
-          <TradeButton stockCode={secCode} stockName={secName} type="buy" positionCount={position?.count || 0} className="h-7 min-w-[48px] !px-2 !py-0" />
-          {!isLeader && (position?.count || 0) > 0 && (
-            <button
-              onClick={(e) => { e.stopPropagation(); onSell?.({ stockCode: secCode, stockName: secName, positionCount: position?.count || 0 }); }}
-              className="px-2 text-xs rounded font-medium inline-flex items-center justify-center h-7 min-w-[48px]"
-              style={{ background: 'rgba(34,197,94,0.1)', color: '#22c55e', border: '1px solid rgba(34,197,94,0.3)' }}
-            >
-              卖
-            </button>
-          )}
-          {showActionButton && (
-            <button
-              onClick={(e) => { e.stopPropagation(); setActionOpen(true); }}
-              className="px-2 text-xs rounded font-medium inline-flex items-center justify-center h-7 min-w-[48px]"
-              style={{ background: 'rgba(107,114,128,0.1)', color: '#6b7280', border: '1px solid rgba(107,114,128,0.3)' }}
-            >
-              操作
-            </button>
-          )}
-          {showWatchBtn && (
-            <button
-              onClick={async (e) => {
-                e.stopPropagation();
-                if (watchAdded) return;
-                const { ok } = await apiFetch('/api/watchlist/add', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ stockCode: secCode, stockName: secName }),
-                });
-                if (ok) setWatchAdded(true);
-              }}
-              className="px-2 text-xs rounded font-medium inline-flex items-center justify-center h-7 min-w-[48px]"
-              style={watchAdded
-                ? { background: 'rgba(34,197,94,0.1)', color: '#22c55e', border: '1px solid rgba(34,197,94,0.3)' }
-                : { background: 'rgba(234,179,8,0.1)', color: '#eab308', border: '1px solid rgba(234,179,8,0.3)' }
-              }
-            >
-              {watchAdded ? '✓已加' : '自选'}
-            </button>
-          )}
-          {showFocusBtn && (
-            <button
-              onClick={async (e) => {
-                e.stopPropagation();
-                if (focusAdded) return;
-                const res = await apiFetch('/api/watchlist/add', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ stockCode: secCode, stockName: secName, group: '重点关注' }),
-                });
-                if (res.ok) {
-                  setFocusAdded(true);
-                } else if (res.status === 400) {
-                  const moveRes = await apiFetch(`/api/watchlist/${secCode}/move-group`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ target_group: '重点关注' }),
-                  });
-                  if (moveRes.ok) setFocusAdded(true);
-                }
-              }}
-              className="px-2 text-xs rounded font-medium inline-flex items-center justify-center h-7 min-w-[48px]"
-              style={focusAdded
-                ? { background: 'rgba(34,197,94,0.1)', color: '#22c55e', border: '1px solid rgba(34,197,94,0.3)' }
-                : { background: 'rgba(59,130,246,0.1)', color: '#3b82f6', border: '1px solid rgba(59,130,246,0.3)' }
-              }
-            >
-              {focusAdded ? '✓已关注' : '重点'}
-            </button>
-          )}
+          <StockActionButtons
+            stockCode={secCode}
+            stockName={secName}
+            signal={signal}
+            positionCount={position?.count || 0}
+            showBuy={showBuyBtn ?? showWatchBtn}
+            showSell={!isLeader && (position?.count || 0) > 0}
+            showWatch={showWatchBtn}
+            showFocus={showFocusBtn}
+            showMore={showActionButton}
+            size="sm"
+            onRefresh={onRefresh}
+            onRemove={onRemove}
+          />
         </div>
       </div>
 
@@ -712,16 +824,6 @@ function SignalCard({
       {/* 委托记录弹窗 */}
       {orderOpen && (
         <OrderHistoryModal stockName={secName} secCode={secCode} orders={orders} onClose={() => setOrderOpen(false)} />
-      )}
-
-      {/* 操作弹窗（移除等） */}
-      {actionOpen && (
-        <StockActionModal
-          signal={signal}
-          onRemove={onRemove}
-          onRefresh={onRefresh}
-          onClose={() => setActionOpen(false)}
-        />
       )}
 
       {/* 指标模块组合设置弹窗 */}

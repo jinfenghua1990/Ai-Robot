@@ -1,0 +1,1 @@
+import{j as t}from"./index.BraBnPkH.js";import{H as o}from"./HermesEmbed.DqFdw5DQ.js";import"./react-vendor.BSdSoFln.js";function s(){return t.jsx(o,{path:"/stock-monitor",title:"选股持仓"})}export{s as default};

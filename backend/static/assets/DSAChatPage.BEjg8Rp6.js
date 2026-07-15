@@ -1,0 +1,1 @@
+import{j as t}from"./index.BraBnPkH.js";import{D as r}from"./DSAEmbed.B9G_CgPm.js";import"./react-vendor.BSdSoFln.js";function m(){return t.jsx(r,{path:"/chat",title:"DSA Agent 问股"})}export{m as default};

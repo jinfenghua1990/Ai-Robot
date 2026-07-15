@@ -278,7 +278,7 @@ def _gen_trade_plan(pattern, tier, close, ma5, ma10, ma20, dist_high, dev_ma20):
     return {
         'buy': f"明天不主动买，除非放量反包并重新站回5/10日线",
         'stop': f"若已持有，重点看20日线 {ma20:.2f}",
-        'action': '回避',
+        'action': '减仓观望',
     }
 
 

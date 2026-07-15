@@ -1,17 +1,20 @@
 import time
+import logging
 from fastapi import APIRouter, Query, HTTPException, Response
 from db.connection import get_db
 from db.session import get_db_session
 from db.models import SectorFlow
 from datetime import datetime
 from sqlalchemy import select
+from utils.cache import BoundedDict
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # 内存缓存：{ cache_key: (result, timestamp) }
-_cache = {}
-_flow_trend_cache = {}
-_flow_rank_cache = {}
+_cache = BoundedDict(maxsize=100)
+_flow_trend_cache = BoundedDict(maxsize=50)
+_flow_rank_cache = BoundedDict(maxsize=50)
 _CACHE_TTL = 300  # 5分钟
 
 
@@ -110,10 +113,6 @@ def get_heatmap(response: Response, date: str = Query(None), days: int = Query(5
         response.headers["Cache-Control"] = "public, max-age=300"
         response.headers["X-Cache"] = "MISS"
         return result
-
-
-# 独立的 sector-flow-trend 缓存，避免和 heatmap 冲突
-_flow_trend_cache = {}
 
 
 @router.get("/api/sector-flow-trend")
@@ -243,4 +242,4 @@ def refresh_heatmap_cache():
         get_sector_flow_rank(mock, date=None)
         print('[cache] heatmap + sector-flow-rank refreshed')
     except Exception as e:
-        print(f'[cache] heatmap refresh error: {e}')
+        logger.warning(f'[cache] heatmap refresh error: {e}', exc_info=True)

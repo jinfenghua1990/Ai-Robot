@@ -48,7 +48,7 @@ def get_concept_sector_money_flow_realtime(pages=10, per_page=100):
             if len(data) < per_page:
                 break
         except Exception as e:
-            print(f'[concept_sector_collector] sina page {page} error: {e}')
+            logger.warning(f'[concept_sector_collector] sina page {page} error: {e}', exc_info=True)
             break
 
     print(f'[concept_sector_collector] fetched {len(items)} concept sectors from sina')

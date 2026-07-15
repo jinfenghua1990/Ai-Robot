@@ -3,9 +3,9 @@
 现作为东财模拟盘 146w 账户的展示/手动交易入口，通过 MX_APIKEY 代理到东方财富妙想接口
 与东财自动化模拟盘（/api/mx-trading，MX_TRADING_APIKEY）完全独立
 """
-import httpx
 from typing import Optional
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Depends
+from api.auth import verify_api_key
 from pydantic import BaseModel
 from config import MX_APIKEY
 from utils import stock_code_to_sina as _stock_code_to_sina
@@ -102,6 +102,55 @@ async def get_positions_endpoint(force: int = Query(0, description="1=跳过缓�
     return await get_positions(force=bool(force))
 
 
+from datetime import date as _date
+
+@router.get("/api/trading/portfolio-snapshot")
+async def portfolio_snapshot_endpoint():
+    """返回 DSA-compatible 持仓快照（供 DSA 持仓页面使用，10s超时）"""
+    try:
+        import asyncio
+        pos_data = await asyncio.wait_for(
+            get_positions(force=False), timeout=10.0
+        )
+        pos_list = pos_data.get("positions", [])
+    except Exception:
+        return {"account_count": 0, "accounts": [], "message": "妙想API超时"}
+    
+    items = []
+    for p in pos_list:
+        items.append({
+            "symbol": p.get("secCode", ""),
+            "market": "cn", "currency": "CNY",
+            "quantity": p.get("count", 0) or 0,
+            "avg_cost": float(p.get("costPrice", 0) or 0),
+            "total_cost": float((p.get("costPrice", 0) or 0) * (p.get("count", 0) or 0)),
+            "last_price": float(p.get("price", 0) or 0),
+            "market_value_base": float(p.get("value", 0) or 0),
+            "unrealized_pnl_base": float(p.get("profit", 0) or 0),
+            "price_source": "realtime_quote", "price_available": True,
+        })
+    total_mv = sum(it["market_value_base"] for it in items)
+    total_upnl = sum(it["unrealized_pnl_base"] for it in items)
+    return {
+        "as_of": _date.today().isoformat(),
+        "cost_method": "avg", "currency": "CNY",
+        "account_count": 1 if items else 0,
+        "total_cash": 0.0, "total_market_value": total_mv, "total_equity": total_mv,
+        "realized_pnl": 0.0, "unrealized_pnl": total_upnl,
+        "fee_total": 0.0, "tax_total": 0.0,
+        "fx_stale": False, "data_quality": "ok", "limitations": [],
+        "accounts": [{
+            "account_id": 1, "account_name": "模拟交易", "market": "cn",
+            "base_currency": "CNY", "as_of": _date.today().isoformat(),
+            "cost_method": "avg", "total_cash": 0.0,
+            "total_market_value": total_mv, "total_equity": total_mv,
+            "realized_pnl": 0.0, "unrealized_pnl": total_upnl,
+            "fee_total": 0.0, "tax_total": 0.0,
+            "fx_stale": False, "data_quality": "ok", "limitations": [], "positions": items,
+        }],
+    }
+
+
 @router.get("/api/trading/orders")
 async def get_orders(
     drt: int = Query(0, description="0=全部, 1=买入, 2=卖出"),
@@ -113,7 +162,7 @@ async def get_orders(
     return await fetch_orders(api_key=MX_APIKEY, drt=drt, status=status)
 
 
-@router.post("/api/trading/trade")
+@router.post("/api/trading/trade", dependencies=[Depends(verify_api_key)])
 async def trade(req: TradeRequest):
     """模拟盘买入/卖出（146w 东财账户）"""
     from api.mx_trading import place_trade

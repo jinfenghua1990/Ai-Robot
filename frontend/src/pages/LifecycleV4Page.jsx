@@ -54,12 +54,16 @@ export default function LifecycleV4Page() {
 
   useEffect(() => {
     (async () => {
-      const { ok, data } = await apiFetch('/api/leader/stats');
-      if (ok) setStats(data);
+      try {
+        const { ok, data } = await apiFetch('/api/leader/stats');
+        if (ok) setStats(data);
+      } catch (e) { console.error('[StrategyCenter] leader/stats failed:', e); }
     })();
     (async () => {
-      const { ok, data } = await apiFetch('/api/leader/history?limit=50');
-      if (ok) setHistory(data);
+      try {
+        const { ok, data } = await apiFetch('/api/leader/history?limit=50');
+        if (ok) setHistory(data);
+      } catch (e) { console.error('[StrategyCenter] leader/history failed:', e); }
     })();
   }, []);
 

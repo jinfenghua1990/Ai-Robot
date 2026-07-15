@@ -21,11 +21,20 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 import urllib.error
 import urllib.request
 from typing import Any
+
+logger = logging.getLogger("vibe_mcp_server")
+if not logger.handlers:
+    # stdio JSON-RPC 进程不能输出到 stdout（会污染协议），只配 stderr。
+    _h = logging.StreamHandler(sys.stderr)
+    _h.setFormatter(logging.Formatter("[vibe_mcp] %(levelname)s %(message)s"))
+    logger.addHandler(_h)
+    logger.setLevel(logging.WARNING)
 
 SERVER_INFO = {"name": "airobat-vibe", "version": "0.1.0"}
 DEFAULT_PROTOCOL = "2024-11-05"
@@ -46,10 +55,12 @@ def _api_get(path: str, params: dict[str, Any] | None = None) -> dict:
     except urllib.error.HTTPError as e:
         try:
             detail = json.loads(e.read().decode("utf-8")).get("detail", e.reason)
-        except Exception:
+        except Exception as parse_err:
+            logger.debug("vibe_mcp: HTTP error body parse failed (%s) for %s", parse_err, path)
             detail = e.reason
         return {"error": f"HTTP {e.code}: {detail}"}
     except Exception as e:
+        logger.warning("vibe_mcp: GET %s failed: %s", path, e)
         return {"error": f"请求失败：{e}"}
 
 
@@ -65,10 +76,12 @@ def _api_post(path: str, payload: dict | None = None) -> dict:
     except urllib.error.HTTPError as e:
         try:
             detail = json.loads(e.read().decode("utf-8")).get("detail", e.reason)
-        except Exception:
+        except Exception as parse_err:
+            logger.debug("vibe_mcp: HTTP error body parse failed (%s) for %s", parse_err, path)
             detail = e.reason
         return {"error": f"HTTP {e.code}: {detail}"}
     except Exception as e:
+        logger.warning("vibe_mcp: POST %s failed: %s", path, e)
         return {"error": f"请求失败：{e}"}
 
 

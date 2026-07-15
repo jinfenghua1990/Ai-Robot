@@ -5,7 +5,6 @@
 2. 板块聚合 - 按板块分组统计
 """
 from datetime import datetime, timedelta
-from db.connection import get_db
 from db.session import get_db_session
 from db.models import LeaderLifecycle, StockFlow
 

@@ -1,0 +1,1 @@
+import{j as t}from"./index.CsuYT-kk.js";import{H as e}from"./HermesEmbed.FQlHVKXP.js";import"./react-vendor.BSdSoFln.js";function a(){return t.jsx(e,{path:"/us-strategies",title:"美股策略"})}export{a as default};

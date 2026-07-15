@@ -2,7 +2,6 @@
 MA / RSI / MACD / KDJ / ATR / SuperTrend 等
 统一一个地方，所有模块共用。
 """
-import math
 from typing import List, Optional
 
 

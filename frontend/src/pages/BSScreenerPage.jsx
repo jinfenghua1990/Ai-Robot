@@ -5,6 +5,7 @@ import { DEFAULT_BS_PARAMS, SIGNAL_TYPES } from '../components/bs-screener/const
 import echarts from '../lib/echarts';
 import { apiFetch } from '../utils/request';
 import { TOAST_DURATION } from '../utils/constants';
+import { useWatchlistRealtimeStream } from '../hooks/useWatchlistRealtimeStream';
 
 export default function BSScreenerPage() {
   const [params, setParams] = useState(DEFAULT_BS_PARAMS);
@@ -13,6 +14,28 @@ export default function BSScreenerPage() {
   const [error, setError] = useState(null);
   const [toast, setToast] = useState(null);
   const [showConfig, setShowConfig] = useState(true);
+
+  // 自选股信号合并（丰富每只信号卡片的显示维度：hitTags / moneyFlow / realtimeFlow）
+  const [wlSignals, setWlSignals] = useState({});
+  const [strategyPicks, setStrategyPicks] = useState({});
+  const [coverCount, setCoverCount] = useState(0);
+  const { realtimeMap, streamStatus } = useWatchlistRealtimeStream();
+
+/** 合并 BS 信号与自选股信号，用自选股的丰富字段覆盖 BS 的简约信号 */
+function mergeSignal(bsSig, wlSig) {
+  if (!wlSig) return bsSig;
+  return {
+    ...bsSig,
+    hitTags: wlSig.hitTags || [],
+    moneyFlow: wlSig.moneyFlow || null,
+    marketState: wlSig.marketState || null,
+    position: {
+      ...bsSig.position,
+      dayProfit: wlSig.position?.dayProfit ?? bsSig.position?.dayProfit ?? 0,
+      dayProfitPct: wlSig.position?.dayProfitPct ?? bsSig.position?.dayProfitPct ?? 0,
+    },
+  };
+}
 
   // 策略保存/加载
   const [strategies, setStrategies] = useState([]);
@@ -84,6 +107,30 @@ export default function BSScreenerPage() {
       if (!ok) throw new Error(`扫描失败: ${status}`);
       setSignals(data);
       setToast({ success: true, message: `扫描完成：共扫描 ${data.scanned} 只，命中 ${data.summary.total} 只` });
+
+      // 合并自选股信号丰富每只卡片（hitTags / moneyFlow / marketState）
+      try {
+        const [wlRes, picksRes] = await Promise.allSettled([
+          apiFetch('/api/watchlist'),
+          apiFetch('/api/bs-screener/strategy-picks'),
+        ]);
+        const wlMap = {};
+        if (wlRes.status === 'fulfilled' && wlRes.value.ok && wlRes.value.data?.signals) {
+          for (const s of wlRes.value.data.signals) {
+            if (s.secCode) wlMap[s.secCode] = s;
+          }
+        }
+        setWlSignals(wlMap);
+        if (picksRes.status === 'fulfilled' && picksRes.value.ok && picksRes.value.data?.code_to_strategies) {
+          setStrategyPicks(picksRes.value.data.code_to_strategies);
+        }
+        // 覆盖数 = BS 结果中同时也出现在自选股的
+        let cover = 0;
+        for (const sig of (data.signals || [])) {
+          if (wlMap[sig.secCode]) cover++;
+        }
+        setCoverCount(cover);
+      } catch (e) { /* 合并失败不影响扫描结果 */ }
     } catch (e) {
       setError(e.message || '扫描失败');
       setToast({ success: false, message: e.message || '扫描失败' });
@@ -723,7 +770,7 @@ export default function BSScreenerPage() {
             {[
               { label: 'B点(买入)', count: signals.summary.buy, color: B_SIGNAL_COLOR },
               { label: 'S点(卖出)', count: signals.summary.sell, color: S_SIGNAL_COLOR },
-              { label: '关注', count: signals.summary.watch, color: '#3b82f6' },
+              { label: '覆盖数', count: coverCount, color: '#a855f7' },
               { label: '扫描总数', count: signals.summary.scanned, color: 'var(--text-primary)' },
               { label: '命中率', count: signals.summary.scanned ? `${((signals.summary.total / signals.summary.scanned) * 100).toFixed(1)}%` : '0%', color: '#eab308' },
             ].map(item => (
@@ -785,9 +832,24 @@ export default function BSScreenerPage() {
         ) : signals ? (
           signals.signals.length > 0 ? (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-              {signals.signals.map(sig => (
-                <SignalCard key={sig.secCode} signal={sig} orders={[]} showWatchBtn={false} mode="watchlist" showMarketState showBuyPower showAnalysisButton />
-              ))}
+              {signals.signals.map(sig => {
+                const mergedSig = mergeSignal(sig, wlSignals[sig.secCode]);
+                return (
+                  <SignalCard
+                    key={sig.secCode}
+                    signal={mergedSig}
+                    orders={[]}
+                    showWatchBtn={false}
+                    mode="watchlist"
+                    showMarketState
+                    showBuyPower
+                    showAnalysisButton
+                    strategyTags={strategyPicks[sig.secCode] || []}
+                    realtimeFlow={realtimeMap?.[sig.secCode] || null}
+                    showRealtimeDetail
+                  />
+                );
+              })}
             </div>
           ) : (
             <div className="text-center py-12 text-sm" style={{ color: 'var(--text-muted)' }}>

@@ -16,7 +16,7 @@ _watchlist_refreshing = False
 _kline_cache: dict = {}
 
 QUOTE_CACHE_TTL = 30
-WATCHLIST_CACHE_TTL = 300
+WATCHLIST_CACHE_TTL = 60
 KLINE_CACHE_TTL = 3600
 
 # 共享 httpx 客户端引用（由 main.py lifespan 设置）
@@ -43,11 +43,21 @@ def reset_watchlist_cache():
     _watchlist_cache["ts"] = 0
 
 
+QUOTE_FAIL_TTL = 5  # 失败短缓存：限流/故障时避免打爆新浪
+
+
 async def get_quote(code: str) -> Optional[dict]:
-    """获取新浪实时行情（缓存 30 秒，含失败结果以避免无效重试）"""
+    """获取新浪实时行情（缓存 30 秒，失败结果 5 秒）
+
+    失败结果仅缓存 5 秒，避免新浪限流/临时故障时数据卡死。
+    """
     cached = _quote_cache.get(code)
     if cached and time.time() - cached[1] < QUOTE_CACHE_TTL:
         return cached[0]
+    # 失败短缓存：5s 内不再重试（避免打爆新浪）
+    fail_ts = _quote_cache.get(code + '_fail_ts')
+    if fail_ts and time.time() - fail_ts < QUOTE_FAIL_TTL:
+        return None
 
     from utils import stock_code_to_sina
     sina_code = stock_code_to_sina(code)
@@ -61,10 +71,12 @@ async def get_quote(code: str) -> Optional[dict]:
         text = resp.text
         if '"' not in text or len(text.split('"')) < 3:
             _quote_cache[code] = (None, time.time())
+            _quote_cache[code + '_fail_ts'] = time.time()  # 失败短缓存标记
             return None
         parts = text.split('"')[1].split(',')
         if len(parts) < 10:
             _quote_cache[code] = (None, time.time())
+            _quote_cache[code + '_fail_ts'] = time.time()
             return None
         yesterday_close = float(parts[1])
         current_price = float(parts[3])
@@ -82,11 +94,20 @@ async def get_quote(code: str) -> Optional[dict]:
             'change': round(change, 3),
             'changePct': round(change_pct, 2),
         }
+        # 行情源校验：确保 low ≤ min(open, close), high ≥ max(open, close)
+        min_price = min(result['open'], current_price)
+        max_price = max(result['open'], current_price)
+        if result['low'] > min_price:
+            result['low'] = min_price
+        if result['high'] < max_price:
+            result['high'] = max_price
         _quote_cache[code] = (result, time.time())
+        _quote_cache.pop(code + '_fail_ts', None)
         return result
     except Exception as e:
         logger.debug(f'[_shared] get_quote failed {code}: {e}')
         _quote_cache[code] = (None, time.time())
+        _quote_cache[code + '_fail_ts'] = time.time()
         return None
 
 

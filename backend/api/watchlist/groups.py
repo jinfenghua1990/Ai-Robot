@@ -61,6 +61,13 @@ async def rename_group(req: GroupRenameRequest):
         affected = db.query(Watchlist).filter(Watchlist.group_name == old).update({'group_name': new})
         db.commit()
         reset_watchlist_cache()
+        # 同步 JSON：更新该分组下所有股票
+        from .watchlist_local import update_stock, read_local, write_local
+        data = read_local()
+        for s in data["stocks"]:
+            if s.get("group") == old:
+                s["group"] = new
+        write_local(data)
         return {'success': True, 'affected': affected, 'new_name': new}
 
 
@@ -76,4 +83,12 @@ async def delete_group(name: str, force: bool = Query(False)):
             db.query(Watchlist).filter(Watchlist.group_name == name).update({'group_name': '默认'})
         db.commit()
         reset_watchlist_cache()
+        # 同步 JSON
+        if force and count > 0:
+            from .watchlist_local import update_stock, read_local, write_local
+            data = read_local()
+            for s in data["stocks"]:
+                if s.get("group") == name:
+                    s["group"] = "默认"
+            write_local(data)
         return {'success': True, 'moved': count if force else 0}

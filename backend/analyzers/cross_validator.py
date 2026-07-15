@@ -120,7 +120,7 @@ def get_dynamic_weights(target_date=None):
             weights = {k: v / total_reliability for k, v in weights.items()}
         return weights
     except Exception as e:
-        print(f'[validator] get_dynamic_weights error: {e}')
+        logger.warning(f'[validator] get_dynamic_weights error: {e}', exc_info=True)
         return DEFAULT_WEIGHTS.copy()
 
 
@@ -330,7 +330,7 @@ def _log_quality(snapshot_time, trade_date, ts_code, name, indicator,
             db.commit()
     except Exception as e:
         db.rollback()
-        print(f'[validator] log_quality error: {e}')
+        logger.warning(f'[validator] log_quality error: {e}', exc_info=True)
 
 
 def _trigger_manual_review(ts_code, name, indicator, sources_data, outliers,
@@ -348,10 +348,10 @@ def _trigger_manual_review(ts_code, name, indicator, sources_data, outliers,
             )
             db.add(review)
             db.commit()
-            print(f'[validator] Manual review triggered for {ts_code}.{indicator}: {reason}')
+            logger.info(f'[validator] Manual review triggered for {ts_code}.{indicator}: {reason}')
     except Exception as e:
         db.rollback()
-        print(f'[validator] trigger_review error: {e}')
+        logger.warning(f'[validator] trigger_review error: {e}', exc_info=True)
 
 
 def _try_auto_review(ts_code, name, indicator, sources_data, outliers,
@@ -407,7 +407,7 @@ def _try_auto_review(ts_code, name, indicator, sources_data, outliers,
                 return True
     except Exception as e:
         db.rollback()
-        print(f'[validator] auto_review error: {e}')
+        logger.warning(f'[validator] auto_review error: {e}', exc_info=True)
         return False
 
 
@@ -443,7 +443,7 @@ def _update_source_reliability(target_date, valid_data, outliers, median):
             db.commit()
     except Exception as e:
         db.rollback()
-        print(f'[validator] update_reliability error: {e}')
+        logger.warning(f'[validator] update_reliability error: {e}', exc_info=True)
 
 
 def detect_anomalies(ts_code, name, indicator, value, history_values=None):

@@ -208,7 +208,7 @@ async def refresh_all_market_state():
                 if (i + 1) % 10 == 0:
                     print(f'[market-state] {i+1}/{len(codes)} done')
             except Exception as e:
-                print(f'[market-state] error {code}: {e}')
+                logger.warning(f'[market-state] error {code}: {e}', exc_info=True)
 
     asyncio.create_task(_bg())
     return {"success": True, "total": len(codes), "message": "后台更新中，约需1-2分钟"}

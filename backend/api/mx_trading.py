@@ -7,19 +7,24 @@ import time
 import logging
 import httpx
 from typing import Optional
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Depends
+from api.auth import verify_api_key
 from pydantic import BaseModel
 from config import MX_TRADING_APIKEY, MX_API_URL
 from utils import stock_code_to_sina as _stock_code_to_sina
+from utils.cache import BoundedDict
 from api.watchlist._shared import _get_http_client
 from utils.http_constants import SINA_HEADERS_SHORT
+from sqlalchemy import select
+from db.connection import SessionLocal
+from db.models import SimPositionCost
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
 # 内存缓存（仅缓存查询类接口）
-_cache = {}
+_cache = BoundedDict(maxsize=50)
 _CACHE_TTL = 300  # 5分钟，减少妙想API调用次数
 
 
@@ -33,6 +38,34 @@ def _clear_cache(api_key: str = None):
     """交易操作后清除缓存"""
     ns = _cache_ns(api_key)
     _cache.pop(ns, None)
+
+
+# ---------- PG 成本价持久化 ----------
+
+def _cost_cache_get(api_key: str, sec_code: str) -> Optional[float]:
+    """从 PG 读取缓存成本价"""
+    try:
+        with SessionLocal() as db:
+            row = db.get(SimPositionCost, (api_key[:20], sec_code[:20]))
+            if row and row.cost_price > 0:
+                return float(row.cost_price)
+    except Exception:
+        logger.debug("mx_trading: PG op failed", exc_info=False)
+    return None
+
+
+def _cost_cache_set(api_key: str, sec_code: str, cost_price: float, quantity: int):
+    """写入 PG 成本价缓存"""
+    try:
+        with SessionLocal() as db:
+            obj = SimPositionCost(
+                api_key=api_key[:20], sec_code=sec_code[:20],
+                cost_price=cost_price, quantity=quantity,
+            )
+            db.merge(obj)
+            db.commit()
+    except Exception:
+        logger.debug("mx_trading: PG op failed", exc_info=False)
 
 
 async def _proxy(endpoint: str, payload: dict, cache_key: str = None, api_key: str = None):
@@ -348,7 +381,7 @@ async def trade(req: TradeRequest):
     )
 
 
-@router.post("/api/mx-trading/cancel")
+@router.post("/api/mx-trading/cancel", dependencies=[Depends(verify_api_key)])
 async def cancel(req: CancelRequest):
     """东财模拟盘撤单/一键撤单"""
     return await place_cancel(

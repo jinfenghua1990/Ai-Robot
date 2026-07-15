@@ -1,0 +1,1 @@
+import{j as r}from"./index.BraBnPkH.js";import{V as t}from"./VibeEmbed.CTGylCM1.js";import"./react-vendor.BSdSoFln.js";function o(){return r.jsx(t,{path:"/radar",title:"Vibe 板块雷达"})}export{o as default};

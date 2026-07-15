@@ -51,7 +51,7 @@ def tencent_quote(codes):
         resp = urllib.request.urlopen(req, timeout=10)
         data = resp.read().decode("gbk")
     except Exception as e:
-        print(f"[tencent] quote error: {e}")
+        logger.warning(f"[tencent] quote error: {e}", exc_info=True)
         return {}
 
     result = {}
@@ -107,7 +107,7 @@ def eastmoney_fund_flow_minute(code):
         r = _em_get(url, params=params, headers=headers, timeout=10)
         d = r.json()
     except Exception as e:
-        print(f"[em-push2] fund_flow error for {code}: {e}")
+        logger.warning(f"[em-push2] fund_flow error for {code}: {e}", exc_info=True)
         return []
 
     rows = []
@@ -146,7 +146,7 @@ def eastmoney_fund_flow_daily(code):
         r = _em_get(url, params=params, headers=headers, timeout=10)
         d = r.json()
     except Exception as e:
-        print(f"[em-push2] daily fund_flow error for {code}: {e}")
+        logger.warning(f"[em-push2] daily fund_flow error for {code}: {e}", exc_info=True)
         return None
 
     klines = d.get("data", {}).get("klines", [])
@@ -223,7 +223,7 @@ def sina_stock_fund_flow(code):
             "small_net": float(d.get("r3_net", 0)),          # 小单净流入（元）
         }
     except Exception as e:
-        print(f"[sina] stock fund_flow error for {code}: {e}")
+        logger.warning(f"[sina] stock fund_flow error for {code}: {e}", exc_info=True)
         return None
 
 
@@ -260,7 +260,7 @@ def tdx_realtime_price(ts_codes):
         api.disconnect()
         return result
     except Exception as e:
-        print(f"[tdx] realtime price error: {e}")
+        logger.warning(f"[tdx] realtime price error: {e}", exc_info=True)
         return {}
 
 

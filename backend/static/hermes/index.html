@@ -13,40 +13,8 @@
     <script>
       (function(){try{var t=localStorage.getItem('hermes-theme');document.documentElement.setAttribute('data-theme',t==='light'?'light':'dark')}catch(e){}})();
     </script>
-    <script>
-      // AIROBOT 集成：拦截 /api/ 请求，重写为 /_hermes/api/ 避免与 AIROBOT API 冲突
-      (function(){
-        var _fetch = window.fetch;
-        window.fetch = function(input, init) {
-          if (typeof input === 'string' && input.startsWith('/api/')) {
-            input = '/_hermes' + input;
-          }
-          return _fetch.call(this, input, init);
-        };
-        // 主题同步：监听 AIROBOT 父页面主题
-        try {
-          var at = localStorage.getItem('airobot-theme');
-          if (at) { localStorage.setItem('hermes-theme', at === 'dark' ? 'dark' : 'light'); }
-        } catch(e) {}
-        window.addEventListener('message', function(e) {
-          if (e.origin !== window.location.origin) return;
-          if (e.data && e.data.type === 'airobot-theme') {
-            var theme = e.data.theme === 'dark' ? 'dark' : 'light';
-            localStorage.setItem('hermes-theme', theme);
-            document.documentElement.setAttribute('data-theme', theme);
-          }
-        });
-        // 从 URL 参数读取主题
-        var params = new URLSearchParams(window.location.search);
-        var ut = params.get('theme');
-        if (ut === 'light' || ut === 'dark') {
-          localStorage.setItem('hermes-theme', ut);
-          document.documentElement.setAttribute('data-theme', ut);
-        }
-      })();
-    </script>
-    <script type="module" crossorigin src="/_hermes/assets/index-DaxJtxPp.js"></script>
-    <link rel="stylesheet" crossorigin href="/_hermes/assets/index-CZoHU5MF.css">
+    <script type="module" crossorigin src="/_hermes/assets/index-Cr_l1_gw.js"></script>
+    <link rel="stylesheet" crossorigin href="/_hermes/assets/index-CjFX612Y.css">
   </head>
   <body>
     <div id="root"></div>

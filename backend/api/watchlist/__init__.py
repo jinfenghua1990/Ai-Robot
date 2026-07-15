@@ -1,11 +1,12 @@
 """watchlist 包入口
 
 将原 backend/api/watchlist.py（844行）拆为以下子模块：
-- _shared.py   共享缓存 + 内部工具
-- core.py      核心 CRUD + 列表构建（get/add/remove/note/quality/pin/move-group/sync-quality）
-- groups.py    分组管理
-- batch.py     批量操作（delete/move/export）
-- sync_mx.py   从妙想同步到本地
+- _shared.py        共享缓存 + 内部工具
+- core.py           核心 CRUD + 列表构建（get/add/remove/note/quality/pin/move-group/sync-quality）
+- groups.py         分组管理
+- batch.py          批量操作（delete/move/export）
+- sync_mx.py        从妙想同步到本地
+- watchlist_sync.py 手动触发实时资金流采集 + 全市场排行
 
 main.py 仍可通过 `from api import watchlist` 然后 `app.include_router(watchlist.router)` 加载。
 同时保持向后兼容：`from api.watchlist import _watchlist_cache, _refresh_watchlist_cache` 仍可用
@@ -13,6 +14,7 @@ main.py 仍可通过 `from api import watchlist` 然后 `app.include_router(watc
 """
 from fastapi import APIRouter
 from fastapi.routing import APIRouter as _APIRouter
+import importlib
 
 from ._shared import _watchlist_cache
 from .core import build_watchlist, refresh_watchlist_cache, get_quote, fetch_kline_cached
@@ -20,8 +22,8 @@ from .core import build_watchlist, refresh_watchlist_cache, get_quote, fetch_kli
 
 # 合并子模块 router
 router = APIRouter()
-for _mod in ("core", "groups", "batch", "sync_mx"):
-    _sub = __import__(f"api.watchlist.{_mod}", fromlist=["router"])
+for _mod in ("core", "groups", "batch", "sync_mx", "realtime_stream", "watchlist_sync"):
+    _sub = importlib.import_module(f"api.watchlist.{_mod}")
     router.include_router(_sub.router)
 
 

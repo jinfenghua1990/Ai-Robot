@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import logging
 import math
 import os
 import random
@@ -459,7 +460,7 @@ def _em_session(direct: bool):
         s.mount("https://", adapter)
         s.mount("http://", adapter)
     except Exception:
-        pass  # 老版本 urllib3 缺参数时降级为无重试
+        logger.debug("urllib3 adapter setup failed, fallback to no-retry", exc_info=False)
     _EM_SESSIONS[direct] = s
     return s
 

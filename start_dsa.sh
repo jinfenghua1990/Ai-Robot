@@ -5,6 +5,19 @@
 set -e
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 DSA_DIR="${PROJECT_DIR}/.dsa"
+
+# 端口守护：若 8000 已被占用，回收占用进程后再启动
+# （用 kill 而非 exit，保证 LaunchAgent 的 KeepAlive 能持续自愈、且始终单实例）
+if /usr/sbin/lsof -nP -iTCP:8000 -sTCP:LISTEN -t >/dev/null 2>&1; then
+  OLD=$(/usr/sbin/lsof -nP -iTCP:8000 -sTCP:LISTEN -t 2>/dev/null | head -1)
+  echo "[dsa] 8000 被 PID ${OLD} 占用，回收后重启"
+  kill "${OLD}" 2>/dev/null || true
+  for i in $(seq 1 10); do
+    /usr/sbin/lsof -nP -iTCP:8000 -sTCP:LISTEN >/dev/null 2>&1 || break
+    sleep 1
+  done
+fi
+
 cd "${DSA_DIR}"
 
 # 首次运行：安装依赖（使用 Python 3.11+）
@@ -33,4 +46,5 @@ export ADMIN_AUTH_ENABLED=false
 
 echo "启动 DSA 后端：http://127.0.0.1:8000"
 echo "API 文档：http://127.0.0.1:8000/docs"
-exec python server.py
+# 日志轮转：单文件 10MB，保留 5 个备份
+exec python server.py 2>&1 | /usr/sbin/rotatelogs -l -f -n 5 /tmp/airobot_dsa.log 10M

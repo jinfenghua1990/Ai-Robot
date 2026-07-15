@@ -337,6 +337,45 @@ export default function StockDetailPage() {
         >
           💰 买入
         </button>
+        {/* 分析按钮群 */}
+        <button
+          onClick={async () => {
+            await apiFetch('/api/analysis/request', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ stock_code: code, stock_name: stockName, source: 'tdx' }),
+            });
+            alert('📊 通达信分析请求已提交！等我对话时给你出报告。\n可到 📋研报中心 查看进度。');
+          }}
+          className="px-2 py-1 rounded text-[10px] font-medium inline-flex items-center gap-0.5 flex-shrink-0"
+          style={{
+            background: 'rgba(59,130,246,0.1)',
+            color: '#3b82f6',
+            border: '1px solid rgba(59,130,246,0.3)',
+          }}
+          title="使用通达信 MCP 数据生成分析报告"
+        >
+          📊 通达信分析
+        </button>
+        <button
+          onClick={async () => {
+            await apiFetch('/api/analysis/request', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ stock_code: code, stock_name: stockName, source: 'ifind' }),
+            });
+            alert('📈 同花顺分析请求已提交！等我对话时给你出报告。\n可到 📋研报中心 查看进度。');
+          }}
+          className="px-2 py-1 rounded text-[10px] font-medium inline-flex items-center gap-0.5 flex-shrink-0"
+          style={{
+            background: 'rgba(168,85,247,0.1)',
+            color: '#a855f7',
+            border: '1px solid rgba(168,85,247,0.3)',
+          }}
+          title="使用同花顺 iFinD 数据生成分析报告"
+        >
+          📈 同花顺分析
+        </button>
       </div>
 
       {/* 头部行情卡 */}
@@ -432,7 +471,7 @@ export default function StockDetailPage() {
         {activeTab === 'intraday' && (
           <div className="h-full overflow-y-auto p-3 space-y-3">
             {/* 实时大盘(5秒刷新) */}
-            <div className="rounded-xl border p-3" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
+            <div>
               <div className="flex items-center justify-between mb-2">
                 <h3 className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>📊 盘中实时（5秒刷新）</h3>
                 {realtimeData?.source_health?.realtime && (
@@ -459,7 +498,7 @@ export default function StockDetailPage() {
 
             {/* 盘后静态底牌(只拉1次) */}
             {superPanel?.post_market_base && (
-              <div className="rounded-xl border p-3" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
+              <div>
                 <h3 className="text-sm font-semibold mb-2" style={{ color: 'var(--text-primary)' }}>🎯 盘后底牌</h3>
                 <PostMarketBase data={superPanel.post_market_base} />
               </div>
@@ -470,7 +509,7 @@ export default function StockDetailPage() {
         {/* Tab2 资讯搜索 */}
         {activeTab === 'news' && (
           <div className="h-full overflow-y-auto p-3 space-y-3">
-            <div className="rounded-xl border p-3" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
+            <div>
               <form
                 onSubmit={e => { e.preventDefault(); runNewsSearch(); }}
                 className="flex gap-2 mb-2"
@@ -517,13 +556,13 @@ export default function StockDetailPage() {
             )}
 
             {newsLoading && (
-              <div className="rounded-xl border p-6 text-center text-sm" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)', color: 'var(--text-muted)' }}>
+              <div className="py-3 text-center text-sm" style={{ color: 'var(--text-muted)' }}>
                 加载中... 妙想API调用中
               </div>
             )}
 
             {newsResult && !newsLoading && (
-              <div className="rounded-xl border p-4" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
+              <div>
                 <div className="text-xs mb-2" style={{ color: 'var(--text-muted)' }}>
                   搜索: <strong style={{ color: 'var(--text-primary)' }}>{newsResult.query}</strong>
                 </div>
@@ -542,7 +581,7 @@ export default function StockDetailPage() {
         {/* Tab3 金融数据 */}
         {activeTab === 'data' && (
           <div className="h-full overflow-y-auto p-3 space-y-3">
-            <div className="rounded-xl border p-3" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
+            <div>
               <form
                 onSubmit={e => { e.preventDefault(); runDataQuery(); }}
                 className="flex gap-2 mb-2"
@@ -589,7 +628,7 @@ export default function StockDetailPage() {
             )}
 
             {dataLoading && (
-              <div className="rounded-xl border p-6 text-center text-sm" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)', color: 'var(--text-muted)' }}>
+              <div className="py-3 text-center text-sm" style={{ color: 'var(--text-muted)' }}>
                 加载中... 妙想API调用中
               </div>
             )}
@@ -633,7 +672,7 @@ export default function StockDetailPage() {
                     </div>
                   ))
                 ) : (
-                  <div className="rounded-xl border p-6 text-center text-sm" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)', color: 'var(--text-muted)' }}>
+                  <div className="py-3 text-center text-sm" style={{ color: 'var(--text-muted)' }}>
                     {dataResult.error || '未找到相关数据'}
                   </div>
                 )}
@@ -646,7 +685,7 @@ export default function StockDetailPage() {
         {activeTab === 'history' && (
           <div className="h-full overflow-y-auto p-3 space-y-3">
             {historyLoading ? (
-              <div className="rounded-xl border p-6 text-center text-sm" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)', color: 'var(--text-muted)' }}>
+              <div className="py-3 text-center text-sm" style={{ color: 'var(--text-muted)' }}>
                 加载中...
               </div>
             ) : (
@@ -670,17 +709,17 @@ export default function StockDetailPage() {
         {activeTab === 'strategy' && (
           <div className="h-full overflow-y-auto p-3 space-y-3">
             {strategyLoading ? (
-              <div className="rounded-xl border p-6 text-center text-sm" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)', color: 'var(--text-muted)' }}>
+              <div className="py-3 text-center text-sm" style={{ color: 'var(--text-muted)' }}>
                 加载中...
               </div>
             ) : !strategyData || (strategyData.today_count === 0 && strategyData.history.length === 0) ? (
-              <div className="rounded-xl border p-6 text-center text-sm" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)', color: 'var(--text-muted)' }}>
+              <div className="py-3 text-center text-sm" style={{ color: 'var(--text-muted)' }}>
                 近 10 天未命中任何策略
               </div>
             ) : (
               <>
                 {/* 今日命中 */}
-                <div className="rounded-xl border p-3" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
+                <div>
                   <h3 className="text-sm font-bold mb-2" style={{ color: 'var(--text-primary)' }}>
                     今日命中 {strategyData.today_count} 个策略
                   </h3>
@@ -725,7 +764,7 @@ export default function StockDetailPage() {
 
                 {/* 历史命中 */}
                 {strategyData.history.length > 0 && (
-                  <div className="rounded-xl border p-3" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
+                  <div>
                     <h3 className="text-sm font-bold mb-2" style={{ color: 'var(--text-primary)' }}>
                       近 10 天命中历史（{strategyData.history.length} 天）
                     </h3>
@@ -757,12 +796,12 @@ export default function StockDetailPage() {
         {activeTab === 'ai' && (
           <div className="h-full overflow-y-auto p-3 space-y-3">
             {aiLoading ? (
-              <div className="rounded-xl border p-6 text-center text-sm" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)', color: 'var(--text-muted)' }}>
+              <div className="py-3 text-center text-sm" style={{ color: 'var(--text-muted)' }}>
                 加载中...
               </div>
             ) : (
               <>
-                <div className="rounded-xl border p-3 text-sm" style={{ borderColor: 'rgba(168,85,247,0.3)', background: 'rgba(168,85,247,0.05)', color: 'var(--text-secondary)' }}>
+                <div className="p-3 text-sm" style={{ background: 'rgba(168,85,247,0.05)', color: 'var(--text-secondary)' }}>
                   💡 AI全面分析功能即将上线，当前已沉淀该股票的
                   <strong style={{ color: '#a855f7' }}> {aiStats?.news_count ?? 0} </strong>
                   条资讯搜索 +
@@ -771,7 +810,7 @@ export default function StockDetailPage() {
                 </div>
 
                 {aiAnalysis ? (
-                  <div className="rounded-xl border p-4" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
+                  <div>
                     <h3 className="text-sm font-bold mb-2" style={{ color: 'var(--text-primary)' }}>已沉淀的AI分析结果</h3>
                     {typeof aiAnalysis === 'string' ? (
                       <div className="text-sm whitespace-pre-wrap leading-relaxed" style={{ color: 'var(--text-secondary)' }}>
@@ -788,7 +827,7 @@ export default function StockDetailPage() {
                     )}
                   </div>
                 ) : (
-                  <div className="rounded-xl border p-6 text-center text-sm" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)', color: 'var(--text-muted)' }}>
+                  <div className="py-3 text-center text-sm" style={{ color: 'var(--text-muted)' }}>
                     暂无AI分析结果
                   </div>
                 )}
@@ -933,7 +972,7 @@ function PostMarketBase({ data }) {
 function HistorySection({ title, items, emptyText }) {
   const list = Array.isArray(items) ? items : (items?.items || items?.history || items?.records || []);
   return (
-    <div className="rounded-xl border p-3" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
+    <div>
       <h3 className="text-sm font-bold mb-2" style={{ color: 'var(--text-primary)' }}>{title}</h3>
       {list.length === 0 ? (
         <div className="text-sm py-3 text-center" style={{ color: 'var(--text-muted)' }}>{emptyText}</div>

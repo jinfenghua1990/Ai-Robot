@@ -1,0 +1,1 @@
+const c="#ef4444",O="#22c55e",a="#ef4444",o="#ef4444",R="#22c55e",n="#ef4444",t="#22c55e",L="#ef4444",_="#84cc16",C="#22c55e",e="#dc2626",A="#16a34a",D=(s=.1)=>`rgba(239,68,68,${s})`,B=(s=.1)=>`rgba(34,197,94,${s})`;export{L as A,a as B,C,O as D,_ as R,R as S,c as U,e as a,A as b,t as c,B as d,n as e,o as f,D as u};

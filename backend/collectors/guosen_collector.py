@@ -8,6 +8,7 @@
 """
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import logging
 
 # 把国信 skill 脚本加入 path
 _SKILL_SCRIPT_DIR = os.path.join(
@@ -18,6 +19,7 @@ sys.path.insert(0, _SKILL_SCRIPT_DIR)
 
 from config import GS_API_KEY
 os.environ['GS_API_KEY'] = GS_API_KEY  # skill 脚本从环境变量读取
+logger = logging.getLogger(__name__)
 
 try:
     from get_data import (
@@ -26,7 +28,7 @@ try:
     )
     GUOSEN_AVAILABLE = True
 except Exception as e:
-    print(f'[guosen] skill import failed: {e}')
+    logger.warning(f'[guosen] skill import failed: {e}')
     GUOSEN_AVAILABLE = False
 
 
@@ -76,7 +78,7 @@ def guosen_batch_realtime_quotes(ts_codes, batch_size=10):
                         'close': float(item.get('close', 0) or 0),  # 昨收
                     }
         except Exception as e:
-            print(f'[guosen] batch quotes error: {e}')
+            logger.warning(f'[guosen] batch quotes error: {e}', exc_info=True)
     return results
 
 
@@ -104,7 +106,7 @@ def guosen_single_fund_flow(ts_code, period=1):
                 'source': 'guosen',
             }
     except Exception as e:
-        print(f'[guosen] fund_flow error for {ts_code}: {e}')
+        logger.warning(f'[guosen] fund_flow error for {ts_code}: {e}', exc_info=True)
     return None
 
 
@@ -139,7 +141,7 @@ def guosen_top_gainers(set_domain=6, want_num=80, sort_type=1):
                 })
             return results
     except Exception as e:
-        print(f'[guosen] top_gainers error: {e}')
+        logger.warning(f'[guosen] top_gainers error: {e}', exc_info=True)
     return []
 
 
@@ -154,7 +156,7 @@ def guosen_related_sectors(ts_code):
         if resp.get('result', {}).get('code') == 0:
             return resp.get('data', []) or resp.get('object', []) or []
     except Exception as e:
-        print(f'[guosen] related_sectors error: {e}')
+        logger.warning(f'[guosen] related_sectors error: {e}', exc_info=True)
     return []
 
 

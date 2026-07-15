@@ -17,12 +17,14 @@
   --accent-green: #16a34a;
   --accent-red: #dc2626;
   --accent-amber: #d97706;
+  --flow-up: #dc2626;           /* 上涨/流入/多头 - 红色 */
+  --flow-down: #16a34a;         /* 下跌/流出/空头 - 绿色 */
 }
 
 [data-theme="dark"] {
   --bg-primary: #0f172a;
   --bg-card: #1e293b;
-  --bg-elevated: #f8fafc;       /* 弹窗/抽屉使用：深色下用浅色背景做强对比 */
+  --bg-elevated: #1e293b;       /* 弹窗/抽屉使用：深色下与卡片同色避免亮色对比 */
   --bg-surface: #1e293b;
   --bg-hover: #334155;
   --text-primary: #f1f5f9;
@@ -34,6 +36,8 @@
   --accent-green: #4ade80;
   --accent-red: #f87171;
   --accent-amber: #fbbf24;
+  --flow-up: #f87171;           /* 上涨/流入/多头 - 红色 */
+  --flow-down: #4ade80;         /* 下跌/流出/空头 - 绿色 */
 }
 
 body {
@@ -73,4 +77,99 @@ table td, table th {
 }
 ::-webkit-scrollbar-track {
   background: transparent;
+}
+
+/* ===== Premium integration utilities (AIHF / TAgents / go-stock) ===== */
+.premium-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 16px;
+  box-shadow: 0 6px 28px rgba(15, 23, 42, 0.05);
+  transition: border-color 0.3s ease, box-shadow 0.3s ease, transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.premium-card:hover {
+  border-color: color-mix(in srgb, var(--accent-blue) 35%, var(--border-color));
+  box-shadow: 0 10px 36px rgba(15, 23, 42, 0.09);
+}
+.hero-grad {
+  background: linear-gradient(135deg,
+    color-mix(in srgb, var(--accent-blue) 10%, var(--bg-card)),
+    color-mix(in srgb, var(--accent-blue) 3%, var(--bg-card)));
+}
+.magnetic {
+  transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.25s ease, opacity 0.2s ease;
+  will-change: transform;
+}
+.magnetic:hover {
+  transform: translateY(-1px) scale(1.025);
+}
+.magnetic:active {
+  transform: translateY(0) scale(0.98);
+}
+.fade-in {
+  animation: fadeInUp 0.5s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.fade-in-2 { animation: fadeInUp 0.5s cubic-bezier(0.16, 1, 0.3, 1) 0.08s both; }
+.fade-in-3 { animation: fadeInUp 0.5s cubic-bezier(0.16, 1, 0.3, 1) 0.16s both; }
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.pulse-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent-green);
+  flex: 0 0 auto;
+  box-shadow: 0 0 0 0 rgba(74, 222, 128, 0.6);
+  animation: pulseDot 1.6s infinite;
+}
+.pulse-dot.amber { background: var(--accent-amber); box-shadow: 0 0 0 0 rgba(217, 119, 6, 0.6); }
+.pulse-dot.red { background: var(--accent-red); box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.6); animation: pulseDotRed 1.6s infinite; }
+@keyframes pulseDotRed {
+  0% { box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.55); }
+  70% { box-shadow: 0 0 0 7px rgba(220, 38, 38, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(220, 38, 38, 0); }
+}
+@keyframes pulseDot {
+  0% { box-shadow: 0 0 0 0 rgba(74, 222, 128, 0.55); }
+  70% { box-shadow: 0 0 0 7px rgba(74, 222, 128, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(74, 222, 128, 0); }
+}
+.gradient-text {
+  background: linear-gradient(120deg, var(--accent-blue), color-mix(in srgb, var(--accent-blue) 55%, #a78bfa));
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+}
+/* iframe 外框：避免深色主题下白屏闪烁，统一圆角玻璃质感 */
+.iframe-frame {
+  border-radius: 18px;
+  overflow: hidden;
+  border: 1px solid var(--border-color);
+  background: #ffffff;
+  box-shadow: 0 10px 40px rgba(15, 23, 42, 0.08);
+  position: relative;
+}
+.chip {
+  font-size: 11px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  user-select: none;
+}
+.chip:hover {
+  border-color: var(--accent-blue);
+  color: var(--accent-blue);
+  transform: translateY(-1px);
+}
+.chip.active {
+  background: color-mix(in srgb, var(--accent-blue) 14%, transparent);
+  border-color: var(--accent-blue);
+  color: var(--accent-blue);
 }

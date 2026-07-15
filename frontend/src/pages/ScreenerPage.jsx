@@ -50,6 +50,19 @@ export default function ScreenerPage({ initialStrategy, hideStrategySelector }) 
   const [mxResults, setMxResults] = useState(null);
   const [mxLoading, setMxLoading] = useState(false);
   const [mxError, setMxError] = useState(null);
+  // 多因子量化选股
+  const [mfPeMax, setMfPeMax] = useState('30');
+  const [mfRoeMin, setMfRoeMin] = useState('5');
+  const [mfGmMin, setMfGmMin] = useState('');
+  const [mfInstMin, setMfInstMin] = useState('');
+  const [mfNetInflow, setMfNetInflow] = useState('');
+  const [mfSector, setMfSector] = useState('');
+  const [mfMarket, setMfMarket] = useState('');
+  const [mfSortBy, setMfSortBy] = useState('score');
+  const [mfLimit, setMfLimit] = useState(20);
+  const [mfResults, setMfResults] = useState(null);
+  const [mfLoading, setMfLoading] = useState(false);
+  const [mfError, setMfError] = useState(null);
   // 妙想选股示例
   const MX_EXAMPLES = [
     '股价大于10元的A股',
@@ -79,6 +92,38 @@ export default function ScreenerPage({ initialStrategy, hideStrategySelector }) 
     }
     setMxLoading(false);
   };
+
+  // 多因子量化选股
+  const handleMfFilter = async (e) => {
+    e?.preventDefault();
+    setMfLoading(true); setMfError(null); setMfResults(null);
+    try {
+      const params = new URLSearchParams();
+      if (mfPeMax) params.set('pe_max', mfPeMax);
+      if (mfRoeMin) params.set('roe_min', mfRoeMin);
+      if (mfGmMin) params.set('gm_min', mfGmMin);
+      if (mfInstMin) params.set('inst_min', mfInstMin);
+      if (mfNetInflow) params.set('net_inflow_min', mfNetInflow);
+      if (mfSector) params.set('sector', mfSector);
+      if (mfMarket) params.set('market', mfMarket);
+      params.set('sort_by', mfSortBy);
+      params.set('limit', mfLimit);
+      const { ok, data, error } = await apiFetch(`/api/screener/filter?${params.toString()}`);
+      if (!ok) setMfError(error || '请求失败');
+      else setMfResults(data);
+    } catch (err) {
+      setMfError('请求失败: ' + err.message);
+    }
+    setMfLoading(false);
+  };
+
+  // 多因子自动加载（页面打开时先跑一次默认条件）
+  const mfAutoRef = useRef(false);
+  useEffect(() => {
+    if (mfAutoRef.current) return;
+    mfAutoRef.current = true;
+    setTimeout(() => handleMfFilter(), 100); // 稍延后让页面渲染优先级优先
+  }, []);
 
   // 主数据请求（只在 date+strategy 变化时触发一次）
   useEffect(() => {
@@ -239,7 +284,7 @@ export default function ScreenerPage({ initialStrategy, hideStrategySelector }) 
       )}
 
       {/* 说明卡片（始终展开） */}
-      <div className="rounded-xl border px-3 py-2" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
+      <div>
         <div className="text-sm mb-2"><strong style={{ color: 'var(--text-primary)' }}>📖 名词解释</strong> · 选股策略说明</div>
         <div className="space-y-1.5 text-xs" style={{ color: 'var(--text-secondary)' }}>
           <div><strong style={{ color: 'var(--text-primary)' }}>热度综合：</strong>板块热度Top5 + 突破/加速阶段龙头 + 主力净流入排序</div>
@@ -251,7 +296,7 @@ export default function ScreenerPage({ initialStrategy, hideStrategySelector }) 
       </div>
 
       {/* 妙想智能选股（自然语言） */}
-      <div className="rounded-xl border p-3" style={{ borderColor: 'rgba(234,179,8,0.4)', background: 'var(--bg-card)' }}>
+      <div className="rounded-xl border p-3" style={{ borderColor: 'rgba(234,179,8,0.4)' }}>
         <div className="flex items-center justify-between mb-2">
           <h3 className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>
             🧠 妙想智能选股
@@ -326,6 +371,114 @@ export default function ScreenerPage({ initialStrategy, hideStrategySelector }) 
         )}
       </div>
 
+      {/* 多因子量化选股（免费F10数据） */}
+      <div className="rounded-xl border p-3" style={{ borderColor: 'rgba(99,102,241,0.4)' }}>
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>
+            📊 多因子量化选股
+            <span className="ml-2 px-1.5 py-0.5 rounded text-[10px]" style={{ background: 'rgba(99,102,241,0.15)', color: '#818cf8' }}>免费F10</span>
+            <span className="ml-1 px-1.5 py-0.5 rounded text-[10px]" style={{ background: 'rgba(34,197,94,0.15)', color: '#22c55e' }}>PG缓存</span>
+          </h3>
+          <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Tushare + 东方财富 · 本地缓存</span>
+        </div>
+        <form onSubmit={handleMfFilter}>
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-2 mb-2">
+            <input type="number" step="0.1" placeholder="PE上限" value={mfPeMax} onChange={e => setMfPeMax(e.target.value)}
+              className="px-2 py-1 rounded border text-xs outline-none" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-surface)', color: 'var(--text-primary)' }} />
+            <input type="number" step="0.1" placeholder="ROE(%)下限" value={mfRoeMin} onChange={e => setMfRoeMin(e.target.value)}
+              className="px-2 py-1 rounded border text-xs outline-none" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-surface)', color: 'var(--text-primary)' }} />
+            <input type="number" step="0.1" placeholder="毛利率(%)下限" value={mfGmMin} onChange={e => setMfGmMin(e.target.value)}
+              className="px-2 py-1 rounded border text-xs outline-none" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-surface)', color: 'var(--text-primary)' }} />
+            <input type="number" step="0.1" placeholder="机构占比(%)下限" value={mfInstMin} onChange={e => setMfInstMin(e.target.value)}
+              className="px-2 py-1 rounded border text-xs outline-none" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-surface)', color: 'var(--text-primary)' }} />
+            <input type="text" placeholder="主力净流入(元)" value={mfNetInflow} onChange={e => setMfNetInflow(e.target.value)}
+              className="px-2 py-1 rounded border text-xs outline-none" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-surface)', color: 'var(--text-primary)' }} />
+          </div>
+          <div className="flex flex-wrap gap-2 items-center mb-3">
+            <input type="text" placeholder="行业(模糊匹配)" value={mfSector} onChange={e => setMfSector(e.target.value)}
+              className="px-2 py-1 rounded border text-xs outline-none w-28" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-surface)', color: 'var(--text-primary)' }} />
+            <select value={mfMarket} onChange={e => setMfMarket(e.target.value)}
+              className="px-2 py-1 rounded border text-xs outline-none" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-surface)', color: 'var(--text-primary)' }}>
+              <option value="">全部板块</option>
+              <option value="主板">主板</option>
+              <option value="创业板">创业板</option>
+              <option value="科创板">科创板</option>
+              <option value="北交所">北交所</option>
+            </select>
+            <select value={mfSortBy} onChange={e => setMfSortBy(e.target.value)}
+              className="px-2 py-1 rounded border text-xs outline-none" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-surface)', color: 'var(--text-primary)' }}>
+              <option value="score">综合评分↓</option>
+              <option value="pe">PE低→高</option>
+              <option value="roe">ROE高→低</option>
+              <option value="gross_margin">毛利率高→低</option>
+              <option value="inst_hold">机构占比高→低</option>
+              <option value="net_inflow">主力净流入↓</option>
+            </select>
+            <select value={mfLimit} onChange={e => setMfLimit(Number(e.target.value))}
+              className="px-2 py-1 rounded border text-xs outline-none" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-surface)', color: 'var(--text-primary)' }}>
+              <option value={20}>20只</option>
+              <option value={50}>50只</option>
+              <option value={100}>100只</option>
+              <option value={200}>200只</option>
+            </select>
+            <button type="submit" disabled={mfLoading}
+              className="px-4 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap"
+              style={{ background: mfLoading ? 'rgba(99,102,241,0.4)' : '#6366f1', color: '#fff', opacity: mfLoading ? 0.7 : 1 }}>
+              {mfLoading ? '筛选中...' : '🔍 筛选'}
+            </button>
+          </div>
+        </form>
+
+        {mfError && (
+          <div className="rounded p-2 text-xs mb-2" style={{ background: 'rgba(239,68,68,0.1)', color: '#ef4444' }}>⚠ {mfError}</div>
+        )}
+
+        {mfResults && (
+          <div>
+            <div className="text-xs mb-2" style={{ color: 'var(--text-muted)' }}>
+              共 <strong style={{ color: '#6366f1' }}>{mfResults.count}</strong> 只候选
+              {mfResults.results?.length < mfResults.count && ` · 显示前 ${mfResults.results?.length} 只`}
+            </div>
+            {mfResults.results?.length > 0 ? (
+              <div className="overflow-x-auto max-h-[500px] overflow-y-auto">
+                <table className="w-full text-xs">
+                  <thead className="sticky top-0 z-10">
+                    <tr className="border-b" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
+                      <th className="text-left py-2 px-2 font-medium whitespace-nowrap" style={{ color: 'var(--text-secondary)' }}>代码</th>
+                      <th className="text-left py-2 px-2 font-medium whitespace-nowrap" style={{ color: 'var(--text-secondary)' }}>名称</th>
+                      <th className="text-left py-2 px-2 font-medium whitespace-nowrap" style={{ color: 'var(--text-secondary)' }}>行业</th>
+                      <th className="text-right py-2 px-2 font-medium whitespace-nowrap" style={{ color: 'var(--text-secondary)' }}>PE</th>
+                      <th className="text-right py-2 px-2 font-medium whitespace-nowrap" style={{ color: 'var(--text-secondary)' }}>ROE%</th>
+                      <th className="text-right py-2 px-2 font-medium whitespace-nowrap" style={{ color: 'var(--text-secondary)' }}>毛利率%</th>
+                      <th className="text-right py-2 px-2 font-medium whitespace-nowrap" style={{ color: 'var(--text-secondary)' }}>机构占比%</th>
+                      <th className="text-right py-2 px-2 font-medium whitespace-nowrap" style={{ color: 'var(--text-secondary)' }}>主力净流入</th>
+                      <th className="text-right py-2 px-2 font-medium whitespace-nowrap" style={{ color: 'var(--text-secondary)' }}>评分</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {mfResults.results.map((r, i) => (
+                      <tr key={i} className="border-b" style={{ borderColor: 'var(--border-light)' }}>
+                        <td className="py-1.5 px-2 whitespace-nowrap" style={{ color: 'var(--text-primary)' }}>{r.ts_code}</td>
+                        <td className="py-1.5 px-2 whitespace-nowrap font-medium" style={{ color: 'var(--text-primary)' }}>{r.name}</td>
+                        <td className="py-1.5 px-2 whitespace-nowrap" style={{ color: 'var(--text-secondary)' }}>{r.industry}</td>
+                        <td className="py-1.5 px-2 text-right whitespace-nowrap" style={{ color: r.pe_ttm != null && r.pe_ttm < 15 ? '#22c55e' : 'var(--text-secondary)' }}>{r.pe_ttm?.toFixed(1) ?? '-'}</td>
+                        <td className="py-1.5 px-2 text-right whitespace-nowrap" style={{ color: r.roe != null ? '#22c55e' : 'var(--text-secondary)' }}>{r.roe?.toFixed(1) ?? '-'}</td>
+                        <td className="py-1.5 px-2 text-right whitespace-nowrap" style={{ color: 'var(--text-secondary)' }}>{r.gross_margin?.toFixed(1) ?? '-'}</td>
+                        <td className="py-1.5 px-2 text-right whitespace-nowrap" style={{ color: 'var(--text-secondary)' }}>{r.inst_hold_ratio?.toFixed(2) ?? '-'}</td>
+                        <td className="py-1.5 px-2 text-right whitespace-nowrap" style={{ color: r.main_net_inflow != null && r.main_net_inflow > 0 ? '#ef4444' : 'var(--text-secondary)' }}>{r.main_net_inflow != null ? fmtFlow(r.main_net_inflow) : '-'}</td>
+                        <td className="py-1.5 px-2 text-right whitespace-nowrap font-bold" style={{ color: r.score != null ? '#818cf8' : 'var(--text-secondary)' }}>{r.score?.toFixed(3) ?? '-'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div className="text-center py-6 text-sm" style={{ color: 'var(--text-muted)' }}>未找到符合条件的股票</div>
+            )}
+          </div>
+        )}
+      </div>
+
       {/* 消息提示 */}
       {message && (
         <div className="rounded-lg border px-3 py-2 text-sm" style={{
@@ -364,7 +517,7 @@ export default function ScreenerPage({ initialStrategy, hideStrategySelector }) 
         <>
           {/* 热门板块 */}
           {data?.top_sectors && data.top_sectors.length > 0 && (
-            <div className="rounded-xl border p-3" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
+            <div>
               <h3 className="text-sm font-medium mb-3" style={{ color: 'var(--text-secondary)' }}>热门板块 Top 5</h3>
               <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
                 {data.top_sectors.map((s, i) => (
@@ -380,7 +533,7 @@ export default function ScreenerPage({ initialStrategy, hideStrategySelector }) 
 
           {/* 板块资金流 Top 10 */}
           {data?.sector_flows && data.sector_flows.length > 0 && (
-            <div className="rounded-xl border p-3" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
+            <div>
               <h3 className="text-sm font-medium mb-3" style={{ color: 'var(--text-secondary)' }}>板块资金流 Top 10</h3>
               <div className="overflow-x-auto max-h-[480px] overflow-y-auto">
                 <table className="w-full text-sm">
@@ -417,7 +570,7 @@ export default function ScreenerPage({ initialStrategy, hideStrategySelector }) 
 
           {/* 龙头趋势阶段 Top 15（SignalCard 统一卡片） */}
           {data?.leaders && data.leaders.length > 0 && (
-            <div className="rounded-xl border p-3" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
+            <div>
               <h3 className="text-sm font-medium mb-3" style={{ color: 'var(--text-secondary)' }}>龙头趋势阶段 Top 15</h3>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-2 max-h-[600px] overflow-y-auto">
                 {data.leaders.slice(0, 15).map((signal, i) => (
@@ -437,7 +590,7 @@ export default function ScreenerPage({ initialStrategy, hideStrategySelector }) 
           )}
 
           {/* 选股结果（热度/青龙） - SignalCard 统一卡片 */}
-          <div className="rounded-xl border p-3" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
+          <div>
             <div className="flex items-center justify-between mb-2">
               <h3 className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>选股结果</h3>
               <span className="text-xs" style={{ color: 'var(--text-muted)' }}>{data?.stocks?.length || 0} 只</span>
@@ -533,7 +686,7 @@ export default function ScreenerPage({ initialStrategy, hideStrategySelector }) 
           </div>
 
           {/* 白虎V3.0选股结果列表（SignalCard 统一卡片） */}
-          <div className="rounded-xl border p-3" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
+          <div>
             {baihuLoading ? (
               <div className="flex items-center justify-center h-96 text-sm" style={{ color: 'var(--text-muted)' }}>加载中...</div>
             ) : pagedBaihuStocks.length > 0 ? (
@@ -572,7 +725,7 @@ export default function ScreenerPage({ initialStrategy, hideStrategySelector }) 
           </div>
 
           {/* 白虎V3.0公式说明 */}
-          <div className="rounded-xl border p-3" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
+          <div>
             <h3 className="text-sm font-medium mb-2" style={{ color: 'var(--text-secondary)' }}>白虎 V3.0 策略说明（全市场适配版）</h3>
             <div className="mb-3">
               <div className="text-xs font-medium mb-1" style={{ color: 'var(--text-muted)' }}>必过硬门槛（5项全满足）</div>
@@ -640,7 +793,7 @@ export default function ScreenerPage({ initialStrategy, hideStrategySelector }) 
           )}
 
           {/* 当前层股票列表 */}
-          <div className="rounded-xl border p-3" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
+          <div>
             {liangjiaLoading ? (
               <div className="flex items-center justify-center h-96 text-sm" style={{ color: 'var(--text-muted)' }}>加载中...</div>
             ) : (liangjiaData?.groups?.[liangjiaTier] || []).length > 0 ? (
@@ -697,7 +850,7 @@ export default function ScreenerPage({ initialStrategy, hideStrategySelector }) 
           </div>
 
           {/* 白虎V4.0策略说明 */}
-          <div className="rounded-xl border px-3 py-2" style={{ borderColor: 'rgba(168,85,247,0.2)', background: 'var(--bg-card)' }}>
+          <div className="rounded-xl border px-3 py-2" style={{ borderColor: 'rgba(168,85,247,0.2)' }}>
             <h3 className="text-sm font-medium mb-2" style={{ color: 'var(--text-secondary)' }}>🐯 白虎V4.0策略说明（CodeBuddy）</h3>
             <div className="text-xs mb-2" style={{ color: 'var(--text-muted)' }}>
               按 CodeBuddy 量价筛选报告逻辑，5种形态分类 + 3层分层 + 具体交易计划

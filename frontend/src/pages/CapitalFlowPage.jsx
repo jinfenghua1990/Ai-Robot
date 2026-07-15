@@ -100,7 +100,8 @@ export default function AfterCapitalSection({
   }
 
   return (
-    <div className="space-y-1.5">
+    <div className="rounded-xl border p-3 space-y-1.5"
+      style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
       {/* 顶部：标题 + 日期 + 回看天数 */}
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-bold" style={{ color: 'var(--text-primary)' }}>
@@ -122,8 +123,8 @@ export default function AfterCapitalSection({
       </div>
 
       {/* 说明（折叠态一行显示） */}
-      <div className="rounded-lg border" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
-        <button onClick={() => setShowHelp(!showHelp)} className="w-full flex items-center justify-between px-2.5 py-1.5 text-xs" style={{ color: 'var(--text-secondary)' }}>
+      <div style={{ borderColor: 'var(--border-color)', background: 'var(--bg-surface)' }}>
+        <button onClick={() => setShowHelp(!showHelp)} className="w-full flex items-center justify-between px-2.5 py-1.5 text-xs rounded-lg" style={{ color: 'var(--text-secondary)' }}>
           <span><strong style={{ color: 'var(--text-primary)' }}>📖 名词解释</strong> · 总流入 / 总流出 / 净轮动</span>
           <span style={{ color: 'var(--text-muted)' }}>{showHelp ? '收起 ▲' : '展开 ▼'}</span>
         </button>
@@ -219,8 +220,8 @@ export default function AfterCapitalSection({
             <span>📅</span>
             <span>板块数据已切换为新浪财经（48个申万行业）。点击板块节点可与右侧实时数据联动。</span>
           </div>
-          <div className="rounded-xl border p-3" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
-            <div className="text-xs mb-1" style={{ color: 'var(--text-muted)' }}>📊 盘后 · 💡 点击板块节点联动</div>
+          <div className="space-y-1">
+            <div className="text-xs" style={{ color: 'var(--text-muted)' }}>📊 盘后 · 💡 点击板块节点联动</div>
             {loading ? (
               <div className="flex items-center justify-center h-80 text-sm" style={{ color: 'var(--text-muted)' }}>加载中...</div>
             ) : (
@@ -234,8 +235,8 @@ export default function AfterCapitalSection({
         <>
           {/* 盘后轮动 · 流入 Top 5 vs 流出 Top 10（全宽，联动） */}
           {!loading && rotationData && chartData.categories.length > 0 && (
-            <div className="rounded-xl border p-3" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
-              <div className="flex items-center justify-between mb-1">
+            <div className="space-y-1">
+              <div className="flex items-center justify-between">
                 <h3 className="text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
                   📊 盘后轮动 · 流入 Top 5 vs 流出 Top 10（折线）
                 </h3>

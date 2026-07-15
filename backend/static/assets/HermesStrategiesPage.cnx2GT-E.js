@@ -1,0 +1,1 @@
+import{j as t}from"./index.BraBnPkH.js";import{H as e}from"./HermesEmbed.DqFdw5DQ.js";import"./react-vendor.BSdSoFln.js";function m(){return t.jsx(e,{path:"/robot-strategies",title:"策略信号"})}export{m as default};

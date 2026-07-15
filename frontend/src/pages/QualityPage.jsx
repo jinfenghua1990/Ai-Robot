@@ -6,6 +6,14 @@ import { getEastMoneyUrl, getTHSUrl, getStockUrl, getTencentUrl } from '../utils
 import { apiFetch } from '../utils/request';
 import { POLL_INTERVAL } from '../utils/constants';
 
+// 服务状态语义（与 HealthStrip 一致）
+const SERVICE_STATUS_META = {
+  up:   { text: '运行中', color: 'var(--accent-green)' },
+  down: { text: '离线',   color: 'var(--accent-red)' },
+  ready:{ text: '就绪',   color: 'var(--accent-amber)' },
+  idle: { text: '待命',   color: 'var(--accent-amber)' },
+};
+
 export default function QualityPage() {
   const [overview, setOverview] = useState(null);
   const [sources, setSources] = useState(null);
@@ -15,8 +23,16 @@ export default function QualityPage() {
   const [logs, setLogs] = useState(null);
   const [errorStats, setErrorStats] = useState(null);
   const [freshness, setFreshness] = useState(null);
+  const [services, setServices] = useState([]);
+  const [serviceLoading, setServiceLoading] = useState(true);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+
+  const fetchServices = useCallback(async () => {
+    const { ok, data } = await apiFetch('/api/services/status');
+    if (ok && data && Array.isArray(data.services)) setServices(data.services);
+    setServiceLoading(false);
+  }, []);
 
   const fetchAll = useCallback(async () => {
     try {
@@ -47,7 +63,7 @@ export default function QualityPage() {
     }
   }, []);
 
-  useEffect(() => { fetchAll(); }, [fetchAll]);
+  useEffect(() => { fetchAll(); fetchServices(); }, [fetchAll, fetchServices]);
 
   useEffect(() => {
     const interval = setInterval(async () => {
@@ -137,17 +153,56 @@ export default function QualityPage() {
 
   if (loading) return <div className="flex items-center justify-center h-96"><div className="text-xs" style={{ color: 'var(--text-muted)' }}>加载中...</div></div>;
 
+  const upCount = services.filter(s => s.status === 'up').length;
+  const downCount = services.filter(s => s.status === 'down').length;
+
   return (
     <div className="space-y-1">
       <div className="flex items-center justify-between">
         <h2 className="text-base font-bold" style={{ color: 'var(--text-primary)' }}>
-          数据质量仪表盘
-          <span className="ml-2 px-1.5 py-0.5 rounded text-[10px] font-normal align-middle" style={{ background: 'rgba(234,179,8,0.1)', color: '#eab308' }}>盘后数据</span>
+          🛡️ 系统与服务健康
+          <span className="ml-2 px-1.5 py-0.5 rounded text-[10px] font-normal align-middle" style={{ background: 'rgba(234,179,8,0.1)', color: 'var(--accent-amber)' }}>盘后数据</span>
         </h2>
-        <button onClick={fetchAll} className="px-2 py-1 rounded-lg border text-xs" style={{ borderColor: 'var(--border-color)', color: 'var(--text-secondary)' }}>🔄 刷新</button>
+        <button onClick={() => { fetchAll(); fetchServices(); }} className="px-2 py-1 rounded-lg border text-xs" style={{ borderColor: 'var(--border-color)', color: 'var(--text-secondary)' }}>🔄 刷新</button>
       </div>
 
-      {error && <div className="rounded-lg p-2 text-xs" style={{ background: 'rgba(239,68,68,0.1)', color: '#ef4444' }}>{error}</div>}
+      {error && <div className="rounded-lg p-2 text-xs" style={{ background: 'rgba(239,68,68,0.1)', color: 'var(--accent-red)' }}>{error}</div>}
+
+      {/* 服务状态 */}
+      <div className="rounded-lg border" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
+        <div className="px-3 py-1.5 border-b flex items-center justify-between" style={{ borderColor: 'var(--border-color)' }}>
+          <h3 className="text-xs font-bold" style={{ color: 'var(--text-primary)' }}>⚙️ 服务状态 {services.length ? `(${upCount} 在线 · ${downCount} 离线)` : ''}</h3>
+          <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>每 10 秒自动刷新</span>
+        </div>
+        <div className="p-2">
+          {serviceLoading ? (
+            <div className="text-center text-xs py-4" style={{ color: 'var(--text-muted)' }}>加载服务状态中...</div>
+          ) : services.length === 0 ? (
+            <div className="text-center text-xs py-4" style={{ color: 'var(--text-muted)' }}>暂无服务状态数据</div>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-1.5">
+              {services.map(s => {
+                const m = SERVICE_STATUS_META[s.status] || SERVICE_STATUS_META.idle;
+                const clickable = Boolean(s.path);
+                const Tag = clickable ? 'a' : 'div';
+                return (
+                  <Tag key={s.key} href={s.path || undefined}
+                    className={`flex items-center gap-2.5 rounded-md border p-2 no-underline ${clickable ? 'hover:opacity-80' : ''}`}
+                    style={{ borderColor: 'var(--border-color)', background: 'var(--bg-hover)', color: 'var(--text-primary)' }}>
+                    <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: m.color, boxShadow: `0 0 6px ${m.color}` }} />
+                    <div className="flex-1 min-w-0">
+                      <div className="text-xs font-medium truncate">{s.label}</div>
+                      <div className="text-[10px] truncate" style={{ color: 'var(--text-muted)' }}>{s.detail}</div>
+                    </div>
+                    <span className="text-[10px] font-medium shrink-0" style={{ color: m.color }}>{m.text}</span>
+                    {clickable && <span className="shrink-0 text-[10px]" style={{ color: 'var(--text-muted)' }}>›</span>}
+                  </Tag>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
 
       {freshness && <DataFreshnessPanel freshness={freshness} />}
 
@@ -591,7 +646,7 @@ function DataFreshnessPanel({ freshness }) {
               </div>
               <div className="flex items-center justify-between text-[10px]" style={{ color: 'var(--text-muted)' }}>
                 <span>{src.latest_date || '无数据'}{src.latest_time && <span className="ml-1">{src.latest_time}</span>}</span>
-                <span className="px-1 py-0.5 rounded text-[9px]" style={{ background: 'rgba(148,163,184,0.1)', color: 'var(--text-muted)' }}>
+                <span className="px-1 py-0.5 rounded text-[10px]" style={{ background: 'rgba(148,163,184,0.1)', color: 'var(--text-muted)' }}>
                   {src.category}
                 </span>
               </div>

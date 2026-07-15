@@ -208,17 +208,6 @@ def get_sector_ranking(target_date=None, top_n=30):
         }
 
 
-def get_tradable_sectors(target_date=None):
-    """获取可交易板块（STRONG + ROTATION）
-
-    用于龙头引擎的输入过滤
-    Returns: list of sector names
-    """
-    ranking = get_sector_ranking(target_date)
-    tradable = [s['sector'] for s in ranking['strong'] + ranking['rotation']]
-    return tradable
-
-
 def build_sector_top_map(start_date, end_date, top_n=10,
                          mode='strong_rotation', valid_sectors=None):
     """预计算回测区间内每个交易日的 TopN 上升趋势板块集合（无未来函数）。

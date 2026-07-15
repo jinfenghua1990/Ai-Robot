@@ -101,18 +101,15 @@ def fetch_moneyflow_for_date(trade_date: str) -> dict:
             main_buy = _to_yuan(r.get('buy_elg_amount')) + _to_yuan(r.get('buy_lg_amount'))
             main_sell = _to_yuan(r.get('sell_elg_amount')) + _to_yuan(r.get('sell_lg_amount'))
 
-            # 散户=小单+散单(tiny)
-            retail_net = small_net  # 暂只算小单
-            retail_buy = _to_yuan(r.get('buy_sm_amount'))
-            retail_sell = _to_yuan(r.get('sell_sm_amount'))
+            # 散户=中单+小单+散单(tiny)
+            retail_buy = _to_yuan(r.get('buy_sm_amount')) + _to_yuan(r.get('buy_md_amount'))
+            retail_sell = _to_yuan(r.get('sell_sm_amount')) + _to_yuan(r.get('sell_md_amount'))
 
             # 散单=主力+中单+小单 之和的负值(总净流入=0)
             # 总净流入 = 主力 + 中单 + 小单 + 散单 = 0
             # 所以 散单 = -(主力 + 中单 + 小单)
             tiny_net = -(main_net + medium_net + small_net)
-            retail_net = small_net + tiny_net  # 散户=小单+散单
-            retail_buy = retail_buy  # 仍只有小单
-            retail_sell = retail_sell
+            retail_net = medium_net + small_net + tiny_net  # 散户=中单+小单+散单
 
             # 占流通市值比例(%) = 净流入(元) / 流通市值(元) * 100
             # 净流入(元)/10000 = 净流入(万元)

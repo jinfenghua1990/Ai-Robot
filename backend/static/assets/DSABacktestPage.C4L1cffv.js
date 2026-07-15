@@ -1,0 +1,1 @@
+import{j as t}from"./index.BraBnPkH.js";import{D as e}from"./DSAEmbed.B9G_CgPm.js";import"./react-vendor.BSdSoFln.js";function s(){return t.jsx(e,{path:"/backtest",title:"DSA 策略回测"})}export{s as default};

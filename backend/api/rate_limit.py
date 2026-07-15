@@ -16,9 +16,24 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next):
         client_ip = request.client.host
+        path = request.url.path
+
+        # 跳过：SSE 长连接 / 静态资源 / 健康检查 / 文档
+        skip_connection_limit = (
+            path == '/api/watchlist/realtime/stream' or
+            path.startswith('/assets/') or
+            path.startswith('/_vibe/') or
+            path.startswith('/_dsa/') or
+            path.startswith('/_hermes/') or
+            path == '/api/health' or
+            path == '/api/health/detailed' or
+            path == '/openapi.json' or
+            path.startswith('/docs') or
+            path == '/redoc'
+        )
 
         # 1. 并发连接数限制（防止连接积压）
-        if self.active_connections[client_ip] >= self.max_connections_per_ip:
+        if not skip_connection_limit and self.active_connections[client_ip] >= self.max_connections_per_ip:
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 detail={
@@ -48,12 +63,14 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             )
 
         self.request_timestamps[client_ip].append(now)
-        self.active_connections[client_ip] += 1
+        if not skip_connection_limit:
+            self.active_connections[client_ip] += 1
 
         try:
             response = await call_next(request)
             return response
         finally:
-            self.active_connections[client_ip] -= 1
-            if self.active_connections[client_ip] <= 0:
-                del self.active_connections[client_ip]
+            if not skip_connection_limit:
+                self.active_connections[client_ip] -= 1
+                if self.active_connections[client_ip] <= 0:
+                    del self.active_connections[client_ip]

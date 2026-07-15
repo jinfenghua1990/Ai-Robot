@@ -12,6 +12,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { apiFetch } from '../utils/request';
 import { UP_COLOR, DOWN_COLOR } from '../utils/colors';
+import StockActionButtons from '../components/trading/StockActionButtons';
 
 // 游资阶段配色（覆盖所有阶段名变体）
 const STAGE_COLORS = {
@@ -141,7 +142,7 @@ export default function TradingSystemPage() {
             暂无主龙头（{data?.message || '无可用数据'}）
           </div>
         ) : (
-          <LeaderHeroCard leader={leader} onClick={(code) => navigate(`/stock/${code}`)} />
+          <LeaderHeroCard leader={leader} onClick={(code) => navigate(`/stock/${code}`)} onRefresh={() => loadAll(true, selectedDate)} />
         )}
       </section>
 
@@ -152,7 +153,7 @@ export default function TradingSystemPage() {
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
             {candidates.map((c, i) => (
               <CandidateCard key={c.secCode || i} stock={c} rank={i + 2}
-                onClick={(code) => navigate(`/stock/${code}`)} />
+                onClick={(code) => navigate(`/stock/${code}`)} onRefresh={() => loadAll(true, selectedDate)} />
             ))}
           </div>
         </section>
@@ -185,7 +186,8 @@ export default function TradingSystemPage() {
           </div>
         ) : (
           <HeatPoolTable stocks={allStocks} leaderCode={leader?.secCode}
-            onRowClick={(code) => navigate(`/stock/${code}`)} />
+            onRowClick={(code) => navigate(`/stock/${code}`)}
+            onRefresh={() => loadAll(true, selectedDate)} />
         )}
       </section>
     </div>
@@ -193,7 +195,7 @@ export default function TradingSystemPage() {
 }
 
 /* ========================= 主龙头加冕卡 ========================= */
-function LeaderHeroCard({ leader, onClick }) {
+function LeaderHeroCard({ leader, onClick, onRefresh }) {
   const stage = leader.stage || leader.lifecycleStage || '主升';
   const color = stageColor(stage);
   const mf = leader.mainForce || {};
@@ -262,7 +264,7 @@ function LeaderHeroCard({ leader, onClick }) {
             {days > 0 && (
               <div>
                 <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>连板</span>
-                <span className="ml-1 text-sm font-bold" style={{ color: '#ef4444' }}>{days}连板</span>
+                <span className="ml-1 text-sm font-bold" style={{ color: UP_COLOR }}>{days}连板</span>
               </div>
             )}
           </div>
@@ -281,17 +283,28 @@ function LeaderHeroCard({ leader, onClick }) {
           </div>
         </div>
       </div>
+
+      {/* 操作按钮 */}
+      <div className="mt-3 flex items-center justify-between flex-wrap gap-2">
+        <StockActionButtons
+          stockCode={leader.secCode}
+          stockName={leader.secName}
+          size="sm"
+          onRefresh={onRefresh}
+        />
+      </div>
     </div>
   );
 }
 
 function InflowBox({ label, value }) {
   const positive = value >= 0;
+  const color = positive ? UP_COLOR : DOWN_COLOR;
   return (
     <div className="rounded-md px-2 py-1.5 text-center"
-      style={{ background: positive ? 'rgba(239,68,68,0.08)' : 'rgba(34,197,94,0.08)' }}>
+      style={{ background: positive ? `${UP_COLOR}14` : `${DOWN_COLOR}14` }}>
       <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{label}</div>
-      <div className="text-sm font-bold mt-0.5" style={{ color: positive ? '#ef4444' : '#22c55e' }}>
+      <div className="text-sm font-bold mt-0.5" style={{ color }}>
         {positive ? '+' : ''}{(value / 10000).toFixed(1)}万
       </div>
     </div>
@@ -299,7 +312,7 @@ function InflowBox({ label, value }) {
 }
 
 /* ========================= 候选龙头卡片 ========================= */
-function CandidateCard({ stock, rank, onClick }) {
+function CandidateCard({ stock, rank, onClick, onRefresh }) {
   const stage = stock.stage || stock.lifecycleStage || '蓄势';
   const color = stageColor(stage);
   const mf = stock.mainForce || {};
@@ -329,13 +342,21 @@ function CandidateCard({ stock, rank, onClick }) {
         <span>现价 <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{price.toFixed(2)}</span></span>
         <span>当日 <span style={{ color: changePct >= 0 ? UP_COLOR : DOWN_COLOR, fontWeight: 600 }}>{changePct >= 0 ? '+' : ''}{changePct.toFixed(2)}%</span></span>
         {strength != null && <span>强度 <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{Number(strength).toFixed(1)}</span></span>}
-        {days > 0 && <span>连板 <span style={{ color: '#ef4444', fontWeight: 600 }}>{days}</span></span>}
+        {days > 0 && <span>连板 <span style={{ color: UP_COLOR, fontWeight: 600 }}>{days}</span></span>}
         {leaderScore != null && <span>评分 <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{leaderScore}/10</span></span>}
       </div>
       <div className="mt-2 grid grid-cols-3 gap-1 text-[10px]">
         <InflowBox label="1日" value={inflow1} />
         <InflowBox label="3日" value={mf.inflow_3d || 0} />
         <InflowBox label="5日" value={mf.inflow_5d || 0} />
+      </div>
+      <div className="mt-2">
+        <StockActionButtons
+          stockCode={stock.secCode}
+          stockName={stock.secName}
+          size="xs"
+          onRefresh={onRefresh}
+        />
       </div>
     </div>
   );
@@ -372,7 +393,7 @@ function SectorListCard({ title, items, stateKey }) {
 }
 
 /* ========================= 热度池表格 ========================= */
-function HeatPoolTable({ stocks, leaderCode, onRowClick }) {
+function HeatPoolTable({ stocks, leaderCode, onRowClick, onRefresh }) {
   return (
     <div className="rounded-lg border overflow-hidden" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
       <div className="overflow-x-auto">
@@ -391,6 +412,7 @@ function HeatPoolTable({ stocks, leaderCode, onRowClick }) {
               <th className="px-2 py-1.5 text-right text-[10px] font-bold" style={{ color: 'var(--text-muted)' }}>1日主力</th>
               <th className="px-2 py-1.5 text-right text-[10px] font-bold" style={{ color: 'var(--text-muted)' }}>3日主力</th>
               <th className="px-2 py-1.5 text-right text-[10px] font-bold" style={{ color: 'var(--text-muted)' }}>5日主力</th>
+              <th className="px-2 py-1.5 text-left text-[10px] font-bold" style={{ color: 'var(--text-muted)' }}>操作</th>
             </tr>
           </thead>
           <tbody>
@@ -434,23 +456,31 @@ function HeatPoolTable({ stocks, leaderCode, onRowClick }) {
                   <td className="px-2 py-1.5 text-right" style={{ color: 'var(--text-primary)' }}>
                     {strength != null ? Number(strength).toFixed(1) : '-'}
                   </td>
-                  <td className="px-2 py-1.5 text-right font-bold" style={{ color: days > 0 ? '#ef4444' : 'var(--text-muted)' }}>
+                  <td className="px-2 py-1.5 text-right font-bold" style={{ color: days > 0 ? UP_COLOR : 'var(--text-muted)' }}>
                     {days > 0 ? `${days}连板` : '-'}
                   </td>
                   <td className="px-2 py-1.5 text-right font-bold" style={{ color: 'var(--text-primary)' }}>
                     {ls != null ? `${ls}/10` : '-'}
                   </td>
                   <td className="px-2 py-1.5 text-right font-mono"
-                    style={{ color: (mf.inflow_1d || 0) >= 0 ? '#ef4444' : '#22c55e' }}>
+                    style={{ color: (mf.inflow_1d || 0) >= 0 ? UP_COLOR : DOWN_COLOR }}>
                     {mf.inflow_1d != null ? `${(mf.inflow_1d / 10000).toFixed(1)}万` : '-'}
                   </td>
                   <td className="px-2 py-1.5 text-right font-mono"
-                    style={{ color: (mf.inflow_3d || 0) >= 0 ? '#ef4444' : '#22c55e' }}>
+                    style={{ color: (mf.inflow_3d || 0) >= 0 ? UP_COLOR : DOWN_COLOR }}>
                     {mf.inflow_3d != null ? `${(mf.inflow_3d / 10000).toFixed(1)}万` : '-'}
                   </td>
                   <td className="px-2 py-1.5 text-right font-mono"
-                    style={{ color: (mf.inflow_5d || 0) >= 0 ? '#ef4444' : '#22c55e' }}>
+                    style={{ color: (mf.inflow_5d || 0) >= 0 ? UP_COLOR : DOWN_COLOR }}>
                     {mf.inflow_5d != null ? `${(mf.inflow_5d / 10000).toFixed(1)}万` : '-'}
+                  </td>
+                  <td className="px-2 py-1.5" onClick={(e) => e.stopPropagation()}>
+                    <StockActionButtons
+                      stockCode={s.secCode}
+                      stockName={s.secName}
+                      size="xs"
+                      onRefresh={onRefresh}
+                    />
                   </td>
                 </tr>
               );

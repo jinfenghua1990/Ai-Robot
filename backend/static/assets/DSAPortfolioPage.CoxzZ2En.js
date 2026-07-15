@@ -1,0 +1,1 @@
+import{j as o}from"./index.BraBnPkH.js";import{D as t}from"./DSAEmbed.B9G_CgPm.js";import"./react-vendor.BSdSoFln.js";function m(){return o.jsx(t,{path:"/portfolio",title:"DSA 持仓管理"})}export{m as default};

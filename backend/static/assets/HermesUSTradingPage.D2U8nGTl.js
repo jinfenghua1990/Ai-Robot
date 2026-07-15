@@ -1,0 +1,1 @@
+import{j as r}from"./index.CsuYT-kk.js";import{H as t}from"./HermesEmbed.FQlHVKXP.js";import"./react-vendor.BSdSoFln.js";function a(){return r.jsx(t,{path:"/us-trading",title:"美股交易"})}export{a as default};

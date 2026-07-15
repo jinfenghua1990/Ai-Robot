@@ -1,7 +1,6 @@
 """BS 选股扫描核心：候选池 + 单只扫描 + 通用过滤器"""
 import asyncio
 import time
-import httpx
 from datetime import datetime
 from sqlalchemy import func as sql_func
 

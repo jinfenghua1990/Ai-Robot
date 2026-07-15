@@ -97,7 +97,13 @@ def remove_closed(index: int) -> dict:
 
 
 def get_portfolio() -> dict:
-    """读持仓 + 实时行情，算每笔与汇总的市值/浮动盈亏。"""
+    """读持仓 + 实时行情，算每笔与汇总的市值/浮动盈亏。
+
+    合并两类数据源：
+    1. 用户手动录入的持仓（.cache/portfolio.json）
+    2. AIROBOT 共享持仓（portfolio.json，来自妙想模拟盘）
+    """
+    # 1. 手动录入持仓
     with _LOCK:
         d = _load()
     hs = d.get("holdings", [])
@@ -118,9 +124,39 @@ def get_portfolio() -> dict:
                 "price": price, "shares": h["shares"], "cost": h["cost"],
                 "market_value": round(mv, 2), "pnl": round(pnl, 2),
                 "pnl_pct": round(pnl / cv * 100, 2) if cv else 0.0,
+                "source": "manual",
             })
             tmv += mv
             tcost += cv
+
+    # 2. 共享持仓（妙想模拟盘）
+    try:
+        shared_pf_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(HERE))), "portfolio.json")
+        if os.path.exists(shared_pf_path):
+            with open(shared_pf_path, encoding="utf-8") as f:
+                shared_data = json.load(f)
+            for p in shared_data.get("positions", []):
+                code = p.get("symbol", "")
+                if not code:
+                    continue
+                # 去重：如果手动已录入同一代码，跳过
+                if any(r["code"] == code for r in rows):
+                    continue
+                rows.append({
+                    "code": code,
+                    "name": p.get("name", code),
+                    "price": float(p.get("last_price", 0) or 0),
+                    "shares": float(p.get("quantity", 0) or 0),
+                    "cost": float(p.get("avg_cost", 0) or 0),
+                    "market_value": float(p.get("market_value", 0) or 0),
+                    "pnl": float(p.get("unrealized_pnl", 0) or 0),
+                    "pnl_pct": float(p.get("profit_ratio", 0) or 0),
+                    "source": "shared",
+                })
+                tmv += float(p.get("market_value", 0) or 0)
+    except Exception:
+        logger.debug("portfolio refresh snapshot failed", exc_info=False)
+
     total_pnl = tmv - tcost
     closed = d.get("closed", [])
     return {
@@ -153,5 +189,5 @@ def start_scheduler(interval: int = 1800) -> None:
             try:
                 _refresh_snapshot()
             except Exception:
-                pass
+                logger.debug("portfolio background refresh failed", exc_info=False)
     threading.Thread(target=loop, daemon=True).start()

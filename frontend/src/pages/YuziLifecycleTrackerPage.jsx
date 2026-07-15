@@ -20,6 +20,7 @@ import { apiFetch } from '../utils/request';
 import { UP_COLOR, DOWN_COLOR, UP_DARK, DOWN_DARK } from '../utils/colors';
 import { computeSignalScore, fmtHitCount, computeTrendSignalScore, fmtTrendTooltip } from '../utils/signalScore';
 import SinaLink from '../components/SinaLink';
+import StockActionButtons from '../components/trading/StockActionButtons';
 
 const fmtPct = (v) => {
   if (v == null) return '-';
@@ -178,7 +179,7 @@ const fmtMoney = (v) => {
 // Day 单元格渲染 — 一眼看懂：涨跌幅 + 主力资金 + 散户 + 竞价 + 大佬卖出标记
 const DayCell = ({ data, dayNum, bossExits }) => {
   if (!data) {
-    return <div className="text-[9px] text-center" style={{ color: '#9ca3af' }}>—</div>;
+    return <div className="text-[10px] text-center" style={{ color: '#9ca3af' }}>—</div>;
   }
   const stage = data.price_stage || '震荡';
   const openPrem = Number(data.open_premium || 0);
@@ -238,7 +239,7 @@ const DayCell = ({ data, dayNum, bossExits }) => {
       {/* 大佬卖出角标 — 红色警示,贴右上角 */}
       {hasBossSell && (
         <div
-          className="absolute -top-1 -right-1 px-1 py-0 rounded text-[8px] font-bold z-10"
+          className="absolute -top-1 -right-1 px-1 py-0 rounded text-[10px] font-bold z-10"
           style={{ background: '#dc2626', color: '#fff', border: '1px solid #fff' }}
           title={`🚨 大佬卖出: ${bossSells.map(s => `${s.alias} ${fmtMoney(s.net)}`).join(', ')}`}
         >
@@ -249,7 +250,7 @@ const DayCell = ({ data, dayNum, bossExits }) => {
       {sigScore && (
         <div className="text-center mb-0.5">
           <span
-            className="text-[8px] font-bold px-1 py-0 rounded inline-block"
+            className="text-[10px] font-bold px-1 py-0 rounded inline-block"
             style={{ background: sigScore.bg, color: sigScore.color, border: `1px solid ${sigScore.color}40` }}
             title={`7维命中: ${fmtHitCount(sigScore)} (得分${sigScore.score > 0 ? '+' : ''}${sigScore.score})`}
           >
@@ -263,10 +264,10 @@ const DayCell = ({ data, dayNum, bossExits }) => {
       </div>
       {/* 阶段标签 + 承接力度（并列） */}
       <div className="flex items-center justify-center gap-0.5 mt-0.5 mb-0.5">
-        <span className="text-[9px] font-bold px-1 py-0.5 rounded" style={{ background: stageColor(stage), color: '#fff' }}>
+        <span className="text-[10px] font-bold px-1 py-0.5 rounded" style={{ background: stageColor(stage), color: '#fff' }}>
           {stage}
         </span>
-        <span className="text-[8px] px-0.5 rounded" style={{ background: supportBg, color: '#fff' }} title={`承接:${support}`}>
+        <span className="text-[10px] px-0.5 rounded" style={{ background: supportBg, color: '#fff' }} title={`承接:${support}`}>
           {support}
         </span>
       </div>
@@ -532,7 +533,7 @@ export default function YuziLifecycleTrackerPage() {
                         <span className="font-bold" style={{ color: 'var(--text-primary)' }}>{r.stock_name}</span>
                         {r.all_bosses_exited && (
                           <span
-                            className="px-1 py-0.5 rounded text-[9px] font-bold whitespace-nowrap"
+                            className="px-1 py-0.5 rounded text-[10px] font-bold whitespace-nowrap"
                             style={{
                               background: r.archived ? 'rgba(100,116,139,0.15)' : 'rgba(249,115,22,0.12)',
                               color: r.archived ? '#64748b' : '#f97316',
@@ -554,16 +555,22 @@ export default function YuziLifecycleTrackerPage() {
                         </button>
                       </div>
                       <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{r.ts_code} · 触发 {r.trigger_date}</div>
-                      <div className="text-[10px] mt-0.5 flex flex-wrap gap-0.5">
+                      <div className="text-[10px] mt-0.5 mb-1 flex flex-wrap gap-0.5">
                         {r.boss_list_d1.slice(0, 3).map(b => (
                           <span key={b} className="px-1 rounded" style={{ background: 'rgba(239,68,68,0.1)', color: UP_COLOR }}>{b}</span>
                         ))}
-                        {r.boss_list_d1.length > 3 && <span className="text-[9px]" style={{ color: 'var(--text-muted)' }}>+{r.boss_list_d1.length - 3}</span>}
+                        {r.boss_list_d1.length > 3 && <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>+{r.boss_list_d1.length - 3}</span>}
                       </div>
+                      <StockActionButtons
+                        stockCode={r.ts_code.split('.')[0]}
+                        stockName={r.stock_name}
+                        size="xs"
+                        onRefresh={load}
+                      />
                     </td>
                     <td className="px-1 py-2 text-center">
                       <div className="font-bold text-base" style={{ color: r.quant_score_d1 >= 85 ? UP_DARK : r.quant_score_d1 >= 70 ? UP_COLOR : '#6b7280' }}>{r.quant_score_d1.toFixed(0)}</div>
-                      <div className="text-[9px]" style={{ color: 'var(--text-muted)' }}>×{r.resonance_count_d1}位</div>
+                      <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>×{r.resonance_count_d1}位</div>
                     </td>
                     <td className="px-2 py-2 text-center">
                       <div
@@ -580,7 +587,7 @@ export default function YuziLifecycleTrackerPage() {
                         const arrow = trend.trajectory >= 2 ? '↑' : trend.trajectory <= -2 ? '↓' : '→';
                         return (
                           <div
-                            className="mt-1 px-1 py-0.5 rounded text-[9px] font-bold inline-block whitespace-nowrap"
+                            className="mt-1 px-1 py-0.5 rounded text-[10px] font-bold inline-block whitespace-nowrap"
                             style={{ background: trend.bg, color: trend.color, border: `1px solid ${trend.color}40` }}
                             title={fmtTrendTooltip(trend)}
                           >
@@ -598,7 +605,7 @@ export default function YuziLifecycleTrackerPage() {
                         if (!sig) return null;
                         return (
                           <div
-                            className="mt-0.5 text-[8px]"
+                            className="mt-0.5 text-[10px]"
                             style={{ color: sig.color, opacity: 0.75 }}
                             title={`D${maxN} 7维命中: ${fmtHitCount(sig)}`}
                           >
@@ -613,7 +620,7 @@ export default function YuziLifecycleTrackerPage() {
                       const dayDate = dd?.date || '';
                       return (
                         <td key={d} className="px-0.5 py-1 text-center">
-                          <div className="text-[9px] font-bold mb-0.5" style={{ color: dayDate ? 'var(--text-secondary)' : 'var(--text-muted)' }}>
+                          <div className="text-[10px] font-bold mb-0.5" style={{ color: dayDate ? 'var(--text-secondary)' : 'var(--text-muted)' }}>
                             {dayDate ? dayDate.slice(4, 6) + '-' + dayDate.slice(6, 8) : ''}
                           </div>
                           <DayCell data={dd} dayNum={d} bossExits={r.boss_exits} />
@@ -631,7 +638,7 @@ export default function YuziLifecycleTrackerPage() {
                     </td>
                     <td className="px-2 py-2 text-center">
                       <div className="font-bold text-base" style={{ color: pctColor(r.net_return_20d) }}>{fmtPct(r.net_return_20d)}</div>
-                      <div className="text-[9px]" style={{ color: 'var(--text-muted)' }}>20d 最高</div>
+                      <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>20d 最高</div>
                     </td>
                   </tr>
                 );
@@ -679,14 +686,20 @@ export default function YuziLifecycleTrackerPage() {
                         <td className="px-2 py-2 sticky left-0 z-10" style={{ background: i % 2 ? 'rgba(0,0,0,0.02)' : 'var(--bg-card)' }}>
                           <div className="flex items-center gap-1">
                             <span className="font-bold" style={{ color: 'var(--text-primary)' }}>{r.stock_name}</span>
-                            <span className="px-1 py-0.5 rounded text-[9px] font-bold" style={{ background: 'rgba(100,116,139,0.15)', color: '#64748b', border: '1px solid rgba(100,116,139,0.3)' }} title={`最后离场 ${r.last_exit_date || ''}`}>📦已归档</span>
+                            <span className="px-1 py-0.5 rounded text-[10px] font-bold" style={{ background: 'rgba(100,116,139,0.15)', color: '#64748b', border: '1px solid rgba(100,116,139,0.3)' }} title={`最后离场 ${r.last_exit_date || ''}`}>📦已归档</span>
                           </div>
                           <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{r.ts_code} · 触发 {r.trigger_date}</div>
-                          <div className="text-[10px] mt-0.5 flex flex-wrap gap-0.5">
+                          <div className="text-[10px] mt-0.5 mb-1 flex flex-wrap gap-0.5">
                             {r.boss_list_d1.slice(0, 3).map(b => (
                               <span key={b} className="px-1 rounded" style={{ background: 'rgba(239,68,68,0.1)', color: UP_COLOR }}>{b}</span>
                             ))}
                           </div>
+                          <StockActionButtons
+                            stockCode={r.ts_code.split('.')[0]}
+                            stockName={r.stock_name}
+                            size="xs"
+                            onRefresh={load}
+                          />
                         </td>
                         <td className="px-1 py-2 text-center">
                           <div className="font-bold text-base" style={{ color: '#6b7280' }}>{r.quant_score_d1?.toFixed(0)}</div>
@@ -696,7 +709,7 @@ export default function YuziLifecycleTrackerPage() {
                           const dayDate = dd?.date || '';
                           return (
                             <td key={d} className="px-0.5 py-1 text-center">
-                              <div className="text-[9px] font-bold mb-0.5" style={{ color: dayDate ? 'var(--text-secondary)' : 'var(--text-muted)' }}>
+                              <div className="text-[10px] font-bold mb-0.5" style={{ color: dayDate ? 'var(--text-secondary)' : 'var(--text-muted)' }}>
                                 {dayDate ? dayDate.slice(4, 6) + '-' + dayDate.slice(6, 8) : ''}
                               </div>
                               <DayCell data={dd} dayNum={d} bossExits={r.boss_exits} />

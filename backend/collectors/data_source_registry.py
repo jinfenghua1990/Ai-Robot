@@ -170,6 +170,15 @@ DATA_SOURCES = {
         'protocol': 'HTTP',
         'note': 'hq.sinajs.cn，批量实时行情，无额度限制，极速',
     },
+    'ifind': {
+        'display_name': '同花顺iFinD',
+        'rate_limited': True,
+        'indicators': ['price', 'price_chg', 'financial_report', 'pe_ttm', 'pb', 'announcement', 'research_report'],
+        'priority': 1,
+        'available': True,
+        'protocol': 'MCP',
+        'note': 'iFinD-MCP服务，API密钥认证，股票/基金/债券/宏观全维度',
+    },
     'tencent_kline': {
         'display_name': '腾讯K线',
         'rate_limited': False,

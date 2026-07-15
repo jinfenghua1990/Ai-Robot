@@ -362,6 +362,37 @@ def _normalize_ts_code(code):
         return f'{code}.SZ'
 
 
+def _run_threaded(worker, items, max_workers=4, ordered=False):
+    """线程池执行 worker(items[i]) → list of results。
+
+    Args:
+        worker: 单元素处理函数，签名 (item) -> result
+        items: 待处理列表
+        max_workers: 并发线程数
+        ordered: True=按输入顺序收集；False=按完成顺序收集
+    Returns:
+        list of worker 返回值；worker 异常会被记录并跳过该元素（不中断整体）。
+    """
+    if not items:
+        return []
+    results = []
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        if ordered:
+            for r in executor.map(worker, items):
+                if r is not None:
+                    results.append(r)
+        else:
+            futures = {executor.submit(worker, item): item for item in items}
+            for future in as_completed(futures):
+                try:
+                    r = future.result()
+                    if r is not None:
+                        results.append(r)
+                except Exception as e:
+                    logger.warning('[sync_concept_sectors] worker exception: %s', e, exc_info=True)
+    return results
+
+
 def _sina_fetch_concept_list():
     """从新浪财经获取概念板块列表，返回 [(name, node, netamount), ...]"""
     url = 'http://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/MoneyFlow.ssl_bkzj_bk'
@@ -386,7 +417,7 @@ def _sina_fetch_concept_list():
             if len(data) < 100:
                 break
         except Exception as e:
-            print(f'[sync_concept_sectors] sina list page {page} error: {e}')
+            logger.warning(f'[sync_concept_sectors] sina list page {page} error: {e}', exc_info=True)
             break
     # 按净流入排序，取前 200（避免成分股请求过多）
     items.sort(key=lambda x: x['netamount'], reverse=True)
@@ -413,7 +444,7 @@ def _sina_fetch_concept_cons(node, max_pages=10):
             if len(data) < 80:
                 break
         except Exception as e:
-            print(f'[sync_concept_sectors] sina cons {node} page {page} error: {e}')
+            logger.warning(f'[sync_concept_sectors] sina cons {node} page {page} error: {e}', exc_info=True)
             break
     return codes
 
@@ -425,19 +456,17 @@ def fetch_from_sina():
     if not items:
         return concepts
 
-    def worker(item):
+    def _fetch_one(item):
         codes = _sina_fetch_concept_cons(item['node'])
         return item['name'], codes, len(codes)
 
-    with ThreadPoolExecutor(max_workers=8) as executor:
-        futures = {executor.submit(worker, item): item for item in items}
-        for future in as_completed(futures):
-            name, codes, count = future.result()
-            if codes:
-                concepts[name] = codes
-                if count > 0 and count % 100 == 0:
-                    print(f'[sync_concept_sectors] sina {name}: {count} stocks (may have more)')
-    print(f'[sync_concept_sectors] sina concepts with constituents: {len(concepts)}')
+    results = _run_threaded(_fetch_one, items, max_workers=8)
+    for name, codes, count in results:
+        if codes:
+            concepts[name] = codes
+            if count > 0 and count % 100 == 0:
+                logger.info('[sync_concept_sectors] sina %s: %d stocks (may have more)', name, count)
+    logger.info('[sync_concept_sectors] sina concepts with constituents: %d', len(concepts))
     return concepts
 
 
@@ -446,15 +475,15 @@ def fetch_from_akshare():
     try:
         import akshare as ak
     except ImportError:
-        print('[sync_concept_sectors] akshare not installed')
+        logger.warning('[sync_concept_sectors] akshare not installed')
         return {}
 
     concepts = {}
     try:
         df_list = ak.stock_board_concept_name_em()
-        print(f'[sync_concept_sectors] fetched {len(df_list)} concept boards from akshare')
+        logger.info('[sync_concept_sectors] fetched %d concept boards from akshare', len(df_list))
     except Exception as e:
-        print(f'[sync_concept_sectors] akshare stock_board_concept_name_em error: {e}')
+        logger.warning(f'[sync_concept_sectors] akshare stock_board_concept_name_em error: {e}', exc_info=True)
         return {}
 
     names = []
@@ -463,7 +492,7 @@ def fetch_from_akshare():
         if name:
             names.append(name)
 
-    def worker(name):
+    def _fetch_one(name):
         try:
             df_cons = ak.stock_board_concept_cons_em(symbol=name)
             codes = []
@@ -473,13 +502,13 @@ def fetch_from_akshare():
                     codes.append(_normalize_ts_code(code))
             return name, codes
         except Exception as e:
+            logger.debug('[sync_concept_sectors] akshare cons fetch failed for %s: %s', name, e)
             return name, []
 
-    with ThreadPoolExecutor(max_workers=4) as executor:
-        for name, codes in executor.map(worker, names):
-            if codes:
-                concepts[name] = codes
-    print(f'[sync_concept_sectors] akshare concepts with constituents: {len(concepts)}')
+    for name, codes in _run_threaded(_fetch_one, names, max_workers=4, ordered=True):
+        if codes:
+            concepts[name] = codes
+    logger.info('[sync_concept_sectors] akshare concepts with constituents: %d', len(concepts))
     return concepts
 
 
@@ -489,24 +518,24 @@ def fetch_from_tushare_ths():
         import tushare as ts
         from config import TUSHARE_TOKEN
         if not TUSHARE_TOKEN:
-            print('[sync_concept_sectors] tushare token not configured')
+            logger.warning('[sync_concept_sectors] tushare token not configured')
             return {}
         ts.set_token(TUSHARE_TOKEN)
         pro = ts.pro_api()
     except Exception as e:
-        print(f'[sync_concept_sectors] tushare init error: {e}')
+        logger.warning(f'[sync_concept_sectors] tushare init error: {e}', exc_info=True)
         return {}
 
     concepts = {}
     try:
         # type=N 表示概念板块
         df_index = pro.ths_index(type='N', fields='ts_code,name,count')
-        print(f'[sync_concept_sectors] fetched {len(df_index)} ths concept boards')
+        logger.info('[sync_concept_sectors] fetched %d ths concept boards', len(df_index))
     except Exception as e:
-        print(f'[sync_concept_sectors] tushare ths_index error: {e}')
+        logger.warning(f'[sync_concept_sectors] tushare ths_index error: {e}', exc_info=True)
         return {}
 
-    def worker(row):
+    def _fetch_one(row):
         ts_code = row.get('ts_code')
         name = row.get('name', '').strip()
         if not ts_code or not name:
@@ -520,15 +549,14 @@ def fetch_from_tushare_ths():
                     codes.append(_normalize_ts_code(code))
             return name, codes
         except Exception:
-            logger.debug(f"worker failed", exc_info=True)
+            logger.debug('[sync_concept_sectors] tushare ths_member failed for %s', ts_code, exc_info=True)
             return name, []
 
     rows = df_index.to_dict('records')
-    with ThreadPoolExecutor(max_workers=4) as executor:
-        for name, codes in executor.map(worker, rows):
-            if codes:
-                concepts[name] = codes
-    print(f'[sync_concept_sectors] tushare ths concepts with constituents: {len(concepts)}')
+    for name, codes in _run_threaded(_fetch_one, rows, max_workers=4, ordered=True):
+        if codes:
+            concepts[name] = codes
+    logger.info('[sync_concept_sectors] tushare ths concepts with constituents: %d', len(concepts))
     return concepts
 
 
@@ -555,7 +583,7 @@ def fetch_from_eastmoney():
                 if name and name not in names:
                     names.append(name)
         except Exception as e:
-            print(f'[sync_concept_sectors] eastmoney page {page} error: {e}')
+            logger.warning(f'[sync_concept_sectors] eastmoney page {page} error: {e}', exc_info=True)
             break
     print(f'[sync_concept_sectors] fetched {len(names)} concept names from eastmoney')
     return names

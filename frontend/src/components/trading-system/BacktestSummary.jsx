@@ -2,6 +2,7 @@
  * 回测摘要 — 最近一次组合回测的关键指标 + 历史 5 次对比折线
  */
 import { useMemo } from 'react';
+import { UP_COLOR, DOWN_COLOR } from '../../utils/colors';
 
 export default function BacktestSummary({ backtest, loading }) {
   if (loading && !backtest) {
@@ -37,10 +38,10 @@ export default function BacktestSummary({ backtest, loading }) {
       </div>
 
       <div className="grid grid-cols-4 gap-1.5">
-        <Stat label="胜率" value={`${latest_run.win_rate?.toFixed(1)}%`} color={latest_run.win_rate >= 50 ? '#ef4444' : '#22c55e'} />
-        <Stat label="总收益" value={`${latest_run.total_profit_pct?.toFixed(2)}%`} color={latest_run.total_profit_pct >= 0 ? '#ef4444' : '#22c55e'} />
-        <Stat label="最大回撤" value={`${latest_run.max_drawdown_pct?.toFixed(2)}%`} color="#22c55e" />
-        <Stat label="盈亏比" value={latest_run.profit_factor?.toFixed(2)} color={latest_run.profit_factor >= 1 ? '#ef4444' : '#22c55e'} />
+        <Stat label="胜率" value={`${latest_run.win_rate?.toFixed(1)}%`} color={latest_run.win_rate >= 50 ? UP_COLOR : DOWN_COLOR} />
+        <Stat label="总收益" value={`${latest_run.total_profit_pct?.toFixed(2)}%`} color={latest_run.total_profit_pct >= 0 ? UP_COLOR : DOWN_COLOR} />
+        <Stat label="最大回撤" value={`${latest_run.max_drawdown_pct?.toFixed(2)}%`} color={DOWN_COLOR} />
+        <Stat label="盈亏比" value={latest_run.profit_factor?.toFixed(2)} color={latest_run.profit_factor >= 1 ? UP_COLOR : DOWN_COLOR} />
       </div>
 
       {/* 历史趋势折线 */}

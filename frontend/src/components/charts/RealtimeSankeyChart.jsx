@@ -35,15 +35,15 @@ export default function RealtimeSankeyChart({ rtSectors, selectedSector, onNodeC
       {/* 统计摘要 */}
       <div className="grid grid-cols-3 gap-1.5 shrink-0">
         <div className="rounded px-2 py-1 border" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-surface)' }}>
-          <div className="text-[9px]" style={{ color: 'var(--text-muted)' }}>Top8 流入</div>
+          <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Top8 流入</div>
           <div className="text-xs font-bold text-red-500">{fmtFlow(totalIn)}</div>
         </div>
         <div className="rounded px-2 py-1 border" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-surface)' }}>
-          <div className="text-[9px]" style={{ color: 'var(--text-muted)' }}>Top8 流出</div>
+          <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Top8 流出</div>
           <div className="text-xs font-bold text-green-500">{fmtFlow(totalOut)}</div>
         </div>
         <div className="rounded px-2 py-1 border" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-surface)' }}>
-          <div className="text-[9px]" style={{ color: 'var(--text-muted)' }}>快照时间</div>
+          <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>快照时间</div>
           <div className="text-[10px] font-bold" style={{ color: 'var(--text-secondary)' }}>
             {snapshotTime ? snapshotTime.slice(11, 19) : '—'}
           </div>
@@ -121,7 +121,7 @@ export default function RealtimeSankeyChart({ rtSectors, selectedSector, onNodeC
       </div>
 
       {/* 底部说明 */}
-      <div className="text-[9px] shrink-0 px-1" style={{ color: 'var(--text-muted)' }}>
+      <div className="text-[10px] shrink-0 px-1" style={{ color: 'var(--text-muted)' }}>
         当日累计净流入 · 含涨跌幅参考 · 点击钻取分时走势
       </div>
     </div>

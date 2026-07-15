@@ -6,12 +6,9 @@
 资金流替代：用3日涨跌方向连续性替代主力净流入
 """
 import json
-import httpx
 from datetime import datetime
-from db.connection import get_db
 from db.session import get_db_session
 from db.models import StockFeaturesDaily, StockDailyKline
-from utils import stock_code_to_sina as _stock_code_to_sina
 from services.indicators import calc_rsi
 import logging
 logger = logging.getLogger(__name__)
@@ -90,6 +87,37 @@ async def _fetch_kline(stock_code: str, datalen: int = 120):
 
     # 后台写入 stock_daily_kline 表缓存（不阻塞返回）
     _cache_kline_to_db(ts_code, ts_data)
+
+    # === 复权处理：用 adj_factor 修正价格，使 MA/ATR 不受除权除息影响 ===
+    try:
+        from sqlalchemy import text
+        with get_db_session() as db:
+            # 批量查所有 kline 日期的 adj_factor
+            date_list = [k['day'].replace('-', '') for k in klines]
+            if date_list:
+                adj_rows = db.execute(
+                    text("""
+                        SELECT trade_date, adj_factor FROM stock_adj_factor
+                        WHERE ts_code=:code AND trade_date = ANY(:dates)
+                    """),
+                    {'code': ts_code, 'dates': date_list}
+                ).fetchall()
+                adj_map = {str(r[0]): float(r[1]) for r in adj_rows}
+                # 用最新的 adj_factor 回溯修正全部 K 线
+                latest_adj = None
+                for ad in sorted(adj_map.values(), reverse=True):
+                    latest_adj = ad
+                    break
+                if latest_adj and latest_adj != 1.0:
+                    for k in klines:
+                        adj = adj_map.get(k['day'].replace('-', ''), latest_adj)
+                        if adj and adj != 1.0:
+                            k['open'] = round(k['open'] * adj, 2)
+                            k['close'] = round(k['close'] * adj, 2)
+                            k['high'] = round(k['high'] * adj, 2)
+                            k['low'] = round(k['low'] * adj, 2)
+    except Exception:
+        logger.debug(f'adj_factor apply failed for {stock_code}', exc_info=True)
 
     return klines
 
@@ -417,7 +445,7 @@ def save_features(stock_code: str, trade_date: str, features: dict, state: str, 
             db.commit()
     except Exception as e:
         db.rollback()
-        print(f'[market_state] save error for {stock_code}: {e}')
+        logger.error(f'[market_state] save error for {stock_code}: {e}', exc_info=True)
 
 
 def get_latest_state(stock_code: str) -> dict:

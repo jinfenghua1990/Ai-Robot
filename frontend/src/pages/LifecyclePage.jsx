@@ -105,7 +105,7 @@ export default function LifecyclePage() {
       </div>
 
       {/* 说明卡片（可折叠） */}
-      <div className="rounded-xl border" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
+      <div>
         <button onClick={() => setShowHelp(!showHelp)} className="w-full flex items-center justify-between px-3 py-2.5 text-sm" style={{ color: 'var(--text-secondary)' }}>
           <span><strong style={{ color: 'var(--text-primary)' }}>📖 名词解释</strong> · 龙头趋势阶段</span>
           <span style={{ color: 'var(--text-muted)' }}>{showHelp ? '收起 ▲' : '展开 ▼'}</span>
@@ -129,14 +129,14 @@ export default function LifecyclePage() {
       {/* 市场概览（4卡片，参考模拟盘账户概览） */}
       {marketOverview && (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <div className="rounded-xl border p-3" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
+          <div>
             <div className="text-xs mb-1" style={{ color: 'var(--text-muted)' }}>龙头总数</div>
             <div className="text-xl font-bold" style={{ color: 'var(--text-primary)' }}>{marketOverview.total}</div>
             <div className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
               主导阶段：<span style={{ color: marketOverview.topStage?.color }}>{marketOverview.topStage?.stage || '--'}</span>
             </div>
           </div>
-          <div className="rounded-xl border p-3" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
+          <div>
             <div className="text-xs mb-1" style={{ color: 'var(--text-muted)' }}>涨跌情况</div>
             <div className="text-xl font-bold flex items-center gap-2">
               <span style={{ color: '#ef4444' }}>{marketOverview.upCount}</span>
@@ -145,14 +145,14 @@ export default function LifecyclePage() {
             </div>
             <div className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>涨 / 跌 · 平 {marketOverview.flatCount}</div>
           </div>
-          <div className="rounded-xl border p-3" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
+          <div>
             <div className="text-xs mb-1" style={{ color: 'var(--text-muted)' }}>平均涨幅</div>
             <div className="text-xl font-bold" style={{ color: marketOverview.avgChange >= 0 ? '#ef4444' : '#22c55e' }}>
               {marketOverview.avgChange >= 0 ? '+' : ''}{marketOverview.avgChange.toFixed(2)}%
             </div>
             <div className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>平均强度: {marketOverview.avgStrength.toFixed(0)}</div>
           </div>
-          <div className="rounded-xl border p-3" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
+          <div>
             <div className="text-xs mb-1" style={{ color: 'var(--text-muted)' }}>最高连板</div>
             <div className="text-xl font-bold" style={{ color: '#ef4444' }}>{marketOverview.maxDays}<span className="text-sm font-normal ml-1" style={{ color: 'var(--text-muted)' }}>板</span></div>
             <div className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>连板高度</div>
@@ -192,7 +192,7 @@ export default function LifecyclePage() {
       {data?.leaders?.length > 0 && (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           {/* 连板梯队 */}
-          <div className="rounded-xl border p-3" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
+          <div>
             <div className="flex items-center justify-between mb-2">
               <h3 className="text-sm font-bold" style={{ color: 'var(--text-primary)' }}>🔥 连板梯队</h3>
               <span className="text-xs" style={{ color: 'var(--text-muted)' }}>按连板高度分组</span>
@@ -211,7 +211,7 @@ export default function LifecyclePage() {
           </div>
 
           {/* 板块热度Top */}
-          <div className="rounded-xl border p-3" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
+          <div>
             <div className="flex items-center justify-between mb-2">
               <h3 className="text-sm font-bold" style={{ color: 'var(--text-primary)' }}>📊 板块热度Top{sectorTopList.length}</h3>
               <span className="text-xs" style={{ color: 'var(--text-muted)' }}>按龙头数量排序</span>
@@ -239,7 +239,7 @@ export default function LifecyclePage() {
 
       {/* 强度榜Top10（紧凑表格） */}
       {strengthTop10.length > 0 && (
-        <div className="rounded-xl border p-3" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
+        <div>
           <div className="flex items-center justify-between mb-2">
             <h3 className="text-sm font-bold" style={{ color: 'var(--text-primary)' }}>💪 强度榜Top10</h3>
             <span className="text-xs" style={{ color: 'var(--text-muted)' }}>点击阶段卡片可筛选</span>
@@ -314,7 +314,7 @@ export default function LifecyclePage() {
       </div>
 
       {/* 趋势阶段列表 */}
-      <div className="rounded-xl border p-3" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
+      <div>
         {loading ? (
           <div className="flex items-center justify-center h-96 text-sm" style={{ color: 'var(--text-muted)' }}>加载中...</div>
         ) : pagedLeaders.length > 0 ? (

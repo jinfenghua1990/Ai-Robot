@@ -1,0 +1,1 @@
+import{j as t}from"./index.CsuYT-kk.js";import{V as e}from"./VibeEmbed.BdIz3eEc.js";import"./react-vendor.BSdSoFln.js";function o(){return t.jsx(e,{path:"/settings",title:"Vibe 接入 AI"})}export{o as default};

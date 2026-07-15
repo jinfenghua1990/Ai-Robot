@@ -8,6 +8,7 @@
 每只股票含：5种形态分类 + 关键指标 + 具体交易计划（买入价位+止损价位）
 """
 import logging
+import threading
 import concurrent.futures
 from fastapi import APIRouter, Query
 from db.session import get_db_session
@@ -21,7 +22,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 _kline_cache = {}
-_cache_lock = __import__('threading').Lock()
+_cache_lock = threading.Lock()
 
 
 def _get_kline_cached(ts_code, days=60):

@@ -1,8 +1,7 @@
 """妙想云端自选股同步（推送用）"""
 import time
 import logging
-import httpx
-from fastapi import HTTPException, Request
+from fastapi import HTTPException
 
 from config import MX_APIKEY, MX_API_URL
 

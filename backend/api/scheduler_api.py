@@ -93,11 +93,16 @@ def data_freshness():
         ("ai_analysis_cache", "created_at"),
         ("realtime_concept_sector_flow", "snapshot_time"),
     ]
+    # 白名单校验，防止未来配置被篡改时 SQL 注入
+    _ALLOWED_TABLES = {t for t, _ in targets}
+    _ALLOWED_COLS = {c for _, c in targets}
     with get_db_session() as db:
         ref = db.execute(text("SELECT max(trade_date) FROM stock_flow")).scalar()
         rows = []
         for tbl, col in targets:
             try:
+                if tbl not in _ALLOWED_TABLES or col not in _ALLOWED_COLS:
+                    raise ValueError(f"table/column not in whitelist: {tbl}.{col}")
                 d = db.execute(text(f"SELECT max({col})::date FROM {tbl}")).scalar()
             except Exception as e:
                 rows.append({"table": tbl, "latest": None, "gap_days": None,

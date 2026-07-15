@@ -13,6 +13,7 @@ import { useNavigate } from 'react-router-dom';
 import { apiFetch } from '../utils/request';
 import { UP_COLOR, DOWN_COLOR, UP_DARK, DOWN_DARK } from '../utils/colors';
 import SinaLink from '../components/SinaLink';
+import StockActionButtons from '../components/trading/StockActionButtons';
 
 const fmtWan = (v) => {
   if (v == null) return '—';
@@ -241,6 +242,7 @@ export default function BossHoldingsPage() {
                 <th className="px-2 py-2 text-center font-bold" style={{ color: 'var(--text-primary)' }}>持有天数</th>
                 <th className="px-2 py-2 text-right font-bold" style={{ color: 'var(--text-primary)' }}>收益率</th>
                 <th className="px-2 py-2 text-center font-bold" style={{ color: 'var(--text-primary)' }}>状态</th>
+                <th className="px-2 py-2 text-left font-bold" style={{ color: 'var(--text-primary)' }}>操作</th>
               </tr>
             </thead>
             <tbody>
@@ -311,6 +313,14 @@ export default function BossHoldingsPage() {
                       >
                         {isOpen ? '🟢 持仓中' : '⚫ 已平仓'}
                       </span>
+                    </td>
+                    <td className="px-2 py-2" onClick={(e) => e.stopPropagation()}>
+                      <StockActionButtons
+                        stockCode={h.ts_code.split('.')[0]}
+                        stockName={h.stock_name}
+                        size="xs"
+                        onRefresh={load}
+                      />
                     </td>
                   </tr>
                 );

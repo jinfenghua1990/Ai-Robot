@@ -1,0 +1,1 @@
+import{j as e}from"./index.CsuYT-kk.js";import{f as s}from"./react-vendor.BSdSoFln.js";import{V as r}from"./VibeEmbed.BdIz3eEc.js";function d(){const[a]=s(),t=a.get("code"),o=t?`/stock-data?code=${t}`:"/stock-data";return e.jsx(r,{path:o,title:"Vibe 个股数据"})}export{d as default};

@@ -1,0 +1,199 @@
+import { lazy, Suspense } from 'react';
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import Layout from './components/Layout';
+import ErrorBoundary from './components/ErrorBoundary';
+import { TradingProvider } from './context/TradingContext';
+
+const PanoramaPage = lazy(() => import('./pages/PanoramaPage'));
+const QualityPage = lazy(() => import('./pages/QualityPage'));
+const StrategyCenterPage = lazy(() => import('./pages/StrategyCenterPage'));
+const TradingSystemPage = lazy(() => import('./pages/TradingSystemPage'));
+const TradingPage = lazy(() => import('./pages/TradingPage'));
+const WatchlistPage = lazy(() => import('./pages/WatchlistPage'));
+const YuziCenterPage = lazy(() => import('./pages/YuziCenterPage'));
+const FocusStocksPage = lazy(() => import('./pages/FocusStocksPage'));
+const StockDetailPage = lazy(() => import('./pages/StockDetailPage'));
+const YuziBillboardPage = lazy(() => import('./pages/YuziBillboardPage'));
+const YuziLifecycleTrackerPage = lazy(() => import('./pages/YuziLifecycleTrackerPage'));
+const ConceptFlowPage = lazy(() => import('./pages/ConceptFlowPage'));
+const ConceptFlowComparePage = lazy(() => import('./pages/ConceptFlowComparePage'));
+const IndexFlowPage = lazy(() => import('./pages/IndexFlowPage'));
+const GlobalMarketPage = lazy(() => import('./pages/GlobalMarketPage'));
+const FundWeatherPage = lazy(() => import('./pages/FundWeatherPage'));
+const PortfolioPage = lazy(() => import('./pages/portfolio/PortfolioPage'));
+
+// Vibe-Research 二级页面
+const VibeDailyReviewPage = lazy(() => import('./pages/vibe/VibeDailyReviewPage'));
+const VibeIntelPage = lazy(() => import('./pages/vibe/VibeIntelPage'));
+const VibeSectorsPage = lazy(() => import('./pages/vibe/VibeSectorsPage'));
+const VibeRadarPage = lazy(() => import('./pages/vibe/VibeRadarPage'));
+const VibeStockDataPage = lazy(() => import('./pages/vibe/VibeStockDataPage'));
+const VibeWatchlistPage = lazy(() => import('./pages/vibe/VibeWatchlistPage'));
+const VibePortfolioPage = lazy(() => import('./pages/vibe/VibePortfolioPage'));
+const VibeMyReportsPage = lazy(() => import('./pages/vibe/VibeMyReportsPage'));
+const VibeNotesPage = lazy(() => import('./pages/vibe/VibeNotesPage'));
+const VibeSettingsPage = lazy(() => import('./pages/vibe/VibeSettingsPage'));
+
+// daily_stock_analysis (DSA) 二级页面
+const DSAHomePage = lazy(() => import('./pages/dsa/DSAHomePage'));
+const DSAChatPage = lazy(() => import('./pages/dsa/DSAChatPage'));
+const DSAPortfolioPage = lazy(() => import('./pages/dsa/DSAPortfolioPage'));
+const DSADecisionSignalsPage = lazy(() => import('./pages/dsa/DSADecisionSignalsPage'));
+const DSAScreeningPage = lazy(() => import('./pages/dsa/DSAScreeningPage'));
+const DSABacktestPage = lazy(() => import('./pages/dsa/DSABacktestPage'));
+const DSAAlertsPage = lazy(() => import('./pages/dsa/DSAAlertsPage'));
+const DSATokenUsagePage = lazy(() => import('./pages/dsa/DSATokenUsagePage'));
+const DSASettingsPage = lazy(() => import('./pages/dsa/DSASettingsPage'));
+
+// Hermes Cockpit 二级页面
+const HermesTodayPage = lazy(() => import('./pages/hermes/HermesTodayPage'));
+const HermesMainHubPage = lazy(() => import('./pages/hermes/HermesMainHubPage'));
+const HermesThemeReviewPage = lazy(() => import('./pages/hermes/HermesThemeReviewPage'));
+const HermesWaveAnalysisPage = lazy(() => import('./pages/hermes/HermesWaveAnalysisPage'));
+const HermesStockMonitorPage = lazy(() => import('./pages/hermes/HermesStockMonitorPage'));
+const HermesStockAnalysisPage = lazy(() => import('./pages/hermes/HermesStockAnalysisPage'));
+const HermesStrategiesPage = lazy(() => import('./pages/hermes/HermesStrategiesPage'));
+const HermesScreenerPage = lazy(() => import('./pages/hermes/HermesScreenerPage'));
+const HermesMockTradingPage = lazy(() => import('./pages/hermes/HermesMockTradingPage'));
+const HermesStrategyPositionPage = lazy(() => import('./pages/hermes/HermesStrategyPositionPage'));
+const HermesUSMarketPage = lazy(() => import('./pages/hermes/HermesUSMarketPage'));
+const HermesUSMonitorPage = lazy(() => import('./pages/hermes/HermesUSMonitorPage'));
+const HermesUSAnalysisPage = lazy(() => import('./pages/hermes/HermesUSAnalysisPage'));
+const HermesUSStrategiesPage = lazy(() => import('./pages/hermes/HermesUSStrategiesPage'));
+const HermesUSTradingPage = lazy(() => import('./pages/hermes/HermesUSTradingPage'));
+const HermesHKMarketPage = lazy(() => import('./pages/hermes/HermesHKMarketPage'));
+const HermesHKMonitorPage = lazy(() => import('./pages/hermes/HermesHKMonitorPage'));
+const HermesHKAnalysisPage = lazy(() => import('./pages/hermes/HermesHKAnalysisPage'));
+const HermesHKStrategiesPage = lazy(() => import('./pages/hermes/HermesHKStrategiesPage'));
+const HermesHKTradingPage = lazy(() => import('./pages/hermes/HermesHKTradingPage'));
+
+// 股票分析套件（4 选）：daily_stock_analysis(=DSA 已在) + AI Hedge Fund / TradingAgents / go-stock
+const AIHFHomePage = lazy(() => import('./pages/aihf/AIHFHomePage'));
+const LLMGatewayPage = lazy(() => import('./pages/llm/LLMGatewayPage'));
+const OpenClawPage = lazy(() => import('./pages/openclaw/OpenClawPage'));
+const TAgentsHomePage = lazy(() => import('./pages/tagents/TAgentsHomePage'));
+const GoStockHomePage = lazy(() => import('./pages/gostock/GoStockHomePage'));
+
+function PageLoader() {
+  return (
+    <div className="flex items-center justify-center h-96">
+      <div className="text-sm" style={{ color: 'var(--text-muted)' }}>加载中...</div>
+    </div>
+  );
+}
+
+export default function App() {
+  return (
+    <BrowserRouter>
+      <ErrorBoundary>
+        <TradingProvider>
+        <Suspense fallback={<PageLoader />}>
+        <Routes>
+        <Route element={<Layout />}>
+          <Route path="/panorama" element={<PanoramaPage />} />
+          <Route path="/quality" element={<QualityPage />} />
+          <Route path="/strategy-center" element={<StrategyCenterPage />} />
+          <Route path="/yuzi-center" element={<YuziCenterPage />} />
+          <Route path="/yuzi-tracker-20d" element={<YuziLifecycleTrackerPage />} />
+          <Route path="/yuzi-tracker" element={<YuziLifecycleTrackerPage />} />
+          <Route path="/trading" element={<TradingPage />} />
+          <Route path="/watchlist" element={<WatchlistPage />} />
+          <Route path="/focus" element={<FocusStocksPage />} />
+          <Route path="/portfolio" element={<PortfolioPage />} />
+          <Route path="/concept-flow" element={<ConceptFlowPage />} />
+          <Route path="/concept-flow-compare" element={<ConceptFlowComparePage />} />
+          <Route path="/index-flow" element={<IndexFlowPage />} />
+          <Route path="/global-market" element={<GlobalMarketPage />} />
+          <Route path="/fund-weather" element={<FundWeatherPage />} />
+          <Route path="/stock/:code" element={<StockDetailPage />} />
+
+          {/* Vibe-Research 二级页面：全部独立成页，资讯雷达单独入口 */}
+          <Route path="/vibe/daily-review" element={<VibeDailyReviewPage />} />
+          <Route path="/vibe/intel" element={<VibeIntelPage />} />
+          <Route path="/vibe/sectors" element={<VibeSectorsPage />} />
+          <Route path="/vibe/sectors/:key" element={<VibeSectorsPage />} />
+          <Route path="/vibe/radar" element={<VibeRadarPage />} />
+          <Route path="/vibe/stock-data" element={<VibeStockDataPage />} />
+          <Route path="/vibe/watchlist" element={<VibeWatchlistPage />} />
+          <Route path="/vibe/portfolio" element={<VibePortfolioPage />} />
+          <Route path="/vibe/my-reports" element={<VibeMyReportsPage />} />
+          <Route path="/vibe/notes" element={<VibeNotesPage />} />
+          <Route path="/vibe/settings" element={<VibeSettingsPage />} />
+
+          {/* daily_stock_analysis (DSA) 二级页面：全部独立成页 */}
+          <Route path="/dsa" element={<DSAHomePage />} />
+          <Route path="/dsa/" element={<DSAHomePage />} />
+          <Route path="/dsa/chat" element={<DSAChatPage />} />
+          <Route path="/dsa/portfolio" element={<DSAPortfolioPage />} />
+          <Route path="/dsa/decision-signals" element={<DSADecisionSignalsPage />} />
+          <Route path="/dsa/screening" element={<DSAScreeningPage />} />
+          <Route path="/dsa/backtest" element={<DSABacktestPage />} />
+          <Route path="/dsa/alerts" element={<DSAAlertsPage />} />
+          <Route path="/dsa/usage" element={<DSATokenUsagePage />} />
+          <Route path="/dsa/settings" element={<DSASettingsPage />} />
+
+          {/* Hermes Cockpit 二级页面 */}
+          <Route path="/hermes" element={<HermesTodayPage />} />
+          <Route path="/hermes/" element={<HermesTodayPage />} />
+          <Route path="/hermes/today" element={<HermesTodayPage />} />
+          <Route path="/hermes/main-hub" element={<HermesMainHubPage />} />
+          <Route path="/hermes/theme-review" element={<HermesThemeReviewPage />} />
+          <Route path="/hermes/wave-analysis" element={<HermesWaveAnalysisPage />} />
+          <Route path="/hermes/stock-monitor" element={<HermesStockMonitorPage />} />
+          <Route path="/hermes/stock-analysis" element={<HermesStockAnalysisPage />} />
+          <Route path="/hermes/strategies" element={<HermesStrategiesPage />} />
+          <Route path="/hermes/screener" element={<HermesScreenerPage />} />
+          <Route path="/hermes/mock-trading" element={<HermesMockTradingPage />} />
+          <Route path="/hermes/strategy-position" element={<HermesStrategyPositionPage />} />
+          <Route path="/hermes/us-market" element={<HermesUSMarketPage />} />
+          <Route path="/hermes/us-monitor" element={<HermesUSMonitorPage />} />
+          <Route path="/hermes/us-analysis" element={<HermesUSAnalysisPage />} />
+          <Route path="/hermes/us-strategies" element={<HermesUSStrategiesPage />} />
+          <Route path="/hermes/us-trading" element={<HermesUSTradingPage />} />
+          <Route path="/hermes/hk-market" element={<HermesHKMarketPage />} />
+          <Route path="/hermes/hk-monitor" element={<HermesHKMonitorPage />} />
+          <Route path="/hermes/hk-analysis" element={<HermesHKAnalysisPage />} />
+          <Route path="/hermes/hk-strategies" element={<HermesHKStrategiesPage />} />
+          <Route path="/hermes/hk-trading" element={<HermesHKTradingPage />} />
+
+          {/* 股票分析套件二级页面：AI Hedge Fund / TradingAgents / go-stock */}
+          <Route path="/aihf" element={<AIHFHomePage />} />
+          <Route path="/llm" element={<LLMGatewayPage />} />
+          <Route path="/llm/" element={<LLMGatewayPage />} />
+          <Route path="/openclaw" element={<OpenClawPage />} />
+          <Route path="/openclaw/" element={<OpenClawPage />} />
+          <Route path="/aihf/" element={<AIHFHomePage />} />
+          <Route path="/tagents" element={<TAgentsHomePage />} />
+          <Route path="/tagents/" element={<TAgentsHomePage />} />
+          <Route path="/gostock" element={<GoStockHomePage />} />
+          <Route path="/gostock/" element={<GoStockHomePage />} />
+
+          <Route path="/mx-tools" element={<Navigate to="/watchlist" replace />} />
+          {/* 合并后的重定向：龙虎榜+游资系统→游资中心，资金流→自选股 */}
+          <Route path="/yuzi-billboard" element={<Navigate to="/yuzi-center" replace />} />
+          <Route path="/trading-system" element={<Navigate to="/yuzi-center" replace />} />
+          <Route path="/watchlist/flow" element={<Navigate to="/watchlist" replace />} />
+          {/* 旧路径重定向到板块全景或策略中心 */}
+          <Route path="/heatmap" element={<Navigate to="/panorama" replace />} />
+          <Route path="/capital-flow" element={<Navigate to="/panorama" replace />} />
+          <Route path="/realtime" element={<Navigate to="/panorama" replace />} />
+          <Route path="/portfolio" element={<Navigate to="/panorama" replace />} />
+          <Route path="/lifecycle" element={<Navigate to="/strategy-center" replace />} />
+          <Route path="/lifecycle-v2" element={<Navigate to="/strategy-center" replace />} />
+          <Route path="/lifecycle-v3" element={<Navigate to="/strategy-center" replace />} />
+          <Route path="/lifecycle-v4" element={<Navigate to="/strategy-center" replace />} />
+          <Route path="/lifecycle-hub" element={<Navigate to="/strategy-center" replace />} />
+          <Route path="/screener" element={<Navigate to="/strategy-center" replace />} />
+          <Route path="/bs-screener" element={<Navigate to="/strategy-center" replace />} />
+          <Route path="/baihu" element={<Navigate to="/strategy-center" replace />} />
+          <Route path="/rotation" element={<Navigate to="/panorama" replace />} />
+          <Route path="/money-flow" element={<Navigate to="/concept-flow" replace />} />
+          <Route path="*" element={<Navigate to="/panorama" />} />
+        </Route>
+        </Routes>
+        </Suspense>
+        </TradingProvider>
+      </ErrorBoundary>
+    </BrowserRouter>
+  );
+}

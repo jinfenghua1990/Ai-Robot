@@ -1,0 +1,1 @@
+import{j as t}from"./index.CsuYT-kk.js";import{H as s}from"./HermesEmbed.FQlHVKXP.js";import"./react-vendor.BSdSoFln.js";function a(){return t.jsx(s,{path:"/stock-analysis",title:"选股分析"})}export{a as default};

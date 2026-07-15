@@ -2,7 +2,8 @@
 
 from datetime import date, datetime
 from typing import Optional
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Depends
+from api.auth import verify_api_key
 from pydantic import BaseModel
 from db.connection import get_db
 from db.session import get_db_session
@@ -101,7 +102,7 @@ def get_logs(date_str: str = Query(None, alias='date')):
         }
 
 
-@router.post("/api/auto-trade/run")
+@router.post("/api/auto-trade/run", dependencies=[Depends(verify_api_key)])
 async def run_once(dry_run: bool = Query(True, description="true=仅预览不下单")):
     """手动触发一次自动化交易扫描"""
     with get_db_session() as db:

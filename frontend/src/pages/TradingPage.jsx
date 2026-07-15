@@ -6,7 +6,7 @@ import SignalCard from '../components/trading/SignalCard';
 import StrategyConfig from '../components/trading/StrategyConfig';
 import ManualTradeBar from '../components/trading/ManualTradeBar';
 import { fmtFlow, formatMoney, formatProfit } from '../utils/format';
-import { CLEAR_COLOR, REDUCE_COLOR, ADD_COLOR } from '../utils/colors';
+import { CLEAR_COLOR, REDUCE_COLOR, ADD_COLOR, UP_COLOR, DOWN_COLOR } from '../utils/colors';
 import { apiFetch } from '../utils/request';
 import { TOAST_DURATION } from '../utils/constants';
 
@@ -264,7 +264,7 @@ export default function TradingPage() {
             </div>
             <div className="rounded-xl border p-3" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
               <div className="text-xs mb-1" style={{ color: 'var(--text-muted)' }}>总盈亏</div>
-              <div className="text-xl font-bold" style={{ color: (acc.totalAssets - acc.initMoney) >= 0 ? '#ef4444' : '#22c55e' }}>
+              <div className="text-xl font-bold" style={{ color: (acc.totalAssets - acc.initMoney) >= 0 ? UP_COLOR : DOWN_COLOR }}>
                 {formatProfit(acc.totalAssets - acc.initMoney)}
               </div>
               <div className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>

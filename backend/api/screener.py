@@ -11,6 +11,12 @@ from api.validators import validate_date
 from services.signal_builder import build_signals_batch, build_signals_from_strategy_result
 from datetime import datetime, timedelta
 
+# ---- 多因子量化选股（免费 F10 数据驱动）----
+import json
+from sqlalchemy import select, func
+from db.connection import SessionLocal
+from db.models import StockUniverse, StockF10, StockMoneyFlowDetail
+
 router = APIRouter()
 
 @router.get("/api/screener")
@@ -431,5 +437,123 @@ def backfill(date: str = Query(...), token: str = Query(None)):
     except Exception as e:
         from fastapi import HTTPException
         # 不暴露内部异常细节
-        print(f'[backfill] Error for {date}: {e}')
+        logger.warning(f'[backfill] Error for {date}: {e}', exc_info=True)
         raise HTTPException(status_code=500, detail=f'Backfill failed for {date}')
+
+
+# ============ 多因子量化选股（基于免费 F10 批量预拉数据）============
+# 数据来源：stock_universe(名称/行业/板块) + stock_f10(财务/估值/机构) + stock_money_flow_detail(主力净流入)
+# 因子：PE(TTM) / ROE / 毛利率 / 机构占流通比 / 主力净流入 / 行业 / 板块
+
+def _latest_flow_map(db):
+    """最新交易日的主力净流入 map: ts_code -> main_net(元)"""
+    latest = db.execute(func.max(StockMoneyFlowDetail.trade_date)).scalar()
+    if not latest:
+        return {}
+    rows = db.execute(
+        select(StockMoneyFlowDetail.ts_code, StockMoneyFlowDetail.main_net)
+        .where(StockMoneyFlowDetail.trade_date == latest)
+    ).all()
+    return {r[0]: (float(r[1]) if r[1] is not None else None) for r in rows}
+
+
+def _mfactor_score(pe, roe, gm, inst):
+    """综合质量-估值评分：ROE/PE（盈利收益率倒数）× 质量/筹码加成。None 稳健。"""
+    try:
+        pe_v = float(pe) if pe is not None else None
+        roe_v = float(roe) if roe is not None else 0.0
+        gm_v = float(gm) if gm is not None else 0.0
+        inst_v = float(inst) if inst is not None else 0.0
+        if pe_v is None or pe_v <= 0:
+            return None
+        return (roe_v / pe_v) * (1 + gm_v / 100.0) * (1 + inst_v / 100.0)
+    except Exception:
+        return None
+
+
+@router.get("/api/screener/filter")
+def mfactor_filter(
+    pe_max: float = Query(None, description="PE(TTM) 上限，如 20"),
+    roe_min: float = Query(None, description="ROE(%) 下限，如 15"),
+    gm_min: float = Query(None, description="毛利率(%) 下限，如 30"),
+    inst_min: float = Query(None, description="机构占流通比(%) 下限，如 3"),
+    net_inflow_min: float = Query(None, description="主力净流入下限(元，来自盘后资金流)"),
+    sector: str = Query(None, description="行业模糊匹配，如 白酒 / 银行 / 半导体"),
+    market: str = Query(None, description="板块：主板 / 创业板 / 科创板 / 北交所"),
+    sort_by: str = Query("score", description="排序字段: score/pe/roe/gross_margin/inst_hold/net_inflow"),
+    order: str = Query("desc", description="asc / desc"),
+    limit: int = Query(50, ge=1, le=500),
+):
+    """多因子量化选股：低估值 + 高质量 + 机构持股 + 主力流入。数据来自免费 F10 预拉缓存。"""
+    with SessionLocal() as db:
+        uni_map = {r.ts_code: r for r in db.execute(select(StockUniverse)).scalars().all()}
+        flow_map = _latest_flow_map(db)
+        f10_rows = db.execute(select(StockF10)).scalars().all()
+
+    candidates = []
+    for r in f10_rows:
+        uni = uni_map.get(r.ts_code)
+        if not uni:
+            continue
+        fj = json.loads(r.financial_json or "{}")
+        ij = json.loads(r.institution_json or "{}")
+        pe = fj.get("pe_ttm")
+        roe = fj.get("roe")
+        gm = fj.get("gross_margin")
+        rev = fj.get("revenue")
+        ni = fj.get("net_profit")
+        inst = ij.get("持仓占实际流通A股比例")
+        inst_cnt = ij.get("机构数量")
+        flow = flow_map.get(r.ts_code)
+
+        # ---- 因子过滤 ----
+        if pe_max is not None and (pe is None or float(pe) > pe_max):
+            continue
+        if roe_min is not None and (roe is None or float(roe) < roe_min):
+            continue
+        if gm_min is not None and (gm is None or float(gm) < gm_min):
+            continue
+        if inst_min is not None and (inst is None or float(inst) < inst_min):
+            continue
+        if net_inflow_min is not None and (flow is None or flow < net_inflow_min):
+            continue
+        if sector and sector not in (uni.industry or ""):
+            continue
+        if market and uni.market != market:
+            continue
+
+        score = _mfactor_score(pe, roe, gm, inst)
+        candidates.append({
+            "ts_code": r.ts_code,
+            "name": uni.name,
+            "industry": uni.industry,
+            "market": uni.market,
+            "pe_ttm": pe,
+            "roe": roe,
+            "gross_margin": gm,
+            "revenue": rev,
+            "net_profit": ni,
+            "inst_hold_ratio": inst,
+            "inst_count": inst_cnt,
+            "main_net_inflow": flow,
+            "score": score,
+        })
+
+    # ---- 排序 ----
+    def _key(c):
+        if sort_by == "pe":
+            v = c["pe_ttm"]
+            return v if v is not None else (float("inf") if order == "asc" else float("-inf"))
+        if sort_by == "roe":
+            return c["roe"] if c["roe"] is not None else 0
+        if sort_by == "gross_margin":
+            return c["gross_margin"] if c["gross_margin"] is not None else 0
+        if sort_by == "inst_hold":
+            return c["inst_hold_ratio"] if c["inst_hold_ratio"] is not None else 0
+        if sort_by == "net_inflow":
+            return c["main_net_inflow"] if c["main_net_inflow"] is not None else 0
+        return c["score"] if c["score"] is not None else (float("inf") if order == "asc" else float("-inf"))
+
+    reverse = (order == "desc")
+    candidates.sort(key=_key, reverse=reverse)
+    return {"count": len(candidates), "results": candidates[:limit]}

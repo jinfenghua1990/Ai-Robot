@@ -90,7 +90,7 @@ export default function PostMarketSankeySection({ selectedDate, selectedSector, 
                   <span className="w-4 text-center font-mono text-[10px]" style={{ color: 'var(--text-muted)' }}>{i + 1}</span>
                   <span className="flex-1 truncate mx-1.5" style={{ color: 'var(--text-primary)' }}>{s.sector}</span>
                   {streak >= 2 && (
-                    <span className="px-1 py-0.5 rounded text-[9px] font-bold mr-1" style={{ background: 'rgba(239,68,68,0.1)', color: '#ef4444' }}>
+                    <span className="px-1 py-0.5 rounded text-[10px] font-bold mr-1" style={{ background: 'rgba(239,68,68,0.1)', color: '#ef4444' }}>
                       {streak}连
                     </span>
                   )}
@@ -124,7 +124,7 @@ export default function PostMarketSankeySection({ selectedDate, selectedSector, 
                   <span className="w-4 text-center font-mono text-[10px]" style={{ color: 'var(--text-muted)' }}>{i + 1}</span>
                   <span className="flex-1 truncate mx-1.5" style={{ color: 'var(--text-primary)' }}>{s.sector}</span>
                   {streak >= 2 && (
-                    <span className="px-1 py-0.5 rounded text-[9px] font-bold mr-1" style={{ background: 'rgba(34,197,94,0.1)', color: '#22c55e' }}>
+                    <span className="px-1 py-0.5 rounded text-[10px] font-bold mr-1" style={{ background: 'rgba(34,197,94,0.1)', color: '#22c55e' }}>
                       {streak}连
                     </span>
                   )}
@@ -139,7 +139,7 @@ export default function PostMarketSankeySection({ selectedDate, selectedSector, 
       </div>
 
       {/* 底部说明 */}
-      <div className="text-[9px] shrink-0 px-1" style={{ color: 'var(--text-muted)' }}>
+      <div className="text-[10px] shrink-0 px-1" style={{ color: 'var(--text-muted)' }}>
         5日变化量 · 红色=资金加速流入 · 绿色=资金加速流出 · N连=连续N天同向 · 点击钻取
       </div>
     </div>
@@ -149,7 +149,7 @@ export default function PostMarketSankeySection({ selectedDate, selectedSector, 
 function MiniStat({ label, value, color, small }) {
   return (
     <div className="rounded px-2 py-1 border" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-surface)' }}>
-      <div className="text-[9px]" style={{ color: 'var(--text-muted)' }}>{label}</div>
+      <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{label}</div>
       <div className={`${small ? 'text-[10px]' : 'text-xs'} font-bold`} style={{ color }}>{value}</div>
     </div>
   );

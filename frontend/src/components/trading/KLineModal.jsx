@@ -72,7 +72,7 @@ export default function KLineModal({ stockCode, stockName, onClose }) {
             <span style={{ color: 'var(--text-primary)', fontWeight: 700, fontSize: '12px' }}>{stockName}</span>
             <span>{stockCode}</span>
             <span>· {klineCount}天K线</span>
-            <span className="px-1 py-0.5 rounded text-[9px]" style={{ background: 'rgba(34,197,94,0.1)', color: '#22c55e' }}>{today} 实时</span>
+            <span className="px-1 py-0.5 rounded text-[10px]" style={{ background: 'rgba(34,197,94,0.1)', color: '#22c55e' }}>{today} 实时</span>
             <span>技术信号 <b style={{ color: 'var(--text-primary)' }}>{techCount}</b></span>
             <span>交易 <b style={{ color: 'var(--text-primary)' }}>{tradeCount}</b></span>
             {latest && (
@@ -83,7 +83,7 @@ export default function KLineModal({ stockCode, stockName, onClose }) {
           </div>
 
           {/* 第2行：图例 */}
-          <div className="flex items-center gap-2 text-[9px] flex-wrap" style={{ color: 'var(--text-muted)' }}>
+          <div className="flex items-center gap-2 text-[10px] flex-wrap" style={{ color: 'var(--text-muted)' }}>
             <span className="flex items-center gap-0.5"><span style={{ display: 'inline-block', width: 7, height: 8, background: '#ef4444' }}></span>K线(红涨绿跌)</span>
             <span className="flex items-center gap-0.5"><span style={{ display: 'inline-block', width: 10, height: 2, background: '#eab308' }}></span>MA5</span>
             <span className="flex items-center gap-0.5"><span style={{ display: 'inline-block', width: 10, height: 2, background: '#3b82f6' }}></span>MA20</span>
@@ -94,7 +94,7 @@ export default function KLineModal({ stockCode, stockName, onClose }) {
           </div>
 
           {/* 第3-4行：指标说明（4条规则，2列×2行网格） */}
-          <div className="rounded p-1.5 text-[9px] grid grid-cols-2 gap-x-3 gap-y-0.5" style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid var(--border-color)', color: 'var(--text-muted)', lineHeight: 1.35 }}>
+          <div className="rounded p-1.5 text-[10px] grid grid-cols-2 gap-x-3 gap-y-0.5" style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid var(--border-color)', color: 'var(--text-muted)', lineHeight: 1.35 }}>
             <div><span style={{ color: '#a855f7', fontWeight: 600 }}>SuperTrend操盘线：</span>紫线在K线<b style={{color:'#ef4444'}}>下方</b>＝多头持股，收盘跌破紫线→<b style={{color:'#22c55e'}}>S卖出</b>；紫线在K线<b style={{color:'#22c55e'}}>上方</b>＝空头持币，收盘突破紫线→<b style={{color:'#ef4444'}}>B买入</b>。线的位置由ATR波动幅度动态调整，震荡市自动加宽通道避免频繁触发。</div>
             <div><span style={{ color: '#f43f5e', fontWeight: 600 }}>KDJ指标：</span><span style={{ color: '#fbbf24' }}>K</span>/<span style={{ color: '#22d3ee' }}>D</span>/<span style={{ color: '#f43f5e' }}>J</span>三线，J&gt;100为超买区(易回调)，J&lt;0为超卖区(易反弹)；K上穿D为<b style={{color:'#ef4444'}}>金叉(买入)</b>，K下穿D为<b style={{color:'#22c55e'}}>死叉(卖出)</b>。</div>
             <div><span style={{ color: '#ffffff', fontWeight: 600 }}>MACD指标：</span>红柱=多头动能，绿柱=空头动能；DIF上穿DEA为<b style={{color:'#ef4444'}}>金叉(买入)</b>，DIF下穿DEA为<b style={{color:'#22c55e'}}>死叉(卖出)</b>。</div>

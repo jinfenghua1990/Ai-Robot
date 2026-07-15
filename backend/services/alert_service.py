@@ -38,7 +38,7 @@ def record_alert(level: str, category: str, message: str,
             db.add(alert)
             db.commit()
     except Exception as e:
-        print(f'[alert_service] failed to record alert: {e}')
+        logger.warning(f'[alert_service] failed to record alert: {e}', exc_info=True)
 
 
 def get_recent_alerts(level: Optional[str] = None,

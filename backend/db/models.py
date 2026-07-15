@@ -96,7 +96,7 @@ class LeaderLifecycle(Base):
     __table_args__ = (UniqueConstraint("trade_date", "ts_code", name="uq_leader_date"),)
 
 
-# === 实时快照表（盘中每15分钟一条，永久保留）===
+# === 实时快照表（盘中每5分钟一条，保留30天用于回溯近期走势）===
 
 class RealtimeSectorFlow(Base):
     """板块实时资金流向快照"""
@@ -215,6 +215,36 @@ class RealtimeStockFlow(Base):
         UniqueConstraint("snapshot_time", "ts_code", name="uq_realtime_stock_time"),
         Index("ix_realtime_stock_date_code", "trade_date", "ts_code"),
         Index("ix_realtime_stock_date_time", "trade_date", "snapshot_time"),
+    )
+
+
+class StockMoneyFlowRealtime(Base):
+    """盘中实时资金流分钟级快照（emdatah5 源）
+    - 每次盘中采集追加一条新记录 → 数据持续沉淀积累
+    - 可通过 (ts_code, trade_date, snapshot_time) 查询分钟级走势
+    - 保留最近 30 天数据
+    """
+    __tablename__ = "stock_money_flow_realtime"
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    trade_date = Column(Date, nullable=False, index=True)
+    ts_code = Column(String(20), nullable=False, index=True)
+    name = Column(String(20))
+    snapshot_time = Column(DateTime, nullable=False, index=True)  # 采集时间戳
+
+    main_buy = Column(Numeric(18, 2), default=0)   # 主力买入(元)
+    main_sell = Column(Numeric(18, 2), default=0)  # 主力卖出(元)
+    main_net = Column(Numeric(18, 2), default=0)   # 主力净额(元)
+    retail_buy = Column(Numeric(18, 2), default=0)  # 散户买入(元)
+    retail_sell = Column(Numeric(18, 2), default=0) # 散户卖出(元)
+    retail_net = Column(Numeric(18, 2), default=0)  # 散户净额(元)
+    turnover = Column(Numeric(18, 2), default=0)    # 成交量/换手率
+    source = Column(String(20), default='emdatah5')
+
+    created_at = Column(DateTime, server_default=func.now())
+
+    __table_args__ = (
+        Index("ix_realtime_flow_ts_date", "ts_code", "trade_date", "snapshot_time"),
+        Index("ix_realtime_flow_date", "trade_date", "snapshot_time"),
     )
 
 
@@ -489,7 +519,6 @@ class StockDailyKline(Base):
 class StockRealtimeTick(Base):
     """盘中 tick 流水（每 3 秒一条,30 天 TTL）
     数据流:iTick/mootdx 拉分时 + 五档 → 大单检测 → 实时聚合
-    覆盖完整中期波段(30 个交易日)的历史回溯
     """
     __tablename__ = "stock_realtime_tick"
     id = Column(BigInteger, primary_key=True, autoincrement=True)
@@ -971,3 +1000,132 @@ class StockHolderNumber(Base):
     source = Column(String(20), default='tushare')
     created_at = Column(DateTime, server_default=func.now())
     __table_args__ = (UniqueConstraint("ts_code", "ann_date", name="uq_holder_ts_date"),)
+
+
+# ===== 研报中心（分析请求队列 + 报告结果，落 PG 以便多用户复用/查询）=====
+
+class AnalysisRequest(Base):
+    """研报中心：个股分析请求队列
+
+    - status: pending -> processing -> completed / failed
+    - 由 analysis_consumer 后台轮询 pending 并生成报告
+    """
+    __tablename__ = "analysis_requests"
+    id = Column(String(20), primary_key=True)          # 12位 hex rid
+    stock_code = Column(String(20), nullable=False, index=True)
+    stock_name = Column(String(50), default='')
+    source = Column(String(20), default='tdx')         # tdx / ifind / recap
+    status = Column(String(20), default='pending', index=True)
+    error = Column(Text, nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class AnalysisReport(Base):
+    """研报中心：个股分析报告结果（完整报告 JSON 落库）
+
+    - report_json: 完整报告 dict 的 json.dumps（与前端渲染契约一致）
+    - rating/target_price/confidence: 冗余列，便于列表快速过滤/展示
+    """
+    __tablename__ = "analysis_reports"
+    id = Column(String(20), primary_key=True)          # = request id
+    stock_code = Column(String(20), nullable=False, index=True)
+    stock_name = Column(String(50), default='')
+    source = Column(String(20), default='tdx')
+    report_type = Column(String(50), default='')
+    rating = Column(String(20), default='')
+    target_price = Column(String(40), default='')
+    confidence = Column(String(20), default='')
+    report_json = Column(Text, nullable=False)
+    created_at = Column(DateTime, server_default=func.now())
+    __table_args__ = (Index("ix_analysis_report_src_created", "source", "created_at"),)
+
+
+class Notification(Base):
+    """研报中心：分析完成通知（落 PG，前端读取未读列表）"""
+    __tablename__ = "analysis_notifications"
+    id = Column(String(40), primary_key=True)
+    source = Column(String(20), default='')
+    stock_code = Column(String(20), default='')
+    stock_name = Column(String(50), default='')
+    title = Column(String(120), default='')
+    read = Column(Boolean, default=False, index=True)
+    created_at = Column(DateTime, server_default=func.now())
+
+
+class StockF10(Base):
+    """研报中心：F10 免费数据源缓存（Tushare 财务/机构 + 东方财富评级/目标价）
+
+    按 ts_code 缓存整包 JSON，TTL 1 天（财务/机构日频变化）。
+    任何免费源失败则该字段为 None，绝不阻断主报告生成。
+    """
+    __tablename__ = "stock_f10"
+    ts_code = Column(String(20), primary_key=True)
+    financial_json = Column(Text, nullable=True)      # 营收/净利/ROE/毛利率/eps
+    institution_json = Column(Text, nullable=True)     # 机构数/持仓占流通比
+    rating_json = Column(Text, nullable=True)          # 券商评级/目标价/一致EPS
+    fetched_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class StockUniverse(Base):
+    """全市场股票基础信息（来自 Tushare stock_basic，盘后增量刷新）
+
+    作为量化选股/覆盖池的基础表：名称、申万/证监会行业、上市板块。
+    F10 财务/机构数据按 ts_code 关联 stock_f10。
+    """
+    __tablename__ = "stock_universe"
+    ts_code = Column(String(20), primary_key=True)
+    name = Column(String(50), default='')
+    industry = Column(String(50), default='')          # Tushare industry 字段（申万一级/证监会）
+    market = Column(String(20), default='')            # 主板/创业板/科创板/北交所
+    list_status = Column(String(5), default='L')       # L 上市 / D 退市 / P 暂停
+    is_active = Column(Boolean, default=True, index=True)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class SimPositionCost(Base):
+    """模拟盘持仓成本缓存（跨重启持久化）
+
+    妙想 API 经常返回 costPrice=0 且委托记录重算也常失败。
+    利用 PG 缓存最后一次成功获取的成本价，确保跨重启盈亏计算准确。
+    """
+    __tablename__ = "sim_position_cost"
+    api_key = Column(String(20), primary_key=True)
+    sec_code = Column(String(20), primary_key=True)
+    cost_price = Column(Numeric(18, 4), default=0)
+    quantity = Column(Integer, default=0)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+# ===== 股票跟踪 =====
+
+class StockTracker(Base):
+    """用户选中加入跟踪的股票（记录入选时刻 + 入选价，计算 1-30 日收益）"""
+    __tablename__ = "stock_tracker"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    stock_code = Column(String(10), nullable=False, unique=True, index=True)  # 6位代码
+    stock_name = Column(String(20))
+    entry_date = Column(Date, nullable=False)         # 加入跟踪的日期
+    entry_price = Column(Numeric(10, 4))               # 加入跟踪时的收盘价
+    active = Column(Boolean, default=True, index=True)  # 是否仍在跟踪
+    note = Column(String(200))                         # 自定义备注
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class StockTrackerDaily(Base):
+    """跟踪股每日表现（1-30 日，每天一条）"""
+    __tablename__ = "stock_tracker_daily"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    tracker_id = Column(Integer, nullable=False, index=True)   # StockTracker.id
+    trade_date = Column(Date, nullable=False, index=True)
+    day_n = Column(Integer, nullable=False)                     # 入选后第 N 天（1-30）
+    close_price = Column(Numeric(10, 4))                        # 当日收盘价
+    pct_chg = Column(Numeric(8, 4))                             # 相对入选日的累计涨跌幅 %
+    daily_chg = Column(Numeric(6, 2))                           # 当日涨跌幅 %
+    volume = Column(BigInteger)                                 # 当日成交量
+    reason = Column(String(500))                                # 涨跌原因简述
+    created_at = Column(DateTime, server_default=func.now())
+    __table_args__ = (
+        Index("ix_stock_tracker_daily_tracker_date", "tracker_id", "trade_date", unique=True),
+    )

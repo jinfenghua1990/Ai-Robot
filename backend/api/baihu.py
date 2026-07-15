@@ -12,13 +12,14 @@ from db.models import StockFlow
 from strategies.baihu_v30 import get_kline_from_tdx, baihu_strategy_v30
 from api.validators import validate_date
 from services.signal_builder import build_signals_batch, build_signals_from_strategy_result, _enrich_signals_with_watchlist_extras
+from utils.cache import BoundedDict
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
 # 线程本地K线缓存（避免重复请求通达信）
-_kline_cache = {}
+_kline_cache = BoundedDict(maxsize=100)
 _cache_lock = threading.Lock()
 
 

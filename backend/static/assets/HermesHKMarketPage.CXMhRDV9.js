@@ -1,0 +1,1 @@
+import{j as t}from"./index.BraBnPkH.js";import{H as e}from"./HermesEmbed.DqFdw5DQ.js";import"./react-vendor.BSdSoFln.js";function o(){return t.jsx(e,{path:"/hk-market",title:"港股总览"})}export{o as default};

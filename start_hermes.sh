@@ -11,8 +11,8 @@ if [ ! -d "$HERMES_DIR/backend" ]; then
     exit 1
 fi
 
-# 优先复用 hermes-cockpit 项目的 venv（与当前已运行进程一致）
-HERMES_VENV="/Users/gino/Projects/hermes-cockpit/backend/.venv/bin/python"
+# Hermes venv 固定在 AIROBOT/.hermes/backend/.venv
+HERMES_VENV="$HERMES_DIR/backend/.venv/bin/python"
 # 备选：robot-1 专用 venv
 ROBOT_VENV="/Users/gino/.hermes/robot-1/.venv/bin/python"
 
@@ -49,7 +49,7 @@ fi
 # 装依赖（如缺）
 $PYTHON -c "import fastapi" 2>/dev/null || {
     echo "⚠️  缺少 fastapi，正在装依赖..."
-    $PYTHON -m pip install -r "$HERMES_DIR/backend/requirements.txt"
+    "$HERMES_DIR/backend/.venv/bin/pip" install -r "$HERMES_DIR/backend/requirements.txt"
 }
 
 # 数据库搜索路径

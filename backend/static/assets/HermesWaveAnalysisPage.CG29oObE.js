@@ -1,0 +1,1 @@
+import{j as e}from"./index.BraBnPkH.js";import{H as s}from"./HermesEmbed.DqFdw5DQ.js";import"./react-vendor.BSdSoFln.js";function m(){return e.jsx(s,{path:"/wave-analysis",title:"波浪分析"})}export{m as default};

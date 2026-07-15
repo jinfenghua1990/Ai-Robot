@@ -21,7 +21,7 @@ function WatchlistItem({ signal, isSelected, realtimeFlow, onSelect, onRemove, o
       className="cursor-pointer rounded-lg transition-all relative"
       style={{
         outline: isSelected ? '2px solid #60a5fa' : (batchMode && checked ? '2px solid #f97316' : '2px solid transparent'),
-        opacity: ms.market_state === 'CHOPPY' ? 0.7 : 1,
+        opacity: 1,
       }}
       title={ms.reasons?.join('、') || ''}
     >
@@ -52,6 +52,7 @@ function WatchlistItem({ signal, isSelected, realtimeFlow, onSelect, onRemove, o
         showActionButton={!batchMode}
         strategyTags={strategyTags}
         realtimeFlow={realtimeFlow}
+        showRealtimeDetail={isSelected}
       />
     </div>
   );

@@ -43,7 +43,7 @@ export default function RealtimeConceptSectorSection({ rtConceptSectors, sectors
         <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
           概念板块 · 快照: {snapshotTime || '—'}
           {!isTradingHours && (
-            <span className="ml-2 px-1.5 py-0.5 rounded text-[9px]" style={{ background: 'rgba(234,179,8,0.15)', color: '#eab308' }}>
+            <span className="ml-2 px-1.5 py-0.5 rounded text-[10px]" style={{ background: 'rgba(234,179,8,0.15)', color: '#eab308' }}>
               非交易时段 · 仅最新收盘快照
             </span>
           )}

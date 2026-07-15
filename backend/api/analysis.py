@@ -396,4 +396,4 @@ async def refresh_signal_cache():
         await get_signals()
         print('[cache] signal cache refreshed')
     except Exception as e:
-        print(f'[cache] signal refresh error: {e}')
+        logger.warning(f'[cache] signal refresh error: {e}', exc_info=True)

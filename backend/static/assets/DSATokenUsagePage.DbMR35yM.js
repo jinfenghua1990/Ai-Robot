@@ -1,0 +1,1 @@
+import{j as t}from"./index.CsuYT-kk.js";import{D as e}from"./DSAEmbed.CnDWAdkb.js";import"./react-vendor.BSdSoFln.js";function s(){return t.jsx(e,{path:"/usage",title:"DSA Token 用量"})}export{s as default};

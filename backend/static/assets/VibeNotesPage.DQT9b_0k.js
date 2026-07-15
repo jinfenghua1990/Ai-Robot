@@ -1,0 +1,1 @@
+import{j as t}from"./index.CsuYT-kk.js";import{V as e}from"./VibeEmbed.BdIz3eEc.js";import"./react-vendor.BSdSoFln.js";function s(){return t.jsx(e,{path:"/notes",title:"Vibe 研究记录"})}export{s as default};

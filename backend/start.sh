@@ -4,6 +4,13 @@
 # --timeout-keep-alive: 空闲连接15秒后关闭，避免积压
 # --access-log: 关闭访问日志提升性能
 cd "$(dirname "$0")"
+
+# 从项目根目录 .env 加载密钥与配置（避免把明文密钥写进 LaunchAgent plist）
+if [ -f "$(dirname "$0")/../.env" ]; then
+  set -a
+  . "$(dirname "$0")/../.env"
+  set +a
+fi
 exec python3 -m uvicorn main:app \
   --host 0.0.0.0 \
   --port 9000 \

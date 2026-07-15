@@ -12,7 +12,6 @@ from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from sqlalchemy import func
 from db.connection import get_db
 from db.session import get_db_session
 from db.models import BSBacktestResult, BSDailyScan

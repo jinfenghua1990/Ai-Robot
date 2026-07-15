@@ -23,6 +23,7 @@ from fastapi import APIRouter, Query, HTTPException
 from sqlalchemy import func, and_, or_
 
 from db.session import get_db_session
+from utils.cache import BoundedDict
 from db.models import StockFlow
 
 logger = logging.getLogger(__name__)
@@ -196,8 +197,8 @@ THEME_INDICES = [
 # 缓存
 _rank_cache = {'data': None, 'ts': 0}
 _broad_rank_cache = {'data': None, 'ts': 0}
-_history_cache = {}  # ts_code -> {'data':..., 'ts':...}
-_constituent_cache = {}  # ts_code -> {'members': [...], 'ts':...}
+_history_cache = BoundedDict(maxsize=100)  # ts_code -> {'data':..., 'ts':...}
+_constituent_cache = BoundedDict(maxsize=50)  # ts_code -> {'members': [...], 'ts':...}
 _RANK_CACHE_TTL = 300  # 5 分钟
 _HISTORY_CACHE_TTL = 300
 _CONSTITUENT_CACHE_TTL = 86400  # 成分股日频更新，缓存 1 天

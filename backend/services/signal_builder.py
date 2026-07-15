@@ -13,15 +13,14 @@
 - /api/panorama/stocks     板块全景个股
 """
 import logging
+from utils.cache import BoundedDict
 import time
 import asyncio
 import json
-import httpx
 from typing import Optional, List, Dict
 
 logger = logging.getLogger(__name__)
 from db.connection import get_db
-from api.bs_signals import _fetch_kline, _generate_bs_signals
 from api.watchlist._shared import get_quote, fetch_kline_cached
 from analyzers.strategy_engine import _find_sector_for_stock, _get_sector_trend
 from analyzers.buy_power import calc_buy_power_for_signal
@@ -88,6 +87,9 @@ async def build_signal_for_stock(
 
     可选参数用于在基础行情之上叠加策略维度信息（如龙头阶段、强度等）。
     """
+    # 延迟导入避免与 api.screener 循环引用
+    from api.bs_signals import _generate_bs_signals
+
     # 并发获取行情和K线
     quote, klines = await asyncio.gather(
         get_quote(code),
@@ -124,11 +126,11 @@ async def build_signal_for_stock(
     price = quote['price'] if quote else 0
     change_pct = quote['changePct'] if quote else (change_rate or 0)
 
-    # 信号标签（与自选股一致：买入/回避/关注）
+    # 信号标签（卖出信号统一用"减仓防守"，后续由 technical stage 覆写为具体标签）
     if bs_signal == 'B':
         signal_label, signal_color, signal_type = '买入', '#ef4444', 'ADD'
     elif bs_signal == 'S':
-        signal_label, signal_color, signal_type = '回避', '#22c55e', 'SELL'
+        signal_label, signal_color, signal_type = '减仓防守', '#f97316', 'SELL'
     else:
         signal_label, signal_color, signal_type = '关注', '#3b82f6', 'WATCH'
 
@@ -181,6 +183,64 @@ async def build_signal_for_stock(
     if extra_negative:
         negative_factors.extend(extra_negative)
 
+    # === 停牌检查 ===
+    is_suspended = False
+    try:
+        from sqlalchemy import text
+        from datetime import date as d
+        today_str = d.today().isoformat()
+        _s_ts_code = f"{code}.SH" if code[0] in ('6', '9') else f"{code}.SZ"
+        sus = db.execute(text(
+            "SELECT 1 FROM suspend_stock_daily WHERE ts_code=:code AND trade_date=:d"
+        ), {'code': _s_ts_code, 'd': today_str}).scalar()
+        is_suspended = bool(sus)
+        if is_suspended:
+            positive_factors = []
+            negative_factors = [{'factor': '停牌', 'detail': '当日停牌，无交易', 'weight': -3}]
+    except Exception:
+        logger.debug("signal_builder: factor init fallback", exc_info=False)
+
+    # === 融资融券因子 ===
+    if not is_suspended:
+        try:
+            margin_rows = db.execute(text("""
+                SELECT trade_date, rzye, rqye, rzmre
+                FROM stock_margin_data
+                WHERE ts_code=:code ORDER BY trade_date DESC LIMIT 3
+            """), {'code': _s_ts_code}).fetchall()
+            if len(margin_rows) >= 2:
+                rzye_0 = float(margin_rows[0][1] or 0)
+                rzye_1 = float(margin_rows[1][1] or 0)
+                if rzye_0 > 0 and rzye_1 > 0:
+                    margin_chg = (rzye_0 - rzye_1) / rzye_1
+                    if margin_chg > 0.02:
+                        positive_factors.append({'factor': '融资加仓', 'detail': f'融资余额日增 {margin_chg*100:.1f}%', 'weight': 2})
+                    elif margin_chg > 0.005:
+                        positive_factors.append({'factor': '融资微增', 'detail': f'融资余额日增 {margin_chg*100:.1f}%', 'weight': 1})
+                    elif margin_chg < -0.02:
+                        negative_factors.append({'factor': '融资减仓', 'detail': f'融资余额日降 {abs(margin_chg)*100:.1f}%', 'weight': -2})
+                    elif margin_chg < -0.005:
+                        negative_factors.append({'factor': '融资微降', 'detail': f'融资余额日降 {abs(margin_chg)*100:.1f}%', 'weight': -1})
+        except Exception:
+            logger.debug("signal_builder: margin factor failed", exc_info=False)
+
+    # === 波浪信号交叉验证 ===
+    if not is_suspended:
+        try:
+            pure_code = code.replace('.SH','').replace('.SZ','')
+            wave = db.execute(text("""
+                SELECT signal, confidence, reason FROM stock_wave_signals
+                WHERE code=:c AND signal_date=:d ORDER BY id DESC LIMIT 1
+            """), {'c': pure_code, 'd': d.today().isoformat()}).first()
+            if wave:
+                wsig, wconf, wreason = wave
+                if wsig == 'buy' and float(wconf or 0) > 50:
+                    positive_factors.append({'factor': '波浪买入', 'detail': f'波浪信号: {str(wreason)[:30]}', 'weight': 1})
+                elif wsig == 'sell' and float(wconf or 0) > 50:
+                    negative_factors.append({'factor': '波浪卖出', 'detail': f'波浪信号: {str(wreason)[:30]}', 'weight': -1})
+        except Exception:
+            logger.debug("signal_builder: margin factor failed", exc_info=False)
+
     score = len(positive_factors) - len(negative_factors)
     reasons.append(f'综合评分: {"看多" if score > 0 else "看空" if score < 0 else "中性"} → {signal_label}')
 
@@ -208,8 +268,8 @@ async def build_signal_for_stock(
         'signal': signal_type,
         'signalLabel': signal_label,
         'signalColor': signal_color,
-        'riskLevel': 'low',
-        'score': score,
+        'riskLevel': risk.get('stage', '低危') if isinstance(risk, dict) else '低危',
+        'score': max(0, min(100, (score + 10) * 5)),  # 归一化 -4~4 → 0~100
         'reasons': reasons,
         'positiveFactors': positive_factors,
         'negativeFactors': negative_factors,
@@ -354,7 +414,7 @@ async def build_signal_from_precomputed(
     if bs_signal == 'B':
         signal_label, signal_color, signal_type = '买入', '#ef4444', 'ADD'
     elif bs_signal == 'S':
-        signal_label, signal_color, signal_type = '回避', '#22c55e', 'SELL'
+        signal_label, signal_color, signal_type = '减仓防守', '#f97316', 'SELL'
     else:
         signal_label, signal_color, signal_type = '关注', '#3b82f6', 'WATCH'
 
@@ -406,8 +466,70 @@ async def build_signal_from_precomputed(
     if extra_negative:
         negative_factors.extend(extra_negative)
 
+    # === 停牌检查 ===
+    is_suspended = False
+    try:
+        from sqlalchemy import text
+        from datetime import date as d
+        today_str = d.today().isoformat()
+        _s_ts_code = f"{code}.SH" if code[0] in ('6', '9') else f"{code}.SZ"
+        sus = db.execute(text(
+            "SELECT 1 FROM suspend_stock_daily WHERE ts_code=:code AND trade_date=:d"
+        ), {'code': _s_ts_code, 'd': today_str}).scalar()
+        is_suspended = bool(sus)
+        if is_suspended:
+            positive_factors = []
+            negative_factors = [{'factor': '停牌', 'detail': '当日停牌，无交易', 'weight': -3}]
+    except Exception:
+        logger.debug("signal_builder: factor init fallback", exc_info=False)
+
+    # === 融资融券因子 ===
+    if not is_suspended:
+        try:
+            margin_rows = db.execute(text("""
+                SELECT trade_date, rzye, rqye, rzmre
+                FROM stock_margin_data
+                WHERE ts_code=:code ORDER BY trade_date DESC LIMIT 3
+            """), {'code': _s_ts_code}).fetchall()
+            if len(margin_rows) >= 2:
+                rzye_0 = float(margin_rows[0][1] or 0)
+                rzye_1 = float(margin_rows[1][1] or 0)
+                if rzye_0 > 0 and rzye_1 > 0:
+                    margin_chg = (rzye_0 - rzye_1) / rzye_1
+                    if margin_chg > 0.02:
+                        positive_factors.append({'factor': '融资加仓', 'detail': f'融资余额日增 {margin_chg*100:.1f}%', 'weight': 2})
+                    elif margin_chg > 0.005:
+                        positive_factors.append({'factor': '融资微增', 'detail': f'融资余额日增 {margin_chg*100:.1f}%', 'weight': 1})
+                    elif margin_chg < -0.02:
+                        negative_factors.append({'factor': '融资减仓', 'detail': f'融资余额日降 {abs(margin_chg)*100:.1f}%', 'weight': -2})
+                    elif margin_chg < -0.005:
+                        negative_factors.append({'factor': '融资微降', 'detail': f'融资余额日降 {abs(margin_chg)*100:.1f}%', 'weight': -1})
+        except Exception:
+            logger.debug("signal_builder: margin factor failed", exc_info=False)
+
+    # === 波浪信号交叉验证 ===
+    if not is_suspended:
+        try:
+            pure_code = code.replace('.SH','').replace('.SZ','')
+            wave = db.execute(text("""
+                SELECT signal, confidence, reason FROM stock_wave_signals
+                WHERE code=:c AND signal_date=:d ORDER BY id DESC LIMIT 1
+            """), {'c': pure_code, 'd': d.today().isoformat()}).first()
+            if wave:
+                wsig, wconf, wreason = wave
+                if wsig == 'buy' and float(wconf or 0) > 50:
+                    positive_factors.append({'factor': '波浪买入', 'detail': f'波浪信号: {str(wreason)[:30]}', 'weight': 1})
+                elif wsig == 'sell' and float(wconf or 0) > 50:
+                    negative_factors.append({'factor': '波浪卖出', 'detail': f'波浪信号: {str(wreason)[:30]}', 'weight': -1})
+        except Exception:
+            logger.debug("signal_builder: margin factor failed", exc_info=False)
+
     score = len(positive_factors) - len(negative_factors)
     reasons.append(f'综合评分: {"看多" if score > 0 else "看空" if score < 0 else "中性"} → {signal_label}')
+
+    # 计算风险等级（预计算模式不涉及持仓）
+    features = market_state_data.get('features') or {}
+    risk = calc_risk(features, buy_power, None)
 
     return {
         'secCode': code,
@@ -415,8 +537,8 @@ async def build_signal_from_precomputed(
         'signal': signal_type,
         'signalLabel': signal_label,
         'signalColor': signal_color,
-        'riskLevel': 'low',
-        'score': score,
+        'riskLevel': risk.get('stage', '低危') if isinstance(risk, dict) else '低危',
+        'score': max(0, min(100, (score + 10) * 5)),  # 归一化 -4~4 → 0~100
         'reasons': reasons,
         'positiveFactors': positive_factors,
         'negativeFactors': negative_factors,
@@ -562,7 +684,7 @@ async def build_signals_from_strategy_result(
 
 # 缓存 _enrich_signals_with_watchlist_extras 的中间结果（moneyflow_map + hit_tags_map）
 # 这些都是盘后数据，2 分钟内不会变化；避免 81 只股票的 11+ 次 DB 查询重复执行（首次 6-9s → 命中 <100ms）
-_enrich_extras_cache = {}  # key: frozenset(codes) -> (timestamp, moneyflow_map, hit_tags_map)
+_enrich_extras_cache = BoundedDict(maxsize=50)  # key: frozenset(codes) -> (timestamp, moneyflow_map, hit_tags_map)
 _ENRICH_EXTRAS_CACHE_TTL = 120  # 2 分钟
 
 

@@ -20,6 +20,7 @@ import { useNavigate } from 'react-router-dom';
 import { apiFetch } from '../utils/request';
 import { UP_COLOR, DOWN_COLOR, UP_DARK, DOWN_DARK, BULLISH_COLOR, BEARISH_COLOR, upBg, downBg } from '../utils/colors';
 import SinaLink from '../components/SinaLink';
+import StockActionButtons from '../components/trading/StockActionButtons';
 
 const fmtWan = (v) => {
   if (v == null) return '-';
@@ -419,12 +420,20 @@ export default function YuziBillboardPage() {
                   ))}
                 </div>
                 {s.list_reason && <div className="text-[10px] mt-0.5" style={{ color: 'var(--text-muted)' }}>上榜：{s.list_reason}</div>}
-                <button
-                  className="text-[10px] px-1.5 py-0.5 rounded border mt-0.5"
-                  style={{ borderColor: 'rgba(168,85,247,0.4)', color: '#a855f7', background: 'rgba(168,85,247,0.05)' }}
-                  onClick={() => navigate(`/yuzi-tracker?ts_code=${s.ts_code.split('.')[0]}&min_score=0`)}
-                  title="跳转到20天跟踪页面查看该股生命周期"
-                >📊 20天跟踪</button>
+                <div className="flex items-center gap-1.5 flex-wrap mt-0.5">
+                  <StockActionButtons
+                    stockCode={s.ts_code.split('.')[0]}
+                    stockName={s.name || s.ts_code}
+                    size="xs"
+                    onRefresh={loadData}
+                  />
+                  <button
+                    className="text-[10px] px-1.5 py-0.5 rounded border"
+                    style={{ borderColor: 'rgba(168,85,247,0.4)', color: '#a855f7', background: 'rgba(168,85,247,0.05)' }}
+                    onClick={() => navigate(`/yuzi-tracker?ts_code=${s.ts_code.split('.')[0]}&min_score=0`)}
+                    title="跳转到20天跟踪页面查看该股生命周期"
+                  >📊 20天跟踪</button>
+                </div>
                 {s.seat_detail?.length > 0 && (
                   <div className="text-[10px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
                     逐席位:

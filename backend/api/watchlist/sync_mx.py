@@ -2,8 +2,7 @@
 - POST /api/watchlist/sync-mx
 """
 import logging
-import httpx
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException
 
 from config import MX_APIKEY, MX_API_URL
 from db.connection import get_db

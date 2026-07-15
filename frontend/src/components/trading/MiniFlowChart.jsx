@@ -73,7 +73,7 @@ export default function MiniFlowChart({ points = [], height = 60 }) {
         <circle cx={pricePts[pricePts.length - 1].x} cy={pricePts[pricePts.length - 1].y} r="2" fill="#3b82f6" />
         <circle cx={flowPts[flowPts.length - 1].x} cy={flowPts[flowPts.length - 1].y} r="2" fill={flowColor} />
       </svg>
-      <div className="flex items-center justify-between text-[9px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
+      <div className="flex items-center justify-between text-[10px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
         <span>📊 价格 <span style={{ color: '#3b82f6' }}>{lastPrice.toFixed(2)}</span></span>
         <span>💰 主力 <span style={{ color: flowColor }}>{(lastFlow / 10000).toFixed(1)}万</span></span>
         <span>{points[0].time} - {points[points.length - 1].time}</span>

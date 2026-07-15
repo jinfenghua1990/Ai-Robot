@@ -223,7 +223,7 @@ export default function ConceptFlowComparePage() {
                   <>
                     <div className="px-2 py-1.5 text-[10px] font-semibold sticky top-0 z-10" style={{ background: 'var(--bg-card)', color: 'var(--text-muted)' }}>
                       ▲ 资金流入最弱 ({filteredSectors.weakestInflow.length})
-                      <span className="ml-1 text-[9px] font-normal" style={{ color: 'var(--text-muted)' }}>· 今日普涨无净流出</span>
+                      <span className="ml-1 text-[10px] font-normal" style={{ color: 'var(--text-muted)' }}>· 今日普涨无净流出</span>
                     </div>
                     {filteredSectors.weakestInflow.map((s, i) => (
                       <SectorRow key={s.sector} rank={i + 1} sector={s} hasFlow={flowConceptSet.has(s.sector)} positive weak />

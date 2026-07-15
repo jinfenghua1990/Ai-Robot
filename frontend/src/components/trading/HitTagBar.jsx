@@ -1,5 +1,5 @@
 /**
- * 7 大命中雷达标签栏（固定展示全部维度，未命中显示「无」）
+ * 7 大命中雷达标签栏（只显示已命中的维度，未命中不渲染 → 减少灰色视觉噪点）
  */
 
 export const HIT_TAG_CONFIG = [
@@ -17,26 +17,27 @@ const TAG_MAP = Object.fromEntries(HIT_TAG_CONFIG.map(t => [t.key, t]));
 export default function HitTagBar({ tags = [] }) {
   const hitSet = new Set(tags || []);
 
+  const hitTags = HIT_TAG_CONFIG.filter(cfg => hitSet.has(cfg.key));
+
+  if (hitTags.length === 0) return null;
+
   return (
     <div className="flex flex-wrap items-center gap-1.5 mt-1">
-      {HIT_TAG_CONFIG.map(cfg => {
-        const hit = hitSet.has(cfg.key);
-        return (
-          <span
-            key={cfg.key}
-            className="inline-flex items-center gap-0.5 px-2 py-1 rounded text-[11px] font-bold whitespace-nowrap"
-            style={{
-              background: hit ? `${cfg.color}1a` : 'rgba(107,114,128,0.08)',
-              color: hit ? cfg.color : 'var(--text-muted)',
-              border: `1px solid ${hit ? `${cfg.color}55` : 'rgba(107,114,128,0.2)'}`,
-            }}
-            title={hit ? cfg.action : '未命中'}
-          >
-            <span>{cfg.icon}</span>
-            <span>{hit ? cfg.label : '无'}</span>
-          </span>
-        );
-      })}
+      {hitTags.map(cfg => (
+        <span
+          key={cfg.key}
+          className="inline-flex items-center gap-0.5 px-2 py-1 rounded text-[11px] font-bold whitespace-nowrap"
+          style={{
+            background: `${cfg.color}1a`,
+            color: cfg.color,
+            border: `1px solid ${cfg.color}55`,
+          }}
+          title={cfg.action}
+        >
+          <span>{cfg.icon}</span>
+          <span>{cfg.label}</span>
+        </span>
+      ))}
     </div>
   );
 }

@@ -1,7 +1,6 @@
 """自动化交易引擎：多策略信号聚合 + 风控 + 下单"""
 
 import json
-import asyncio
 from datetime import datetime, date
 from typing import List, Dict, Optional
 from sqlalchemy import func

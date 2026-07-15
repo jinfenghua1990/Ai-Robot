@@ -1,0 +1,1 @@
+import{j as r}from"./index.CsuYT-kk.js";import{H as t}from"./HermesEmbed.FQlHVKXP.js";import"./react-vendor.BSdSoFln.js";function i(){return r.jsx(t,{path:"/hk-trading",title:"港股交易"})}export{i as default};

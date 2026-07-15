@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 import logging
 from concurrent.futures import ThreadPoolExecutor
 import requests
+from utils.cache import BoundedDict
 
 
 logger = logging.getLogger(__name__)
@@ -17,7 +18,8 @@ logger = logging.getLogger(__name__)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from db.connection import get_db
 from db.session import get_db_session
-from db.models import SectorFlow, StockFlow, LeaderLifecycle
+from db.models import SectorFlow, StockFlow, LeaderLifecycle, ConceptSector, ConceptSectorFlow
+from utils.cache import BoundedDict
 
 try:
     from pytdx.hq import TdxHq_API
@@ -48,8 +50,31 @@ except ImportError:
     TUSHARE_AVAILABLE = False
     ts = None
 
+# ===== Tushare API 全局令牌桶限流（避免 40203 频率超限） =====
+_tushare_rate_lock = threading.Lock()
+_tushare_rate_timestamps = []  # 当前时间窗口内的调用时间戳
+TUSHARE_RATE_MAX = 250          # 每分钟最多 250 次（Tushare 配额 300/min，留 50 缓冲）
+TUSHARE_RATE_WINDOW = 60        # 窗口长度（秒）
+
+def _tushare_rate_acquire():
+    """令牌桶：确保任意 60s 窗口内不超过 TUSHARE_RATE_MAX 次调用。"""
+    now = time.time()
+    with _tushare_rate_lock:
+        # 清理过期时间戳
+        cutoff = now - TUSHARE_RATE_WINDOW
+        _tushare_rate_timestamps[:] = [t for t in _tushare_rate_timestamps if t > cutoff]
+        if len(_tushare_rate_timestamps) >= TUSHARE_RATE_MAX:
+            oldest = _tushare_rate_timestamps[0]
+            wait = TUSHARE_RATE_WINDOW - (now - oldest)
+            logger.warning(f'[tushare-api] 已用满 {TUSHARE_RATE_MAX}/{TUSHARE_RATE_WINDOW}s 配额，等待 {wait:.1f}s...')
+            time.sleep(wait + 0.5)
+            now = time.time()
+            _tushare_rate_timestamps[:] = [t for t in _tushare_rate_timestamps if t > now - TUSHARE_RATE_WINDOW]
+        _tushare_rate_timestamps.append(now)
+
 def call_tushare_mcp(api_name, params=None, fields=None):
-    """调用 Tushare HTTP API"""
+    """调用 Tushare HTTP API（带全局令牌桶限流）"""
+    _tushare_rate_acquire()  # 限流：确保不超 250 次/分钟
     from config import TUSHARE_TOKEN
     if not TUSHARE_TOKEN:
         logger.info('[tushare-api] No token configured')
@@ -69,7 +94,15 @@ def call_tushare_mcp(api_name, params=None, fields=None):
         response.raise_for_status()
         result = response.json()
         if result.get('code') != 0:
-            logger.error(f'[tushare-api] API error code {result.get("code")}: {result.get("msg", "Unknown")}')
+            code = result.get('code')
+            msg = result.get('msg', 'Unknown')
+            logger.error(f'[tushare-api] API error code {code}: {msg}')
+            if code == 40203:
+                # 频率超限：自动退避 65 秒，并清空令牌桶计数以避免连续失败
+                logger.warning('[tushare-api] 40203 频率超限，退避 65 秒并重置限流窗口...')
+                with _tushare_rate_lock:
+                    _tushare_rate_timestamps.clear()
+                time.sleep(65)
             return None
         if result.get('data') and result['data'].get('items'):
             data = result['data']
@@ -183,7 +216,7 @@ def get_sector_list():
         return []
 
 
-_moneyflow_cache = {}  # {date: (df, pro)}
+_moneyflow_cache = BoundedDict(maxsize=30)  # {date: (df, pro)}
 
 
 def _get_stock_basic_from_tdx():

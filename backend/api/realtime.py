@@ -541,6 +541,66 @@ def stock_flow_detail(
         }
 
 
+class StockFlowBatchRequest(BaseModel):
+    ts_codes: List[str]
+
+
+@cached("realtime.stock_flow_batch", ttl=30,
+        key_fn=lambda ts_codes=None: f"batch:{','.join(sorted(ts_codes or []))}")
+def _query_batch_stock_flow(ts_codes: List[str]):
+    """批量查询多只个股的最新实时资金流向快照（缓存 30s）"""
+    with get_db_session() as db:
+        target_date = date.today()
+        valid_codes = [c for c in ts_codes if c and len(c.split('.')) == 2]
+        if not valid_codes:
+            return {}
+
+        # 取当日全局最新快照时间（所有个股统一快照）
+        latest_time = db.query(func.max(RealtimeStockFlow.snapshot_time)).filter(
+            RealtimeStockFlow.trade_date == target_date
+        ).scalar()
+
+        rows = db.query(RealtimeStockFlow).filter(
+            RealtimeStockFlow.trade_date == target_date,
+            RealtimeStockFlow.ts_code.in_(valid_codes),
+        ).order_by(RealtimeStockFlow.snapshot_time.desc()).all() if latest_time else []
+
+        # 每个 ts_code 只保留最新一条
+        result = {}
+        for r in rows:
+            if r.ts_code in result:
+                continue
+            latest = r.snapshot_time
+            is_stale = False
+            delay_seconds = None
+            if latest:
+                delay_seconds = int((datetime.now() - latest).total_seconds())
+                is_stale = delay_seconds > 300
+            result[r.ts_code] = {
+                "ts_code": r.ts_code,
+                "trade_date": target_date.isoformat(),
+                "intraday_points": [],
+                "main_force": {},
+                "latest_time": latest.strftime('%Y-%m-%d %H:%M:%S') if latest else None,
+                "is_stale": is_stale,
+                "delay_seconds": delay_seconds,
+                "price": float(r.price or 0),
+                "price_chg": float(r.price_chg or 0),
+                "main_force_inflow": float(r.main_force_inflow or 0),
+                "net_inflow": float(r.net_inflow or 0),
+                "retail_flow": float(r.retail_flow or 0),
+                "snapshot_time": latest.strftime('%Y-%m-%d %H:%M:%S') if latest else None,
+            }
+        return result
+
+
+@router.post("/stock-flow-batch")
+def stock_flow_batch(payload: StockFlowBatchRequest):
+    """批量查询多只个股的最新实时资金流向快照（用于自选股列表批量展示）"""
+    data = _query_batch_stock_flow(payload.ts_codes or [])
+    return {"count": len(data), "data": data}
+
+
 @router.post("/trigger")
 def trigger_snapshot():
     """手动触发一次实时快照采集"""

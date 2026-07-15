@@ -10,8 +10,9 @@
 import os
 import subprocess
 from datetime import datetime
-from fastapi import APIRouter, Body
+from fastapi import APIRouter, Body, Depends
 from fastapi.responses import JSONResponse
+from api.auth import verify_api_key
 
 router = APIRouter(prefix="/api", tags=["git"])
 
@@ -38,7 +39,7 @@ def _run(args: list):
     )
 
 
-@router.post("/git-push")
+@router.post("/git-push", dependencies=[Depends(verify_api_key)])
 def git_push(payload: dict = Body(default={})):
     """将本地改动提交并推送到远程 main 分支。
 

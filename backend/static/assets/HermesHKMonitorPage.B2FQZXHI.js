@@ -1,0 +1,1 @@
+import{j as t}from"./index.BraBnPkH.js";import{H as r}from"./HermesEmbed.DqFdw5DQ.js";import"./react-vendor.BSdSoFln.js";function i(){return t.jsx(r,{path:"/hk-monitor",title:"港股监控"})}export{i as default};

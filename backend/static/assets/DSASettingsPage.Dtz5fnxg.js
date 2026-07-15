@@ -1,0 +1,1 @@
+import{j as t}from"./index.CsuYT-kk.js";import{D as e}from"./DSAEmbed.CnDWAdkb.js";import"./react-vendor.BSdSoFln.js";function o(){return t.jsx(e,{path:"/settings",title:"DSA 设置"})}export{o as default};

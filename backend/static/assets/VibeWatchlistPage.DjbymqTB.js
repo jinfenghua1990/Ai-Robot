@@ -1,0 +1,1 @@
+import{j as t}from"./index.CsuYT-kk.js";import{V as i}from"./VibeEmbed.BdIz3eEc.js";import"./react-vendor.BSdSoFln.js";function o(){return t.jsx(i,{path:"/watchlist",title:"Vibe 自选股"})}export{o as default};

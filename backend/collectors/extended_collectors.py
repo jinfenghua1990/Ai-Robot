@@ -552,6 +552,81 @@ def sina_quote_batch(ts_codes):
         return {}
 
 
+# 9b. sina_orderbook - 新浪五档盘口（hq.sinajs.cn，无额度限制）
+# ============================================================
+def sina_orderbook_batch(ts_codes):
+    """新浪行情API批量五档盘口
+    返回: {ts_code: {'name','price','pre_close','bid_prices':[b1..b5],'bid_vols':[v1..v5],'ask_prices':[a1..a5],'ask_vols':[v1..v5]}}
+    买卖量单位统一为"手"（原始股数/100）
+    """
+    try:
+        codes = []
+        for tc in ts_codes[:50]:
+            code = _ts_to_code(tc)
+            if tc.endswith('.SH'):
+                codes.append(f'sh{code}')
+            elif tc.endswith('.BJ'):
+                codes.append(f'bj{code}')
+            else:
+                codes.append(f'sz{code}')
+
+        url = f'https://hq.sinajs.cn/list={",".join(codes)}'
+        headers = {
+            'Referer': 'https://finance.sina.com.cn',
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+        }
+        resp = requests.get(url, headers=headers, timeout=10)
+        if resp.status_code != 200:
+            _record_call('sina_orderbook', False, f'HTTP {resp.status_code}')
+            return {}
+
+        result = {}
+        for line in resp.text.strip().split('\n'):
+            try:
+                if '=' not in line or '"' not in line:
+                    continue
+                code_part = line.split('=')[0].split('_')[-1].strip()
+                content = line.split('"')[1]
+                fields = content.split(',')
+                if len(fields) < 30:
+                    continue
+                ts_code = None
+                for tc in ts_codes:
+                    raw = _ts_to_code(tc)
+                    if code_part.endswith(raw):
+                        ts_code = tc
+                        break
+                if not ts_code:
+                    continue
+
+                def _f(idx, int_val=False):
+                    v = fields[idx] if idx < len(fields) else ''
+                    if not v:
+                        return 0
+                    try:
+                        return int(float(v) / 100) if int_val else float(v)
+                    except (ValueError, TypeError):
+                        return 0
+
+                result[ts_code] = {
+                    'name': fields[0],
+                    'price': _f(3),
+                    'pre_close': _f(2),
+                    'bid_prices': [_f(i) for i in [11, 13, 15, 17, 19]],
+                    'bid_vols': [_f(i, True) for i in [10, 12, 14, 16, 18]],
+                    'ask_prices': [_f(i) for i in [21, 23, 25, 27, 29]],
+                    'ask_vols': [_f(i, True) for i in [20, 22, 24, 26, 28]],
+                }
+            except Exception:
+                logger.debug("sina_orderbook item failed", exc_info=True)
+                continue
+        _record_call('sina_orderbook', True)
+        return result
+    except Exception as e:
+        _record_call('sina_orderbook', False, str(e))
+        return {}
+
+
 # ============================================================
 # 10. tencent_kline - 腾讯K线API (web.ifzq.gtimg.cn，无额度限制)
 # ============================================================

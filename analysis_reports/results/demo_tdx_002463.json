@@ -1,0 +1,64 @@
+{
+  "id": "demo_tdx_002463",
+  "stock_code": "002463",
+  "stock_name": "沪电股份",
+  "source": "tdx",
+  "created_at": "2026-07-14T17:30:00",
+  "report_type": "通达信个股分析",
+  "summary": {
+    "rating": "持有",
+    "target_price": null,
+    "confidence": "中",
+    "key_points": [
+      "2026年7月14日涨停+10%，收于137.13，创近期新高",
+      "KDJ和MACD指标显示短期上行动能强劲",
+      "估值处于历史高位，PE 53x，行业均值约35x",
+      "主营PCB业务受益于AI算力和存储芯片需求爆发"
+    ]
+  },
+  "quotes": {
+    "price": 137.13,
+    "change_pct": 10.0,
+    "high": 137.13,
+    "low": 128.35,
+    "volume": "94万手",
+    "amount": "125.5亿",
+    "turnover_rate": 4.89
+  },
+  "kline_analysis": {
+    "period": "60日",
+    "change_pct": 46.04,
+    "high_60d": 158.2,
+    "low_60d": 91.41,
+    "ma_status": "股价位于所有均线上方，多头排列",
+    "support": "120附近（前低支撑）",
+    "resistance": "158附近（60日高点压力）"
+  },
+  "financials": {
+    "eps": 0.65,
+    "bps": 8.73,
+    "pe": 53.11,
+    "pb": 15.71,
+    "total_shares": "19.24亿",
+    "market_cap": "2639亿",
+    "revenue": "62.14亿",
+    "net_profit": "12.42亿"
+  },
+  "risk_factors": [
+    "PCB行业竞争加剧，毛利率可能承压",
+    "AI算力需求增速若放缓将影响订单",
+    "股价已大幅上涨，PE估值处于历史高分位",
+    "涨停后能否延续需观察量能配合"
+  ],
+  "bull_case": [
+    "AI服务器和存储芯片需求旺盛，PCB订单饱满",
+    "技术面强势突破，成交量创近期新高",
+    "公司行业龙头地位稳固，客户粘性强"
+  ],
+  "bear_case": [
+    "估值已充分反映乐观预期",
+    "短期涨幅过大有回调需求",
+    "行业周期下行风险"
+  ],
+  "disclaimer": "本报告基于通达信实时行情数据分析，仅供参考，不构成投资建议"
+}

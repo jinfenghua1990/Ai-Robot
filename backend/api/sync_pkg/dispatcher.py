@@ -1,7 +1,7 @@
 """本地变化 → 云端同步的事件防抖触发器
 - trigger_cloud_sync(): 本地新增后防抖 3 秒推送到所有云端
 - trigger_cloud_delete(): 本地删除后防抖 3 秒从所有云端删除
-- full_sync(): 全量双向同步（供 scheduler.py 调用）
+- full_sync(): 单向推送（本地→云端，不再从云端拉取）
 """
 import asyncio
 import logging
@@ -11,6 +11,9 @@ from .ths import ths_delete_stock, sync_to_ths, sync_from_ths
 from .mx import mx_delete_stock, sync_to_mx, sync_from_mx
 
 logger = logging.getLogger(__name__)
+
+# 本地 JSON 为唯一真相源，禁用云端 pull
+CLOUD_PULL_DISABLED = True
 
 _debounce_task = None
 _delete_queue = []
@@ -114,16 +117,28 @@ def trigger_cloud_delete(code: str, name: str = ""):
 
 
 async def full_sync(mirror_push: bool = True) -> dict:
-    """全量双向同步"""
+    """单向同步：本地→云端推送（不再从云端拉取）"""
     results = {}
-    try:
-        results["pull_ths"] = await sync_from_ths()
-    except Exception as e:
-        results["pull_ths"] = {"error": str(e)}
-    try:
-        results["pull_mx"] = await sync_from_mx()
-    except Exception as e:
-        results["pull_mx"] = {"error": str(e)}
+    if not CLOUD_PULL_DISABLED:
+        try:
+            results["pull_ths"] = await sync_from_ths()
+        except Exception as e:
+            results["pull_ths"] = {"error": str(e)}
+        try:
+            results["pull_mx"] = await sync_from_mx()
+        except Exception as e:
+            results["pull_mx"] = {"error": str(e)}
+        try:
+            from api.sina_sync import pull_from_sina_cloud
+            try:
+                results["pull_sina"] = await pull_from_sina_cloud()
+            except Exception as e:
+                results["pull_sina"] = {"error": str(e)}
+        except ImportError:
+            pass
+    else:
+        results["pull"] = "disabled (本地 JSON 为唯一真相源)"
+
     try:
         results["push_ths"] = await sync_to_ths(mirror=mirror_push)
     except Exception as e:
@@ -133,11 +148,7 @@ async def full_sync(mirror_push: bool = True) -> dict:
     except Exception as e:
         results["push_mx"] = {"error": str(e)}
     try:
-        from api.sina_sync import pull_from_sina_cloud, push_to_sina_cloud
-        try:
-            results["pull_sina"] = await pull_from_sina_cloud()
-        except Exception as e:
-            results["pull_sina"] = {"error": str(e)}
+        from api.sina_sync import push_to_sina_cloud
         try:
             results["push_sina"] = await push_to_sina_cloud(mirror=mirror_push)
         except Exception as e:

@@ -74,8 +74,11 @@ const Sparkline = ({ data, width = 80, height = 24 }) => {
   );
 };
 
-export default function GlobalMarketPage() {
-  const [market, setMarket] = useState('HK');
+export default function GlobalMarketPage({ market: marketProp }) {
+  const isControlled = marketProp != null;
+  const [internalMarket, setInternalMarket] = useState('HK');
+  const market = isControlled ? marketProp : internalMarket;
+  const setMarket = isControlled ? () => {} : setInternalMarket;
   const [overview, setOverview] = useState(null);
   const [watchlist, setWatchlist] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -118,13 +121,15 @@ export default function GlobalMarketPage() {
     <div className="p-4 md:p-6" style={{ color: 'var(--text-primary)' }}>
       <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
         <div>
-          <h1 className="text-xl md:text-2xl font-bold">🌍 港股 / 美股行情</h1>
+          <h1 className="text-xl md:text-2xl font-bold">
+            {isControlled ? `${market === 'HK' ? '🇭🇰' : '🇺🇸'} ${market === 'HK' ? '港股' : '美股'}行情` : '🌍 港股 / 美股行情'}
+          </h1>
           <p className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
             数据源: Yahoo Finance · 关注列表 + 指数 + 技术指标
           </p>
         </div>
         <div className="flex items-center gap-2">
-          {MARKETS.map(m => (
+          {!isControlled && MARKETS.map(m => (
             <button
               key={m.key}
               onClick={() => setMarket(m.key)}
@@ -277,7 +282,7 @@ export default function GlobalMarketPage() {
       </div>
 
       <div className="mt-4 text-[11px]" style={{ color: 'var(--text-muted)' }}>
-        💡 提示: 数据来自 Yahoo Finance API，需本地代理 (127.0.0.1:7897)。RSI ≥ 70 超买，≤ 30 超卖。偏离度 = (现价 - MA20) / MA20 × 100%。
+        💡 提示: 数据来自 Yahoo Finance API。RSI ≥ 70 超买，≤ 30 超卖。偏离度 = (现价 - MA20) / MA20 × 100%。
       </div>
     </div>
   );

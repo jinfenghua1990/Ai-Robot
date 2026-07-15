@@ -1,0 +1,129 @@
+{
+  "id": "19564caeafff",
+  "stock_code": "300285",
+  "stock_name": "国瓷材料",
+  "source": "tdx",
+  "created_at": "2026-07-14T17:32:28.020179",
+  "report_type": "通达信个股分析",
+  "summary": {
+    "rating": "持有",
+    "target_price": "50.14（券商一致预期）",
+    "confidence": "中",
+    "key_points": [
+      "今日+9.37%为 KDJ(K=11.4)/RSI(32.5) 极度超卖后的技术修复，并非趋势反转信号",
+      "估值极高：TTM PE 114倍，现价70元较券商一致目标价50.14元溢价约40%",
+      "资金面警示：近10日主力净流出约58亿，机构持仓半年内从34.7%骤降至0.02%，高位派发明显",
+      "赛道优质但需等估值回归：MLCC/新材料/固态电池平台型公司，毛利率36.7%稳健，当前位置已透支预期"
+    ]
+  },
+  "quotes": {
+    "price": 70.01,
+    "change_pct": 9.37,
+    "high": 71.2,
+    "low": 64.65,
+    "volume": "86万手",
+    "amount": "58.1亿",
+    "turnover_rate": 10.28
+  },
+  "kline_analysis": {
+    "period": "60日",
+    "change_pct": 96.77,
+    "high_60d": 112.88,
+    "low_60d": 33.08,
+    "ma_status": "股价低于 MA5/MA10/MA20，空头排列；中期趋势偏弱",
+    "support": "60附近（7/13低点63.3及前低平台）",
+    "resistance": "90-100（6月密集成交区 / MA20压制）"
+  },
+  "financials": {
+    "eps": 0.14,
+    "bps": 7.23,
+    "pe": 114.05,
+    "pb": 9.68,
+    "total_shares": "9.97亿",
+    "market_cap": "698亿",
+    "revenue": "10.64亿(单季)",
+    "net_profit": "1.48亿(单季)"
+  },
+  "sector": {
+    "name": "新材料（MLCC/固态电池）",
+    "rank_in_sector": "—",
+    "sector_change_pct": "—",
+    "sector_heat": "—",
+    "sector_main_net": "—"
+  },
+  "money_flow": {
+    "today": {
+      "main_net": "+0.92亿",
+      "super_large": "+1.11亿",
+      "large": "-0.19亿",
+      "medium": "—",
+      "small": "—",
+      "main_ratio": "1.58%",
+      "status": "主力净流入"
+    },
+    "trend": [
+      { "date": "07-14", "main_net": "+0.92亿", "change": "+9.37%", "status": "流入" },
+      { "date": "07-13", "main_net": "-8.88亿", "change": "-13.6%", "status": "流出" },
+      { "date": "07-10", "main_net": "-7.56亿", "change": "-8.3%", "status": "流出" },
+      { "date": "07-09", "main_net": "-5.80亿", "change": "+2.9%", "status": "流出" },
+      { "date": "07-08", "main_net": "-5.71亿", "change": "-10.3%", "status": "流出" },
+      { "date": "07-07", "main_net": "-2.07亿", "change": "-0.6%", "status": "流出" },
+      { "date": "07-06", "main_net": "-5.14亿", "change": "-2.9%", "status": "流出" },
+      { "date": "07-03", "main_net": "-3.97亿", "change": "-2.2%", "status": "流出" },
+      { "date": "07-02", "main_net": "-9.49亿", "change": "-6.1%", "status": "流出" },
+      { "date": "07-01", "main_net": "-10.65亿", "change": "-4.2%", "status": "流出" }
+    ],
+    "period_stats": {
+      "1日": "+0.92亿",
+      "3日": "-15.52亿",
+      "5日": "-27.03亿",
+      "10日": "-58.35亿"
+    }
+  },
+  "technical": {
+    "rsi": 32.53,
+    "macd": "DIF 2.07 高位回落",
+    "kdj": "超卖区(K=11.4)",
+    "boll": "中下轨",
+    "ma5": 73.5,
+    "ma10": 82.5,
+    "ma20": 90.7,
+    "ma60": 69.2,
+    "volume_ratio": 0.81,
+    "summary": "KDJ(K=11.4)与RSI(32.5)处于极度超卖区，今日+9.37%属超卖技术修复；MACD高位回落、股价低于MA5/MA10/MA20呈空头排列，中期趋势偏弱。短期反弹动能尚在，但需量能持续确认方可言反转。"
+  },
+  "valuation": {
+    "pe_ttm": 114.05,
+    "pe_percentile_5y": "—",
+    "pb": 9.68,
+    "pb_percentile_5y": "—",
+    "peg": "—",
+    "industry_avg_pe": "—",
+    "industry_avg_pb": "—",
+    "assessment": "TTM PE 114倍、PB 9.7倍，处历史高位；现价70元较券商一致目标价50.14元溢价约40%，forward PE约74倍已隐含较高增长预期。估值安全边际不足，宜等待盈利兑现或股价回落消化。"
+  },
+  "institutional": {
+    "fund_count": 1,
+    "fund_holding_ratio": "0.02%",
+    "fund_change_quarter": "-19.34%",
+    "north_bound": "—",
+    "north_bound_5d": "—"
+  },
+  "bull_case": [
+    "MLCC、固态电池、新能源车、商业航天等多高景气赛道布局，平台型新材料龙头地位稳固",
+    "销售毛利率36.7%维持稳健，单季净利1.48亿，盈利质量尚可",
+    "短期技术指标极度超卖（KDJ K=11），技术性反弹动能仍在"
+  ],
+  "bear_case": [
+    "估值严重偏高：TTM PE 114倍，现价高于券商一致目标价约40%",
+    "机构半年内近乎清仓（34.7%→0.02%），近10日主力净流出约58亿，高位派发迹象明显",
+    "中期均线空头排列，股价自112.88高点回落约44%，趋势走弱"
+  ],
+  "risk_factors": [
+    "估值回归风险：高PE叠加机构撤离，股价存在进一步下修空间",
+    "赛道景气度不及预期：MLCC/固态电池价格波动或订单放缓",
+    "前期涨幅过大（60日+96.77%），获利盘踩踏风险",
+    "概念炒作退潮：多概念叠加易在风险偏好下降时大幅波动"
+  ],
+  "disclaimer": "本报告基于通达信实时行情及F10数据生成，仅供参考，不构成个人投资建议"
+}

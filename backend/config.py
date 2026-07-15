@@ -33,6 +33,11 @@ MX_API_URL = os.getenv("MX_API_URL", "https://mkapi2.dfcfs.com/finskillshub")
 ITICK_TOKEN = os.getenv("ITICK_TOKEN", "")
 ITICK_BASE_URL = os.getenv("ITICK_BASE_URL", "https://api.itick.org")
 
+# 通达信 Hub（F10 财务/评级/机构 live 拉取，供研报中心 consumer 使用）
+# 未配置 TDX_HUB_TOKEN 时 consumer 会优雅降级：F10 字段留空而非中断
+TDX_HUB_URL = os.getenv("TDX_HUB_URL", "http://tdxhub.icfqs.com:7615/TQLEX")
+TDX_HUB_TOKEN = os.getenv("TDX_HUB_TOKEN", "")
+
 # 聚宽 JoinQuant jqdatasdk
 JQDATA_ACCOUNT = os.getenv("JQDATA_ACCOUNT", "")
 JQDATA_PASSWORD = os.getenv("JQDATA_PASSWORD", "")
@@ -41,9 +46,10 @@ JQDATA_PASSWORD = os.getenv("JQDATA_PASSWORD", "")
 # 盘后研究采集（填补 stock_news_search / stock_data_query / ai_analysis_cache 空白）
 # ============================================================
 # 可选：AI 综合分析 LLM。留空则不调用 LLM，用妙想搜索内容作基线分析（model='mx-search-baseline'）
-AI_LLM_API_KEY = os.getenv("AI_LLM_API_KEY", "")
-AI_LLM_BASE_URL = os.getenv("AI_LLM_BASE_URL", "https://api.openai.com/v1")
-AI_LLM_MODEL = os.getenv("AI_LLM_MODEL", "gpt-4o-mini")
+# 兼容 .env 中的 LLM_* 命名与旧 AI_LLM_* 命名，优先使用 AI_LLM_*，未配置则回退到 LLM_*
+AI_LLM_API_KEY = os.getenv("AI_LLM_API_KEY") or os.getenv("LLM_API_KEY", "")
+AI_LLM_BASE_URL = os.getenv("AI_LLM_BASE_URL") or os.getenv("LLM_BASE_URL", "https://api.openai.com/v1")
+AI_LLM_MODEL = os.getenv("AI_LLM_MODEL") or os.getenv("LLM_MODEL", "gpt-4o-mini")
 # 当日强势股纳入阈值（涨幅 %），默认 9（创业板 20% 涨停也覆盖）
 RESEARCH_LIMIT_UP_PCT = float(os.getenv("RESEARCH_LIMIT_UP_PCT", "9.0"))
 # 龙头生命周期纳入的活跃阶段

@@ -1,0 +1,1 @@
+import{j as t}from"./index.CsuYT-kk.js";import{H as e}from"./HermesEmbed.FQlHVKXP.js";import"./react-vendor.BSdSoFln.js";function a(){return t.jsx(e,{path:"/today",title:"盘中实时"})}export{a as default};

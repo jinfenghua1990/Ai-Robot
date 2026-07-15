@@ -6,7 +6,6 @@ import sys, os, math
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import logging
 from datetime import datetime
-from db.connection import get_db
 from db.session import get_db_session
 from db.models import LeaderLifecycle, StockFlow
 from sqlalchemy import func

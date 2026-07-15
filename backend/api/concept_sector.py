@@ -239,7 +239,7 @@ def _refresh_hot_cache():
                 _hot_cache[str(days)] = ({'days': days, 'count': len(result), 'sectors': result}, time.time())
             print('[cache] concept-sector-hot refreshed (days=60,120)')
     except Exception as e:
-        print(f'[cache] concept-sector-hot refresh error: {e}')
+        logger.warning(f'[cache] concept-sector-hot refresh error: {e}', exc_info=True)
 
 
 @router.get("/api/realtime/concept-sectors")

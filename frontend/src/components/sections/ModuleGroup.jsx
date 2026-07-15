@@ -27,15 +27,13 @@ export function ModuleGroup({ title, badge, extra, children, contentHeight = '28
   const resolvedContentHeight = isAutoHeight ? 'auto' : contentHeight;
 
   const Cell = ({ children }) => (
-    <div className="rounded-xl border p-1.5"
-      style={{ borderColor: 'var(--border-color)', background: 'var(--bg-surface)', minWidth: '0' }}>
+    <div className="min-w-0">
       {children}
     </div>
   );
 
   const ContentCell = ({ children }) => (
-    <div className="rounded-xl border p-2 flex flex-col"
-      style={{ borderColor: 'var(--border-color)', background: 'var(--bg-surface)', minHeight: isAutoHeight ? undefined : '280px' }}>
+    <div className="flex flex-col" style={{ minHeight: isAutoHeight ? undefined : '280px' }}>
       {children}
     </div>
   );

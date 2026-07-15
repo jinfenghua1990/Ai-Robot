@@ -1,0 +1,209 @@
+{
+  "id": "demo_tdx_002463",
+  "stock_code": "002463",
+  "stock_name": "沪电股份",
+  "source": "tdx",
+  "created_at": "2026-07-14T17:30:00",
+  "report_type": "通达信个股分析",
+  "summary": {
+    "rating": "持有",
+    "target_price": null,
+    "confidence": "中",
+    "key_points": [
+      "2026年7月14日涨停+10%，收于137.13，创近期新高",
+      "KDJ和MACD指标显示短期上行动能强劲",
+      "估值处于历史高位，PE 53x，行业均值约35x",
+      "主营PCB业务受益于AI算力和存储芯片需求爆发"
+    ]
+  },
+  "quotes": {
+    "price": 137.13,
+    "change_pct": 10.0,
+    "high": 137.13,
+    "low": 128.35,
+    "volume": "94万手",
+    "amount": "125.5亿",
+    "turnover_rate": 4.89
+  },
+  "kline_analysis": {
+    "period": "60日",
+    "change_pct": 46.04,
+    "high_60d": 158.2,
+    "low_60d": 91.41,
+    "ma_status": "股价位于所有均线上方，多头排列",
+    "support": "120附近（前低支撑）",
+    "resistance": "158附近（60日高点压力）"
+  },
+  "financials": {
+    "eps": 0.65,
+    "bps": 8.73,
+    "pe": 53.11,
+    "pb": 15.71,
+    "total_shares": "19.24亿",
+    "market_cap": "2639亿",
+    "revenue": "62.14亿",
+    "net_profit": "12.42亿"
+  },
+  "risk_factors": [
+    "PCB行业竞争加剧，毛利率可能承压",
+    "AI算力需求增速若放缓将影响订单",
+    "股价已大幅上涨，PE估值处于历史高分位",
+    "涨停后能否延续需观察量能配合"
+  ],
+  "bull_case": [
+    "AI服务器和存储芯片需求旺盛，PCB订单饱满",
+    "技术面强势突破，成交量创近期新高",
+    "公司行业龙头地位稳固，客户粘性强"
+  ],
+  "bear_case": [
+    "估值已充分反映乐观预期",
+    "短期涨幅过大有回调需求",
+    "行业周期下行风险"
+  ],
+  "disclaimer": "本报告基于通达信实时行情数据分析，仅供参考，不构成投资建议",
+  "sector": {
+    "name": "电子元器件",
+    "rank_in_sector": "前10%",
+    "sector_change_pct": "+3.2",
+    "sector_heat": 87.5,
+    "sector_main_net": "+12.8亿",
+    "peer_comparison": [
+      {
+        "name": "沪电股份",
+        "pe": 53.1,
+        "pb": 15.7,
+        "mcap": "2639亿",
+        "change": "+10.0%"
+      },
+      {
+        "name": "深南电路",
+        "pe": 38.5,
+        "pb": 8.2,
+        "mcap": "1850亿",
+        "change": "+2.3%"
+      },
+      {
+        "name": "东山精密",
+        "pe": 29.2,
+        "pb": 5.1,
+        "mcap": "980亿",
+        "change": "-1.5%"
+      },
+      {
+        "name": "景旺电子",
+        "pe": 35.8,
+        "pb": 6.8,
+        "mcap": "560亿",
+        "change": "+0.8%"
+      }
+    ]
+  },
+  "money_flow": {
+    "today": {
+      "main_net": "+3.2亿",
+      "super_large": "+1.8亿",
+      "large": "+1.4亿",
+      "medium": "-0.6亿",
+      "small": "-2.6亿",
+      "main_ratio": "12.5%",
+      "status": "主力净流入"
+    },
+    "trend": [
+      {
+        "date": "07-13",
+        "main_net": "-0.8亿",
+        "change": "-3.8%",
+        "status": "流出"
+      },
+      {
+        "date": "07-10",
+        "main_net": "+1.2亿",
+        "change": "-1.3%",
+        "status": "流入"
+      },
+      {
+        "date": "07-09",
+        "main_net": "+2.5亿",
+        "change": "+6.1%",
+        "status": "流入"
+      },
+      {
+        "date": "07-08",
+        "main_net": "-1.5亿",
+        "change": "-2.1%",
+        "status": "流出"
+      },
+      {
+        "date": "07-07",
+        "main_net": "-0.6亿",
+        "change": "+0.5%",
+        "status": "流出"
+      },
+      {
+        "date": "07-06",
+        "main_net": "+3.8亿",
+        "change": "+4.2%",
+        "status": "流入"
+      },
+      {
+        "date": "07-03",
+        "main_net": "+1.9亿",
+        "change": "+3.1%",
+        "status": "流入"
+      },
+      {
+        "date": "07-02",
+        "main_net": "-2.2亿",
+        "change": "-8.5%",
+        "status": "流出"
+      },
+      {
+        "date": "07-01",
+        "main_net": "+4.5亿",
+        "change": "+6.8%",
+        "status": "流入"
+      },
+      {
+        "date": "06-30",
+        "main_net": "+2.8亿",
+        "change": "+8.3%",
+        "status": "流入"
+      }
+    ],
+    "period_stats": {
+      "1日": "+3.2亿",
+      "3日": "+2.9亿",
+      "5日": "+0.8亿",
+      "10日": "+11.6亿"
+    }
+  },
+  "technical": {
+    "rsi": 72.5,
+    "macd": "金叉",
+    "kdj": "超买区",
+    "boll": "触及上轨",
+    "ma5": 132.5,
+    "ma10": 128.3,
+    "ma20": 120.8,
+    "ma60": 105.2,
+    "volume_ratio": 1.52,
+    "summary": "RSI进入超买区(72.5)，MACD维持金叉状态，KDJ处于高位。股价位于所有均线上方，多头排列完整。布林带触及上轨，短线有震荡整固需求，但中期趋势依然强劲。"
+  },
+  "valuation": {
+    "pe_ttm": 53.1,
+    "pe_percentile_5y": "92%",
+    "pb": 15.7,
+    "pb_percentile_5y": "88%",
+    "peg": 0.85,
+    "industry_avg_pe": 35.2,
+    "industry_avg_pb": 6.5,
+    "assessment": "PE处于近5年92%分位，显著高于行业均值35x。高估值反映了市场对AI PCB的高增长预期，但需注意估值回归风险。"
+  },
+  "institutional": {
+    "fund_count": 168,
+    "fund_holding_ratio": "18.5%",
+    "fund_change_quarter": "+3.2%",
+    "north_bound": "+0.8亿",
+    "north_bound_5d": "+2.1亿"
+  }
+}

@@ -1,0 +1,1 @@
+import{j as t}from"./index.BraBnPkH.js";import{D as e}from"./DSAEmbed.B9G_CgPm.js";import"./react-vendor.BSdSoFln.js";function o(){return t.jsx(e,{path:"/screening",title:"DSA 选股筛选"})}export{o as default};

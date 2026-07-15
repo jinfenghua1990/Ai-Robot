@@ -23,8 +23,7 @@ import logging
 from typing import Optional
 
 logger = logging.getLogger(__name__)
-import httpx
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Query
 
 from db.connection import get_db
 from db.session import get_db_session
