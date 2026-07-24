@@ -15,6 +15,7 @@ import { UP_COLOR, DOWN_COLOR, UP_DARK, DOWN_DARK } from '../utils/colors';
 import SinaLink from '../components/SinaLink';
 import StockActionButtons from '../components/trading/StockActionButtons';
 
+import { stripCode } from '../utils/format';
 const fmtWan = (v) => {
   if (v == null) return '—';
   const n = Number(v);
@@ -254,7 +255,7 @@ export default function BossHoldingsPage() {
                     key={`${h.alias}-${h.ts_code}-${h.open_date}-${i}`}
                     className="border-t cursor-pointer hover:opacity-90"
                     style={{ borderColor: 'var(--border-color)', background: i % 2 ? 'rgba(0,0,0,0.02)' : 'transparent' }}
-                    onClick={() => navigate(`/stock/${h.ts_code.split('.')[0]}`)}
+                    onClick={() => navigate(`/stock/${stripCode(h.ts_code)}`)}
                   >
                     <td className="px-2 py-2 sticky left-0 z-10" style={{ background: i % 2 ? 'rgba(0,0,0,0.02)' : 'var(--bg-card)' }}>
                       <span className="font-bold" style={{ color: 'var(--text-primary)' }}>{h.alias}</span>
@@ -316,7 +317,7 @@ export default function BossHoldingsPage() {
                     </td>
                     <td className="px-2 py-2" onClick={(e) => e.stopPropagation()}>
                       <StockActionButtons
-                        stockCode={h.ts_code.split('.')[0]}
+                        stockCode={stripCode(h.ts_code)}
                         stockName={h.stock_name}
                         size="xs"
                         onRefresh={load}

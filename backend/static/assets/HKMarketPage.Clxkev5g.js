@@ -1,1 +1,0 @@
-import{j as r}from"./index.BraBnPkH.js";import t from"./GlobalMarketPage.mmQywY6d.js";import"./react-vendor.BSdSoFln.js";import"./colors.DVFBJOC5.js";function i(){return r.jsx(t,{market:"HK"})}export{i as default};

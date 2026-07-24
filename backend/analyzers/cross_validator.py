@@ -5,10 +5,15 @@
 - 识别异常源，生成质量评分
 - 记录质量日志，触发人工审核
 """
-import sys, os, json, statistics
+import sys
+import os
+import json
+import statistics
+import logging
+
+logger = logging.getLogger(__name__)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from datetime import datetime, date
-from db.connection import get_db
 from db.session import get_db_session
 from db.models import DataQualityLog, ManualReviewQueue, DataSourceReliability
 
@@ -329,7 +334,7 @@ def _log_quality(snapshot_time, trade_date, ts_code, name, indicator,
             db.add(log)
             db.commit()
     except Exception as e:
-        db.rollback()
+        pass  # with context auto-rollbacks
         logger.warning(f'[validator] log_quality error: {e}', exc_info=True)
 
 
@@ -350,7 +355,7 @@ def _trigger_manual_review(ts_code, name, indicator, sources_data, outliers,
             db.commit()
             logger.info(f'[validator] Manual review triggered for {ts_code}.{indicator}: {reason}')
     except Exception as e:
-        db.rollback()
+        pass  # with context auto-rollbacks
         logger.warning(f'[validator] trigger_review error: {e}', exc_info=True)
 
 
@@ -406,7 +411,7 @@ def _try_auto_review(ts_code, name, indicator, sources_data, outliers,
                 print(f'[validator] Auto-approved {ts_code}.{indicator}: {reason} → {final_value:.2f}')
                 return True
     except Exception as e:
-        db.rollback()
+        pass  # with context auto-rollbacks
         logger.warning(f'[validator] auto_review error: {e}', exc_info=True)
         return False
 
@@ -442,7 +447,7 @@ def _update_source_reliability(target_date, valid_data, outliers, median):
                 record.reliability_score = max(0, 100 - outlier_rate * 100 - float(record.avg_deviation or 0) * 0.5)
             db.commit()
     except Exception as e:
-        db.rollback()
+        pass  # with context auto-rollbacks
         logger.warning(f'[validator] update_reliability error: {e}', exc_info=True)
 
 

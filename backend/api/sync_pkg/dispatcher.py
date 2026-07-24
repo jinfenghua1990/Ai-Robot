@@ -25,20 +25,13 @@ async def _push_to_all(reason: str = "change") -> dict:
     """推送到所有已连接平台（best-effort，失败记日志不抛）"""
     results = {}
     try:
-        results["push_ths"] = await sync_to_ths()
+        results["push_ths"] = await sync_to_ths(mirror=False)
     except Exception as e:
         results["push_ths"] = {"error": str(e)}
     try:
-        results["push_mx"] = await sync_to_mx()
+        results["push_mx"] = await sync_to_mx(mirror=False)
     except Exception as e:
         results["push_mx"] = {"error": str(e)}
-    try:
-        from api.sina_sync import push_to_sina_cloud
-        results["push_sina"] = await push_to_sina_cloud()
-    except ImportError:
-        results["push_sina"] = {"skipped": "新浪同步未启用"}
-    except Exception as e:
-        results["push_sina"] = {"error": str(e)}
     results["reason"] = reason
     results["timestamp"] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     return results
@@ -78,13 +71,6 @@ async def _delete_from_all(code: str, name: str = "") -> dict:
         results["mx"] = await mx_delete_stock(name or code)
     except Exception as e:
         results["mx"] = {"error": str(e)}
-    try:
-        from api.sina_sync import sina_delete_stock
-        results["sina"] = await sina_delete_stock(code)
-    except ImportError:
-        results["sina"] = {"skipped": "新浪未启用"}
-    except Exception as e:
-        results["sina"] = {"error": str(e)}
     return results
 
 
@@ -116,8 +102,8 @@ def trigger_cloud_delete(code: str, name: str = ""):
     _delete_debounce_task = loop.create_task(_debounced_delete())
 
 
-async def full_sync(mirror_push: bool = True) -> dict:
-    """单向同步：本地→云端推送（不再从云端拉取）"""
+async def full_sync(mirror_push: bool = False) -> dict:
+    """单向同步：本地→云端推送（不再从云端拉取）。默认增量模式 mirror_push=False（只加不删）"""
     results = {}
     if not CLOUD_PULL_DISABLED:
         try:
@@ -128,14 +114,6 @@ async def full_sync(mirror_push: bool = True) -> dict:
             results["pull_mx"] = await sync_from_mx()
         except Exception as e:
             results["pull_mx"] = {"error": str(e)}
-        try:
-            from api.sina_sync import pull_from_sina_cloud
-            try:
-                results["pull_sina"] = await pull_from_sina_cloud()
-            except Exception as e:
-                results["pull_sina"] = {"error": str(e)}
-        except ImportError:
-            pass
     else:
         results["pull"] = "disabled (本地 JSON 为唯一真相源)"
 
@@ -147,13 +125,5 @@ async def full_sync(mirror_push: bool = True) -> dict:
         results["push_mx"] = await sync_to_mx(mirror=mirror_push)
     except Exception as e:
         results["push_mx"] = {"error": str(e)}
-    try:
-        from api.sina_sync import push_to_sina_cloud
-        try:
-            results["push_sina"] = await push_to_sina_cloud(mirror=mirror_push)
-        except Exception as e:
-            results["push_sina"] = {"error": str(e)}
-    except ImportError:
-        results["sina"] = {"skipped": "新浪同步未启用"}
     results["timestamp"] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     return results

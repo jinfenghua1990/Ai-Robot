@@ -6,8 +6,11 @@ const BUILTIN_STRATEGIES = [
   { type: '龙头', color: '#ef4444', name: 'V2龙头强度排行', desc: '多维度强度评分排序', dim: '全市场', tabKey: 'v2' },
   { type: '龙头', color: '#ef4444', name: 'V3龙头周期V3', desc: '龙头周期分析', dim: '全市场', tabKey: 'v3' },
   { type: '智能', color: '#3b82f6', name: '热度综合', desc: '板块热度Top5+突破/加速+主力净流入', dim: '全市场', tabKey: 'smart-heat' },
-  { type: '智能', color: '#3b82f6', name: '白虎V3.0', desc: 'MA20强势回调，5维度≥6分', dim: '科创创业板', tabKey: 'smart-baihu' },
-  { type: '智能', color: '#3b82f6', name: '青龙', desc: 'MA10主升浪回踩策略', dim: '全市场', tabKey: 'smart-qinglong' },
+  { type: '智能', color: '#3b82f6', name: '白虎V3.0', desc: '双模式：回踩守20日线/放量突破', dim: '全市场', tabKey: 'smart-baihu' },
+  { type: '智能', color: '#3b82f6', name: '白虎V4.0', desc: '5形态+3层分层+交易计划', dim: '全市场', tabKey: 'smart-liangjia' },
+  { type: '智能', color: '#3b82f6', name: '青龙', desc: 'MA10回踩，20日涨幅>30%超强股', dim: '全市场', tabKey: 'smart-qinglong' },
+  { type: '智能', color: '#3b82f6', name: 'MACD金叉', desc: 'DIF上穿DEA+站上MA20+放量', dim: '全市场', tabKey: 'smart-macd' },
+  { type: '智能', color: '#ef4444', name: '风险退出', desc: '止损/RSI超买见顶/趋势走坏', dim: '全市场', tabKey: 'smart-risk-exit' },
 ];
 
 const DIM_LABELS = {

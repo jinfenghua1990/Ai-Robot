@@ -6,7 +6,6 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import logging
 import numpy as np
-from db.connection import get_db
 from db.session import get_db_session
 from db.models import SectorFlow
 
@@ -44,7 +43,7 @@ def calculate_heat_scores(trade_date):
             db.commit()
             print(f'[heat] Calculated heat scores for {len(sectors)} sectors')
     except Exception as e:
-        db.rollback()
+        pass  # with context auto-rollbacks
         logger.exception(f'[heat] Error')
         return {'error': str(e)}
 

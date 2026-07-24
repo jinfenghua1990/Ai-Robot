@@ -570,7 +570,7 @@ class StrategyResult(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     trade_date = Column(Date, nullable=False, index=True)                # 交易日期
     ts_code = Column(String(20), nullable=False, index=True)             # 股票代码
-    strategy_key = Column(String(20), nullable=False, index=True)        # 策略key: baihu_v26/baihu_v30/qinglong/zhushenglang
+    strategy_key = Column(String(20), nullable=False, index=True)        # 策略key: baihu_v30/liangjia_report/qinglong/macd_golden_cross/risk_exit
     strategy_name = Column(String(20), nullable=False)                   # 策略中文名: 白虎/白虎V3/青龙/主升浪
     name = Column(String(20))                                             # 股票名称
     sector = Column(String(50))                                           # 所属板块
@@ -820,6 +820,35 @@ class TradingSignalDaily(Base):
     __table_args__ = (
         UniqueConstraint("trade_date", "ts_code", name="uq_trading_signal_date_code"),
         Index("ix_trading_signal_date_signal", "trade_date", "signal_4"),
+    )
+
+
+class LeaderTrack(Base):
+    """龙头生命周期跟踪状态表（跨日记忆）
+
+    使龙头引擎具备跨日连续性：
+    - 记录当前主龙及其近 N 日阶段演进轨迹（蓄势→突破→主升→分歧→衰退）
+    - 跟踪阶段演进趋势（上升 rising / 平台 flat / 拐头 falling）
+    - 主龙走弱时触发衰退预警并排序接棒候选
+
+    由 analyzers/leader_engine.run_leader_engine 每日盘后更新。
+    仅保留最近一条 is_active=True 的记录作为"当前主龙"，历史轨迹归档在 track_json 中。
+    """
+    __tablename__ = "leader_track"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    ts_code = Column(String(20), nullable=False, index=True)
+    name = Column(String(20))
+    sector = Column(String(50), index=True)
+    enter_date = Column(Date, nullable=False)                  # 成为主龙的日期
+    current_phase = Column(String(20))                        # 当前生命周期阶段
+    phase_trend = Column(String(10))                           # rising / flat / falling
+    track_json = Column(Text)                                 # 历史轨迹 JSON 列表
+    consecutive_days_as_leader = Column(Integer, default=1)   # 连续担任主龙天数
+    last_date = Column(Date, nullable=False)                  # 最近更新日
+    is_active = Column(Boolean, default=True)                 # 是否当前主龙
+    created_at = Column(DateTime, server_default=func.now())
+    __table_args__ = (
+        Index("ix_leader_track_active", "is_active", "last_date"),
     )
 
 
@@ -1128,4 +1157,79 @@ class StockTrackerDaily(Base):
     created_at = Column(DateTime, server_default=func.now())
     __table_args__ = (
         Index("ix_stock_tracker_daily_tracker_date", "tracker_id", "trade_date", unique=True),
+    )
+class StrategyTrack(Base):
+    """策略共振股 20 天跟踪主表
+    - 入池：从 strategy_result 拉取当日多策略共振 (>=2) 命中的股票
+    - 每日盘后更新：拉行情 + BS 信号检查
+    - 撤离：BS 出现 S 点 → 撤离放入历史；或跟踪满 20 天自动到期
+    """
+    __tablename__ = "strategy_track"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    pool_date = Column(Date, nullable=False, index=True)               # 入池日期
+    ts_code = Column(String(20), nullable=False, index=True)           # 股票代码
+    name = Column(String(20))                                          # 股票名称
+    sector = Column(String(50))                                        # 所属板块
+
+    # 入池快照
+    strategies_json = Column(Text)                                     # 命中策略列表 JSON
+    strategy_count = Column(Integer, default=0)                        # 命中策略数
+    pool_score = Column(Numeric(8, 2))                                 # 入池总得分
+    pool_close = Column(Numeric(10, 4))                                # 入池当日收盘价
+    track_days = Column(Integer, default=20)                           # 跟踪最大天数
+
+    # 状态
+    status = Column(String(20), default='active', index=True)          # active / exited / expired
+    exit_date = Column(Date)                                           # 撤离日期
+    exit_reason = Column(String(50))                                   # BS_S_SIGNAL / MAX_DAYS_REACHED / MANUAL
+    exit_price = Column(Numeric(10, 4))                                # 撤离价格
+    exit_return_pct = Column(Numeric(8, 2))                            # 撤离收益率 %
+
+    # 最新快照（每日更新后刷新）
+    latest_day = Column(Integer, default=0)                            # 最新已更新天数 (0=未更新)
+    latest_trade_date = Column(Date)                                   # 最新交易日
+    latest_close = Column(Numeric(10, 4))                              # 最新收盘价
+    latest_pct = Column(Numeric(8, 2))                                 # 相对入池累计涨跌 %
+    latest_daily_chg = Column(Numeric(6, 2))                           # 当日涨跌 %
+    latest_bs_signal = Column(String(10))                              # 最新 BS 信号 B/S/null
+    latest_bs_reason = Column(String(200))                             # 最新 BS 信号原因
+
+    # 跟踪期间极值
+    max_return_pct = Column(Numeric(8, 2))                             # 跟踪期间最大收益 %
+    min_return_pct = Column(Numeric(8, 2))                             # 跟踪期间最小收益 %
+
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("pool_date", "ts_code", name="uq_strategy_track_pool_code"),
+        Index("ix_strategy_track_status_pool", "status", "pool_date"),
+    )
+
+
+class StrategyTrackDaily(Base):
+    """策略共振股跟踪每日明细（每只股票×每个交易日一条）"""
+    __tablename__ = "strategy_track_daily"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    tracker_id = Column(Integer, nullable=False, index=True)           # StrategyTrack.id
+    trade_date = Column(Date, nullable=False, index=True)
+    day_n = Column(Integer, nullable=False)                            # 入池后第 N 天 (1-20)
+
+    open = Column(Numeric(10, 4))
+    high = Column(Numeric(10, 4))
+    low = Column(Numeric(10, 4))
+    close = Column(Numeric(10, 4))
+    pct_chg = Column(Numeric(6, 2))                                    # 当日涨跌幅 %
+    cum_pct = Column(Numeric(8, 2))                                    # 相对入池累计涨跌 %
+    volume = Column(BigInteger)
+    amount = Column(Numeric(20, 4))
+    main_force_inflow = Column(Numeric(20, 4))                         # 主力净流入 (元)
+
+    bs_signal = Column(String(10))                                     # B / S / null
+    bs_reason = Column(String(200))                                    # BS 信号原因
+
+    created_at = Column(DateTime, server_default=func.now())
+    __table_args__ = (
+        Index("ix_strategy_track_daily_tracker_date", "tracker_id", "trade_date", unique=True),
+        Index("ix_strategy_track_daily_date", "trade_date"),
     )

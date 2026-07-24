@@ -1,1 +1,0 @@
-import{j as e}from"./index.BraBnPkH.js";import{V as i}from"./VibeEmbed.CTGylCM1.js";import"./react-vendor.BSdSoFln.js";function o(){return e.jsx(i,{path:"/daily-review",title:"Vibe 每日复盘"})}export{o as default};

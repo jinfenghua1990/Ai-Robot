@@ -261,6 +261,50 @@ def announcements(code: str = Query(...)):
         raise HTTPException(502, f"公告源异常：{e}") from e
 
 
+@router.get("/api/vibe/announcements/batch")
+def announcements_batch(codes: str = Query(..., description="逗号分隔的 6 位代码")):
+    """批量拉取多只股票的公告，返回 {code: Announcement[]} 字典。"""
+    lst = [c.strip() for c in codes.split(",") if c.strip()]
+    if not lst or any(not c.isdigit() or len(c) != 6 for c in lst):
+        raise HTTPException(400, "codes 必须是逗号分隔的 6 位数字")
+    if len(lst) > 100:
+        raise HTTPException(400, "单次最多 100 个代码")
+    result = {}
+    for code in lst:
+        hit = _ANN_CACHE.get(code)
+        if hit and time.time() - hit[0] < 900:
+            result[code] = hit[1]
+        else:
+            try:
+                data = astock.announcements(code)
+                _ANN_CACHE[code] = (time.time(), data)
+                result[code] = data
+            except Exception as e:
+                logger.warning("[vibe] announcements batch error for %s: %s", code, e)
+                result[code] = []
+    return {"data": result}
+
+
+@router.get("/api/vibe/news/batch")
+def news_batch(codes: str = Query(..., description="逗号分隔的 6 位代码")):
+    """批量拉取多只股票的新闻，返回 {code: NewsItem[]} 字典。"""
+    lst = [c.strip() for c in codes.split(",") if c.strip()]
+    if not lst or any(not c.isdigit() or len(c) != 6 for c in lst):
+        raise HTTPException(400, "codes 必须是逗号分隔的 6 位数字")
+    if len(lst) > 100:
+        raise HTTPException(400, "单次最多 100 个代码")
+    result = {}
+    for code in lst:
+        try:
+            result[code] = astock.stock_news(code, limit=20)
+        except astock.DependencyMissing as e:
+            raise HTTPException(501, str(e)) from e
+        except Exception as e:
+            logger.warning("[vibe] news batch error for %s: %s", code, e)
+            result[code] = []
+    return {"data": result}
+
+
 @router.get("/api/vibe/financials")
 def financials(code: str = Query(...)):
     code = _validate(code)

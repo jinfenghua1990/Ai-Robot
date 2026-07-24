@@ -151,6 +151,9 @@ def _enrich_with_leader_meta(stocks: list, original_map: dict) -> None:
             s['strength'] = orig.get('strength') if orig.get('strength') is not None else s.get('strength')
             s['consecutive_days'] = orig.get('consecutive_days') if orig.get('consecutive_days') is not None else s.get('consecutive_days')
             s['change_rate'] = orig.get('change_rate') if orig.get('change_rate') is not None else s.get('change_rate')
+            s['phase'] = orig.get('phase') or s.get('phase') or '蓄势'
+            s['phase_trend'] = orig.get('phase_trend') or s.get('phase_trend') or 'flat'
+            s['track'] = orig.get('track') or s.get('track') or []
 
 
 async def _enrich_stock(stock: dict, db, precomputed_map: dict = None) -> dict:
@@ -277,6 +280,9 @@ async def leader_system(target_date: str = Query(None, description="目标日期
         all_stocks_raw = result.get('all_stocks', [])
         for s in all_stocks_raw:
             tasks.append(_enrich_stock(s, db, precomputed_map))
+        successors_raw = result.get('successor_candidates', [])
+        for s in successors_raw:
+            tasks.append(_enrich_stock(s, db, precomputed_map))
 
         enriched = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -296,6 +302,11 @@ async def leader_system(target_date: str = Query(None, description="目标日期
             r = enriched[idx]
             enriched_all.append(r if not isinstance(r, Exception) else s)
             idx += 1
+        enriched_successors = []
+        for s in successors_raw:
+            r = enriched[idx]
+            enriched_successors.append(r if not isinstance(r, Exception) else s)
+            idx += 1
 
     # 注入主力净流入（inflow 1日/3日/5日 + 连续天数）— 游资详情页用
     try:
@@ -314,12 +325,13 @@ async def leader_system(target_date: str = Query(None, description="目标日期
     # 补回 leader_engine 原始字段（strength/连板/涨幅/stage）— 游资详情页用
     try:
         original_map = {}
-        for src in (result.get('leader'),) + tuple(result.get('candidates') or []) + tuple(result.get('all_stocks') or []):
+        for src in (result.get('leader'),) + tuple(result.get('candidates') or []) + tuple(result.get('all_stocks') or []) + tuple(result.get('successor_candidates') or []):
             if src and src.get('ts_code'):
                 original_map[src['ts_code']] = src
         _enrich_with_leader_meta([enriched_leader] if enriched_leader else [], original_map)
         _enrich_with_leader_meta(enriched_candidates, original_map)
         _enrich_with_leader_meta(enriched_all, original_map)
+        _enrich_with_leader_meta(enriched_successors, original_map)
     except Exception as e:
         logger.warning(f'leader_meta enrichment failed: {e}')
 
@@ -327,8 +339,12 @@ async def leader_system(target_date: str = Query(None, description="目标日期
         'leader': enriched_leader,
         'candidates': enriched_candidates,
         'all_stocks': enriched_all,
+        'successor_candidates': enriched_successors,
         'all_count': result.get('all_count', 0),
         'sector_filter': result.get('sector_filter'),
+        'sector_rotation': result.get('sector_rotation'),
+        'decay_warning': result.get('decay_warning'),
+        'current_leader_track': result.get('current_leader_track'),
         'switch_warning': switch_warning,
         'date': result.get('date'),
         'message': result.get('message', 'ok'),

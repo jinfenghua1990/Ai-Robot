@@ -16,6 +16,7 @@
  */
 import { useEffect, useState, useRef, useCallback } from 'react';
 
+import { stripCode } from '../utils/format';
 const STREAM_URL = '/api/watchlist/realtime/stream';
 const POLL_FALLBACK_URL = '/api/watchlist/realtime/snapshot';
 const FALLBACK_POLL_INTERVAL = 15000;  // 15s 兜底轮询（非交易时段或 SSE 失败时）
@@ -24,7 +25,7 @@ function mapRealtimePayload(payload) {
   if (!payload?.data) return { serverTime: payload?.server_time, byCode: {} };
   const byCode = {};
   for (const [tsCode, item] of Object.entries(payload.data)) {
-    const code = tsCode.split('.')[0];
+    const code = stripCode(tsCode);
     if (!code) continue;
     const mainForce = item.main_force_inflow ?? 0;
     byCode[code] = {
@@ -53,6 +54,20 @@ function mapRealtimePayload(payload) {
 }
 
 /**
+ * 字段级对比：仅当任一字段不同时才返回新对象，否则返回原对象引用。
+ * 避免服务端推送完全相同的快照时仍新建引用，触发下游组件无谓重渲染。
+ */
+function mergeIfChanged(prev, next) {
+  if (!prev) return next;
+  let changed = false;
+  for (const k of Object.keys(next)) {
+    if (prev[k] !== next[k]) { changed = true; break; }
+  }
+  // 同时清理 prev 中存在但 next 已删除的字段（理论不会发生，但防御）
+  return changed ? { ...prev, ...next } : prev;
+}
+
+/**
  * 主 hook：SSE + 兜底轮询
  * - 优先用 SSE（5s 推送）
  * - SSE 出错或不支持时降级到 15s 轮询
@@ -68,7 +83,19 @@ export function useWatchlistRealtimeStream() {
     const { serverTime, byCode } = mapRealtimePayload(payload);
     setServerTime(serverTime);
     if (Object.keys(byCode).length > 0) {
-      setRealtimeMap((prev) => ({ ...prev, ...byCode }));
+      // 字段级合并：仅对实际变化的 code 替换引用，避免 164 张卡全量重渲染
+      setRealtimeMap((prev) => {
+        let next = prev;
+        let dirty = false;
+        for (const [code, item] of Object.entries(byCode)) {
+          const merged = mergeIfChanged(prev[code], item);
+          if (merged !== prev[code]) {
+            if (!dirty) { next = { ...prev }; dirty = true; }
+            next[code] = merged;
+          }
+        }
+        return dirty ? next : prev;
+      });
     }
   }, []);
 
@@ -118,11 +145,14 @@ export function useWatchlistRealtimeStream() {
 
         es.onerror = () => {
           if (cancelled) return;
-          setStreamStatus('fallback');
+          // 仅在自己仍是当前 ES 时清空 ref，避免旧 ES 的延迟 onerror 把新 ES 的引用清掉
+          // 导致新 ES 无法被 cleanup 关闭，连接泄漏
           es.close();
-          esRef.current = null;
+          if (esRef.current === es) esRef.current = null;
+          setStreamStatus('fallback');
           if (!pollTimerRef.current) startPollingFallback();
-          // 30s 后重试 SSE
+          // 30s 后重试 SSE（先清旧定时器避免 onerror 短时多次触发导致连接堆叠）
+          if (reconnectTimer) clearTimeout(reconnectTimer);
           reconnectTimer = setTimeout(() => { if (!cancelled) connect(); }, 30000);
         };
       } catch {
@@ -137,7 +167,7 @@ export function useWatchlistRealtimeStream() {
       if (reconnectTimer) clearTimeout(reconnectTimer);
       if (esRef.current) { esRef.current.close(); esRef.current = null; }
       if (pollTimerRef.current) { clearInterval(pollTimerRef.current); pollTimerRef.current = null; }
-      setStreamStatus('closed');
+      // 不再 setStreamStatus('closed')：组件已卸载，setState 无意义且可能触发 React 警告
     };
   }, [applyPayload, startPollingFallback]);
 

@@ -44,18 +44,6 @@ async def sync_status():
         local_count = db.query(Watchlist).count()
         groups = [r[0] for r in db.query(distinct(Watchlist.group_name)).all()]
         status["platforms"]["local"] = {"count": local_count, "groups": groups}
-    try:
-        from api.sina_sync import _sina_available, sina_get_self_stock
-        if not _sina_available():
-            status["platforms"]["sina"] = {"connected": False, "note": "未配置 SINA_COOKIE，新浪同步未启用"}
-        else:
-            try:
-                sina_list = await sina_get_self_stock()
-                status["platforms"]["sina"] = {"connected": True, "count": len(sina_list)}
-            except Exception as e:
-                status["platforms"]["sina"] = {"connected": False, "error": str(e)}
-    except ImportError:
-        status["platforms"]["sina"] = {"connected": False, "note": "新浪同步模块未加载"}
     return status
 
 
@@ -65,22 +53,24 @@ async def get_ths_list():
 
 
 @router.post("/api/sync/ths/pull")
-async def pull_from_ths(dry_run: bool = Query(False), mirror: bool = Query(True)):
+async def pull_from_ths(dry_run: bool = Query(False), mirror: bool = Query(False)):
+    """从同花顺拉取到本地。默认 mirror=False = 增量模式（只加不删，保留本地独有自选）"""
     return await sync_from_ths(dry_run, mirror)
 
 
 @router.post("/api/sync/ths/push")
-async def push_to_ths(dry_run: bool = Query(False), mirror: bool = Query(True)):
+async def push_to_ths(dry_run: bool = Query(False), mirror: bool = Query(False)):
+    """本地推送到同花顺。默认 mirror=False = 增量模式（只加不删，保留云端独有自选）"""
     return await sync_to_ths(dry_run, mirror)
 
 
 @router.post("/api/sync/mx/push")
-async def push_to_mx(dry_run: bool = Query(False), mirror: bool = Query(True)):
+async def push_to_mx(dry_run: bool = Query(False), mirror: bool = Query(False)):
     return await sync_to_mx(dry_run, mirror)
 
 
 @router.post("/api/sync/mx/pull")
-async def pull_from_mx(dry_run: bool = Query(False), mirror: bool = Query(True)):
+async def pull_from_mx(dry_run: bool = Query(False), mirror: bool = Query(False)):
     return await sync_from_mx(dry_run, mirror)
 
 

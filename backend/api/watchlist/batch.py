@@ -10,7 +10,6 @@ from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from db.connection import get_db
 from db.session import get_db_session
 from db.models import Watchlist
 from ._shared import reset_watchlist_cache

@@ -20,10 +20,10 @@ if [ -f "$PG_PID_FILE" ]; then
   fi
 fi
 
-# === 2. 确保 PostgreSQL 已启动（brew services 自启失败时兜底）===
+# === 2. 确保 PostgreSQL 已启动（pg_ctl 直启，避免 brew services 在 LaunchAgent 中死锁）===
 if ! lsof -ti :5432 -P -n >/dev/null 2>&1; then
   echo "[$(ts)] 5432 未监听，启动 PostgreSQL@16..." >> "$LOG"
-  brew services restart postgresql@16 >/dev/null 2>&1
+  pg_ctl -D "$PG_DATA" -l "$PG_DATA/server.log" start >/dev/null 2>&1 || true
   # 等待 PG 就绪（最多 15 秒）
   for i in $(seq 1 15); do
     lsof -ti :5432 -P -n >/dev/null 2>&1 && break
@@ -36,6 +36,10 @@ fi
 
 # === 3. 启动后端 uvicorn（前台运行，由 LaunchAgent KeepAlive 管理）===
 echo "[$(ts)] 启动后端 uvicorn (9000)..." >> "$LOG"
+
+# 先清理所有残留 uvicorn 进程（防止孤儿进程占用端口）
+pkill -f "uvicorn.*9000" 2>/dev/null || true
+sleep 1
 
 # 端口预检：若 9000 仍被占用（上一轮未完全退出 / 孤儿进程），先回收，
 # 避免 KeepAlive 重启时因 address already in use 而启动失败

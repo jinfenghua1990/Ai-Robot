@@ -13,15 +13,22 @@ export default function SectorMoneyFlowCompareSection({
 }) {
   const [rotationData, setRotationData] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
 
   useEffect(() => {
     if (!selectedDate) return;
     const controller = new AbortController();
     setLoading(true);
+    setError(null);
     (async () => {
       const res = await apiFetch(`/api/rotation?date=${selectedDate}&days=1`, { signal: controller.signal });
       if (controller.signal.aborted) return;
-      setRotationData(res.ok ? res.data : null);
+      if (res.ok) {
+        setRotationData(res.data);
+      } else {
+        setRotationData(null);
+        setError(res.error || '数据加载失败');
+      }
       setLoading(false);
     })();
     return () => controller.abort();
@@ -81,6 +88,13 @@ export default function SectorMoneyFlowCompareSection({
           </h3>
           {loading ? (
             <div className="h-64 rounded-xl animate-pulse" style={{ background: 'var(--bg-hover)' }} />
+          ) : error ? (
+            <div className="flex flex-col items-center justify-center h-64 gap-2">
+              <div className="text-sm" style={{ color: '#ef4444' }}>{error}</div>
+              <button onClick={() => setSelectedDate(selectedDate)} className="px-3 py-1.5 rounded-lg border text-xs" style={{ borderColor: 'var(--border-color)', color: 'var(--text-secondary)' }}>重试</button>
+            </div>
+          ) : sectorNames.length === 0 ? (
+            <div className="flex items-center justify-center h-64 text-sm" style={{ color: 'var(--text-muted)' }}>暂无板块资金流向数据</div>
           ) : (
             <SectorPostTrendChart
               sectors={sectorNames}
@@ -100,12 +114,20 @@ export default function SectorMoneyFlowCompareSection({
               {rtSectors?.trade_date || selectedDate} 盘中
             </span>
           </h3>
-          <SectorRealtimeTrendChart
-            sectors={sectorNames}
-            rtSectors={rtSectors}
-            selectedSector={selectedSector}
-            onSectorClick={handleSelect}
-          />
+          {loading ? (
+            <div className="h-64 rounded-xl animate-pulse" style={{ background: 'var(--bg-hover)' }} />
+          ) : error ? (
+            <div className="flex items-center justify-center h-64 text-sm" style={{ color: 'var(--text-muted)' }}>数据加载失败</div>
+          ) : sectorNames.length === 0 ? (
+            <div className="flex items-center justify-center h-64 text-sm" style={{ color: 'var(--text-muted)' }}>暂无板块资金流向数据</div>
+          ) : (
+            <SectorRealtimeTrendChart
+              sectors={sectorNames}
+              rtSectors={rtSectors}
+              selectedSector={selectedSector}
+              onSectorClick={handleSelect}
+            />
+          )}
         </div>
       </div>
     </div>

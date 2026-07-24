@@ -418,8 +418,9 @@ async def get_realtime_quote(code: str = Query(..., description="6位股票代�
             raise HTTPException(status_code=500, detail="行情数据格式异常")
 
         name = parts[0]
-        yesterday_close = float(parts[1])
-        open_price = float(parts[2])
+        # 新浪格式: name, 今开盘, 昨收盘, 当前价, ...
+        yesterday_close = float(parts[2])
+        open_price = float(parts[1])
         current_price = float(parts[3])
         high = float(parts[4])
         low = float(parts[5])

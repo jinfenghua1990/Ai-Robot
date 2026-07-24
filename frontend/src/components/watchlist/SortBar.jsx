@@ -3,8 +3,9 @@ import { useState, useRef, useEffect } from 'react';
 const SORTS = [
   { key: 'bs', label: 'B信号点', icon: '🔴', desc: '按最近B信号日期倒序' },
   { key: 'leader', label: '龙头强度', icon: '🔥', desc: '涨停+连板+涨幅综合' },
-  { key: 'buyPower', label: '购买力评分', icon: '💰', desc: '100分制综合评估' },
-  { key: 'changePct', label: '涨跌幅', icon: '📈', desc: '当日涨跌幅' },
+  { key: 'overall', label: '综合评分', icon: '🎯', desc: '8维综合（趋势/资金/板块/量能/波动/相对强度/回撤/机构）' },
+  { key: 'trend', label: '趋势强度', icon: '📈', desc: '纯技术面强度（KDJ/MACD/MA派生）' },
+  { key: 'changePct', label: '涨跌幅', icon: '📊', desc: '当日涨跌幅' },
   { key: 'heat', label: '板块热度', icon: '🌡', desc: '所属板块最新热度' },
 ];
 

@@ -1,7 +1,8 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { useDatePicker } from '../hooks/useDatePicker';
 import DateNavigator from '../components/DateNavigator';
-import SignalCard from '../components/trading/SignalCard';
+import StrategySignalCard from '../components/trading/StrategySignalCard';
+import StrategyResultsTable from '../components/StrategyResultsTable';
 import { fmtFlow } from '../utils/format';
 import { apiFetch } from '../utils/request';
 
@@ -17,11 +18,11 @@ const DIM_COLORS = {
 
 const STRATEGIES = [
   { key: 'heat', label: '热度综合', desc: '板块热度 Top 5 + 突破/加速阶段 + 主力净流入', icon: '🔥' },
-  { key: 'baihu', label: '白虎V3.0', desc: '双模式选股：缩量回踩守20日线 / 放量突破不破5/10日线，5维度评分≥5分入选，全市场', icon: '🐯' },
-  { key: 'liangjia', label: '白虎V4.0', desc: '5种形态分类 + 3层分层（优先买入/等回踩/暂不参与）+ 交易计划', icon: '🐯' },
-  { key: 'qinglong', label: '青龙', desc: 'MA10主升浪回踩策略', icon: '🐉' },
-  { key: 'zhushenglang', label: '主升浪', desc: 'MA多头排列+主力资金流入，主升浪趋势选股', icon: '🚀' },
-  { key: 'wave_band', label: '波段信号', desc: 'MA多头排列+回踩MA10缩量 / 放量突破MA20，RSI6+量比买卖点', icon: '🌊' },
+  { key: 'baihu', label: '白虎V3.0', desc: '双模式选股：缩量回踩守20日线 / 放量突破不破5/10日线，5维度评分≥5分入选', icon: '🐯' },
+  { key: 'liangjia', label: '白虎V4.0', desc: '5种形态分类 + 3层分层 + 突破强度 + 主力连续流入评分 + 交易计划', icon: '🐯' },
+  { key: 'qinglong', label: '青龙', desc: 'MA10主升浪回踩策略，20日涨幅>30%超强股', icon: '🐉' },
+  { key: 'macd', label: 'MACD金叉', desc: 'DIF上穿DEA + 站上MA20 + 放量确认', icon: '📊' },
+  { key: 'risk_exit', label: '风险退出', desc: '持仓风险预警：止损/RSI超买见顶/趋势走坏', icon: '🛡️' },
 ];
 
 export default function ScreenerPage({ initialStrategy, hideStrategySelector }) {
@@ -288,8 +289,11 @@ export default function ScreenerPage({ initialStrategy, hideStrategySelector }) 
         <div className="text-sm mb-2"><strong style={{ color: 'var(--text-primary)' }}>📖 名词解释</strong> · 选股策略说明</div>
         <div className="space-y-1.5 text-xs" style={{ color: 'var(--text-secondary)' }}>
           <div><strong style={{ color: 'var(--text-primary)' }}>热度综合：</strong>板块热度Top5 + 突破/加速阶段龙头 + 主力净流入排序</div>
-          <div><strong style={{ color: 'var(--text-primary)' }}>白虎V3.0：</strong>双模式选股：缩量回踩守20日线 / 放量突破不破5/10日线，5维度评分≥5分入选，全市场</div>
-          <div><strong style={{ color: 'var(--text-primary)' }}>青龙：</strong>MA10主升浪回踩策略</div>
+          <div><strong style={{ color: 'var(--text-primary)' }}>白虎V3.0：</strong>双模式选股：缩量回踩守20日线 / 放量突破不破5/10日线，5维度评分≥5分入选</div>
+          <div><strong style={{ color: 'var(--text-primary)' }}>白虎V4.0：</strong>5种形态分类 + 3层分层 + 突破强度 + 主力连续流入 + 交易计划</div>
+          <div><strong style={{ color: 'var(--text-primary)' }}>青龙：</strong>MA10回踩策略，20日涨幅&gt;30%超强股</div>
+          <div><strong style={{ color: 'var(--text-primary)' }}>MACD金叉：</strong>DIF上穿DEA + 站上MA20 + 放量确认</div>
+          <div><strong style={{ color: 'var(--text-primary)' }}>风险退出：</strong>持仓预警：止损/RSI超买见顶/趋势走坏</div>
           <div><strong style={{ color: '#ef4444' }}>红色</strong>=上涨/流入，<strong style={{ color: '#22c55e' }}>绿色</strong>=下跌/流出（A股习惯）</div>
           <div><strong style={{ color: 'var(--text-primary)' }}>注意：</strong>筛选结果仅供参考，不构成投资建议</div>
         </div>
@@ -572,16 +576,14 @@ export default function ScreenerPage({ initialStrategy, hideStrategySelector }) 
           {data?.leaders && data.leaders.length > 0 && (
             <div>
               <h3 className="text-sm font-medium mb-3" style={{ color: 'var(--text-secondary)' }}>龙头趋势阶段 Top 15</h3>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-2 max-h-[600px] overflow-y-auto">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-h-[600px] overflow-y-auto">
                 {data.leaders.slice(0, 15).map((signal, i) => (
-                  <SignalCard
+                  <StrategySignalCard
                     key={signal.secCode || i}
                     signal={signal}
                     orders={[]}
                     showWatchBtn
                     mode="watchlist"
-                    showMarketState
-                    showBuyPower
                     showAnalysisButton
                   />
                 ))}
@@ -615,20 +617,21 @@ export default function ScreenerPage({ initialStrategy, hideStrategySelector }) 
             {loading ? (
               <div className="flex items-center justify-center h-48 text-sm" style={{ color: 'var(--text-muted)' }}>加载中...</div>
             ) : data?.stocks && data.stocks.length > 0 ? (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-2 max-h-[700px] overflow-y-auto">
-                {data.stocks.map((signal, i) => (
-                  <SignalCard
-                    key={signal.secCode || i}
-                    signal={signal}
-                    orders={[]}
-                    showWatchBtn
-                    mode="watchlist"
-                    showMarketState
-                    showBuyPower
-                    showAnalysisButton
-                  />
-                ))}
-              </div>
+              <StrategyResultsTable
+                rows={data.stocks}
+                getRowKey={(row, i) => row.secCode || i}
+                columns={[
+                  { key: 'code', label: '代码', render: r => r.secCode, width: '70px' },
+                  { key: 'name', label: '名称', render: r => r.secName, width: '80px' },
+                  { key: 'close', label: '最新价', render: r => r.close, type: 'number', align: 'right', width: '65px' },
+                  { key: 'changePct', label: '涨跌幅', render: r => r.changePct, type: 'percent', align: 'right', width: '70px' },
+                  { key: 'score', label: '得分', render: r => r.score ?? r.totalScore, type: 'number', align: 'right', width: '55px' },
+                  { key: 'sector', label: '板块', render: r => r.sector, width: '80px' },
+                  { key: 'netInflow', label: '主力净流入', render: r => r.netInflow ?? r.mainNetIn, type: 'money', align: 'right', width: '85px' },
+                ]}
+                cardComponent={StrategySignalCard}
+                cardProps={{ mode: 'watchlist', showWatchBtn: true, showAnalysisButton: true }}
+              />
             ) : (
               <div className="flex items-center justify-center h-48 text-sm" style={{ color: 'var(--text-muted)' }}>暂无选股结果，请手动采集数据</div>
             )}
@@ -685,38 +688,27 @@ export default function ScreenerPage({ initialStrategy, hideStrategySelector }) 
             )}
           </div>
 
-          {/* 白虎V3.0选股结果列表（SignalCard 统一卡片） */}
+          {/* 白虎V3.0选股结果列表 */}
           <div>
             {baihuLoading ? (
               <div className="flex items-center justify-center h-96 text-sm" style={{ color: 'var(--text-muted)' }}>加载中...</div>
-            ) : pagedBaihuStocks.length > 0 ? (
-              <>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                  {pagedBaihuStocks.map((signal, idx) => (
-                    <SignalCard
-                      key={signal.secCode || idx}
-                      signal={signal}
-                      orders={[]}
-                      showWatchBtn
-                      mode="watchlist"
-                      showMarketState
-                      showBuyPower
-                      showAnalysisButton
-                    />
-                  ))}
-                </div>
-                {totalPages > 1 && (
-                  <div className="flex items-center justify-center gap-2 mt-4 pt-3 border-t" style={{ borderColor: 'var(--border-color)' }}>
-                    <button onClick={() => setCurrentPage(p => Math.max(0, p - 1))} disabled={currentPage === 0}
-                      className="px-3 py-1 rounded-lg text-xs border disabled:opacity-30"
-                      style={{ borderColor: 'var(--border-color)', color: 'var(--text-secondary)' }}>上一页</button>
-                    <span className="text-xs" style={{ color: 'var(--text-muted)' }}>{currentPage + 1} / {totalPages} 页</span>
-                    <button onClick={() => setCurrentPage(p => Math.min(totalPages - 1, p + 1))} disabled={currentPage >= totalPages - 1}
-                      className="px-3 py-1 rounded-lg text-xs border disabled:opacity-30"
-                      style={{ borderColor: 'var(--border-color)', color: 'var(--text-secondary)' }}>下一页</button>
-                  </div>
-                )}
-              </>
+            ) : filteredBaihuStocks.length > 0 ? (
+              <StrategyResultsTable
+                rows={filteredBaihuStocks}
+                getRowKey={(row, i) => row.secCode || i}
+                columns={[
+                  { key: 'code', label: '代码', render: r => r.secCode, width: '70px' },
+                  { key: 'name', label: '名称', render: r => r.secName, width: '80px' },
+                  { key: 'close', label: '最新价', render: r => r.close, type: 'number', align: 'right', width: '65px' },
+                  { key: 'changePct', label: '涨跌幅', render: r => r.changePct, type: 'percent', align: 'right', width: '70px' },
+                  { key: 'score', label: '得分', render: r => r.totalScore ?? r.score, type: 'number', align: 'right', width: '55px' },
+                  { key: 'sector', label: '板块', render: r => r.sector, width: '80px' },
+                  { key: 'dimScore', label: '维度分', render: r => r.dimScore ?? r.dimensionScore, width: '90px' },
+                ]}
+                cardComponent={StrategySignalCard}
+                cardProps={{ mode: 'watchlist', showWatchBtn: true, showAnalysisButton: true }}
+                searchPlaceholder="搜索代码 / 名称 / 板块..."
+              />
             ) : (
               <div className="flex items-center justify-center h-96 text-sm" style={{ color: 'var(--text-muted)' }}>
                 {baihuData?.stocks?.length > 0 ? '无匹配结果，请调整筛选条件' : '暂无选股结果 — 白虎策略在缩量回踩守20日线或放量突破不破5/10日线时触发，请切换日期查看'}
@@ -797,51 +789,23 @@ export default function ScreenerPage({ initialStrategy, hideStrategySelector }) 
             {liangjiaLoading ? (
               <div className="flex items-center justify-center h-96 text-sm" style={{ color: 'var(--text-muted)' }}>加载中...</div>
             ) : (liangjiaData?.groups?.[liangjiaTier] || []).length > 0 ? (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                {(liangjiaData.groups[liangjiaTier] || []).map((signal, idx) => (
-                  <div key={signal.secCode || idx} className="space-y-1">
-                    <SignalCard
-                      signal={signal}
-                      orders={[]}
-                      showWatchBtn
-                      mode="watchlist"
-                      showMarketState
-                      showBuyPower
-                      showAnalysisButton
-                    />
-                    {/* 交易计划展示 */}
-                    {signal.tradePlan && (
-                      <div className="rounded-lg border p-2 text-xs space-y-1"
-                        style={{ borderColor: 'var(--border-color)', background: 'var(--bg-secondary)' }}>
-                        <div className="flex items-center gap-2">
-                          <span className="px-1.5 py-0.5 rounded font-bold"
-                            style={{
-                              background: signal.pattern === 'pullback' ? 'rgba(59,130,246,0.12)' :
-                                signal.pattern === 'breakout' ? 'rgba(239,68,68,0.12)' :
-                                signal.pattern === 'trend' ? 'rgba(168,85,247,0.12)' :
-                                signal.pattern === 'repair' ? 'rgba(245,158,11,0.12)' : 'rgba(107,114,128,0.12)',
-                              color: signal.pattern === 'pullback' ? '#3b82f6' :
-                                signal.pattern === 'breakout' ? '#ef4444' :
-                                signal.pattern === 'trend' ? '#a855f7' :
-                                signal.pattern === 'repair' ? '#f59e0b' : '#6b7280',
-                            }}>
-                            {signal.patternDesc || signal.pattern}
-                          </span>
-                          <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
-                            5日 {signal.gain5d}% | 量比 {signal.volRatio20}x | 距高点 {signal.distanceToHigh20}%
-                          </span>
-                        </div>
-                        <div style={{ color: 'var(--text-secondary)' }}>
-                          <span style={{ color: '#ef4444', fontWeight: 600 }}>买入:</span> {signal.tradePlan.buy}
-                        </div>
-                        <div style={{ color: 'var(--text-secondary)' }}>
-                          <span style={{ color: '#6b7280', fontWeight: 600 }}>止损:</span> {signal.tradePlan.stop}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
+              <StrategyResultsTable
+                rows={liangjiaData.groups[liangjiaTier] || []}
+                getRowKey={(row, i) => row.secCode || i}
+                columns={[
+                  { key: 'code', label: '代码', render: r => r.secCode, width: '70px' },
+                  { key: 'name', label: '名称', render: r => r.secName, width: '80px' },
+                  { key: 'pattern', label: '形态', render: r => r.patternDesc || r.pattern, width: '75px' },
+                  { key: 'close', label: '最新价', render: r => r.close, type: 'number', align: 'right', width: '65px' },
+                  { key: 'changePct', label: '涨跌幅', render: r => r.changePct, type: 'percent', align: 'right', width: '70px' },
+                  { key: 'gain5d', label: '5日涨幅', render: r => r.gain5d, type: 'percent', align: 'right', width: '70px' },
+                  { key: 'volRatio', label: '量比', render: r => r.volRatio20, type: 'number', align: 'right', width: '55px' },
+                  { key: 'distHigh', label: '距高点', render: r => r.distanceToHigh20 ? `${Number(r.distanceToHigh20).toFixed(0)}%` : '-', align: 'right', width: '65px' },
+                ]}
+                cardComponent={StrategySignalCard}
+                cardProps={{ mode: 'watchlist', showWatchBtn: true, showAnalysisButton: true }}
+                defaultView="table"
+              />
             ) : (
               <div className="flex items-center justify-center h-96 text-sm" style={{ color: 'var(--text-muted)' }}>
                 {liangjiaData ? `当前层级无股票，切换其他层级查看` : '暂无数据'}

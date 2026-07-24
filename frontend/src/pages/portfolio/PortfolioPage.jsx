@@ -1,17 +1,12 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import SignalCard from '../../components/trading/SignalCard';
+import { useNavigate } from 'react-router-dom';
+import SignalCard from '../../components/trading/SignalCardV4';
 import { useWatchlistRealtimeStream } from '../../hooks/useWatchlistRealtimeStream';
 import { apiFetch } from '../../utils/request';
+import { formatWan } from '../../utils/format';
 
 const ACTIVE_INTERVAL = 30000;
 const IDLE_INTERVAL = 60000;
-
-function formatWan(v) {
-  if (v == null) return '-';
-  if (Math.abs(v) >= 1e8) return (v / 1e8).toFixed(2) + '亿';
-  if (Math.abs(v) >= 10000) return (v / 10000).toFixed(1) + 'w';
-  return v.toFixed(2);
-}
 
 function timeAgo(iso) {
   if (!iso) return '';
@@ -76,6 +71,7 @@ function buildSignal(holding, wlSignal, totalMv) {
 }
 
 export default function PortfolioPage() {
+  const navigate = useNavigate();
   const [portfolio, setPortfolio] = useState(null);
   const [wlSignals, setWlSignals] = useState({});   // secCode -> signal
   const [strategyPicks, setStrategyPicks] = useState({}); // code -> [strategy]
@@ -127,6 +123,27 @@ export default function PortfolioPage() {
     await Promise.all([loadWatchlistSignals(), loadNotes()]);
     setLoading(false);
   }, [loadWatchlistSignals, loadNotes]);
+
+  // === 与 WatchlistPage 对齐的操作回调 ===
+  // 深度分析: 跳到 /stock-analysis?code=xxx (与自选股一致)
+  const openAnalysis = useCallback((c) => navigate(`/stock-analysis?code=${c}`), [navigate]);
+
+  // 移除自选: 本地立即移除 + 后台异步删除 + 3秒后刷新
+  const removeTimerRef = useRef(null);
+  const handleRemove = useCallback(async (code, name) => {
+    setWlSignals(prev => {
+      if (!prev) return prev;
+      const next = { ...prev };
+      delete next[code];
+      return next;
+    });
+    if (removeTimerRef.current) clearTimeout(removeTimerRef.current);
+    removeTimerRef.current = setTimeout(() => {
+      removeTimerRef.current = null;
+      loadData();
+    }, 3000);
+    await apiFetch(`/api/watchlist/${code}`, { method: 'DELETE' });
+  }, [loadData]);
 
   useEffect(() => {
     loadData();
@@ -345,77 +362,16 @@ export default function PortfolioPage() {
                       const isEditing = editingNote === sym;
                       return (
                         <div key={sym} className="space-y-1">
-                          {/* 持仓速览头（醒目：左边条+大号盈亏pill+分组标签） */}
-                          <div className="flex items-stretch rounded-lg overflow-hidden"
-                            style={{ border: '1px solid var(--border-color)' }}>
-                            {/* 左侧彩条：盈利红 / 亏损绿 */}
-                            <div style={{
-                              width: 4, flexShrink: 0,
-                              background: (sig.position?.profitPct ?? 0) >= 0
-                                ? 'linear-gradient(180deg,#E24B4A,#f97316)'
-                                : 'linear-gradient(180deg,#1D9E75,#14b8a6)',
-                            }} />
-                            <div className="flex-1 px-2.5 py-1.5 space-y-1" style={{ background: 'var(--bg-card)' }}>
-                              {/* 第一行：名称 + 总盈亏大号pill + 总盈亏金额 */}
-                              <div className="flex items-center gap-2 flex-wrap">
-                                <span className="text-sm font-bold whitespace-nowrap" style={{ color: 'var(--text-primary)' }}>
-                                  {sig.secName}
-                                  <span className="text-[11px] font-normal ml-1" style={{ color: 'var(--text-muted)' }}>{sig.secCode}</span>
-                                </span>
-                                <span className="px-2 py-0.5 rounded-full text-[13px] font-bold" style={{
-                                  background: (sig.position?.profitPct ?? 0) >= 0 ? 'rgba(226,75,74,0.15)' : 'rgba(29,158,117,0.15)',
-                                  color: (sig.position?.profitPct ?? 0) >= 0 ? '#E24B4A' : '#1D9E75',
-                                  border: `1px solid ${(sig.position?.profitPct ?? 0) >= 0 ? 'rgba(226,75,74,0.3)' : 'rgba(29,158,117,0.3)'}`,
-                                }}>
-                                  总 {(sig.position?.profitPct ?? 0) >= 0 ? '+' : ''}{(sig.position?.profitPct ?? 0).toFixed(2)}%
-                                </span>
-                                <span className="text-xs font-medium" style={{
-                                  color: (sig.position?.profit ?? 0) >= 0 ? '#E24B4A' : '#1D9E75',
-                                }}>
-                                  总 {formatWan(sig.position?.profit ?? 0)}
-                                </span>
-                              </div>
-                              {/* 第二行：当日盈亏突出 + 紧凑指标标签 */}
-                              <div className="flex items-center gap-1.5 flex-wrap">
-                                <span className="px-1.5 py-0.5 rounded text-[10px] font-bold" style={{
-                                  background: (sig.position?.dayProfit ?? 0) >= 0 ? 'rgba(226,75,74,0.15)' : 'rgba(29,158,117,0.15)',
-                                  border: `1px solid ${(sig.position?.dayProfit ?? 0) >= 0 ? 'rgba(226,75,74,0.35)' : 'rgba(29,158,117,0.35)'}`,
-                                  color: (sig.position?.dayProfit ?? 0) >= 0 ? '#E24B4A' : '#1D9E75',
-                                }}>
-                                  当日 {(sig.position?.dayProfit ?? 0) >= 0 ? '+' : ''}{(sig.position?.dayProfit ?? 0).toFixed(0)}
-                                  {(sig.position?.dayProfitPct ?? 0) !== 0 && (
-                                    <span className="ml-0.5">
-                                      ({(sig.position?.dayProfitPct ?? 0) >= 0 ? '+' : ''}{(sig.position?.dayProfitPct ?? 0).toFixed(2)}%)
-                                    </span>
-                                  )}
-                                </span>
-                                {[
-                                  { label: '持仓', value: `${sig.position?.count ?? 0}股`, color: 'var(--text-secondary)' },
-                                  { label: '成本', value: (sig.position?.costPrice ?? 0).toFixed(2), color: 'var(--text-muted)' },
-                                  { label: '市值', value: formatWan(sig.position?.value ?? 0), color: 'var(--text-secondary)' },
-                                  { label: '仓位', value: `${(sig.position?.posPct ?? 0).toFixed(1)}%`, color: 'var(--text-secondary)' },
-                                ].map((m, mi) => (
-                                  <span key={mi} className="px-1.5 py-0.5 rounded text-[10px]" style={{
-                                    background: 'var(--bg-surface)',
-                                    border: '0.5px solid var(--border-color)',
-                                    color: m.color,
-                                  }}>
-                                    <span style={{ color: 'var(--text-muted)' }}>{m.label} </span>
-                                    <span className="font-medium">{m.value}</span>
-                                  </span>
-                                ))}
-                              </div>
-                            </div>
-                          </div>
                           <SignalCard
                             signal={sig}
-                            mode="sim_watchlist"
-                            showMarketState
+                            mode="watchlist"
                             showAnalysisButton
-                            showActionButton={false}
+                            showActionButton
                             showWatchBtn={false}
-                            showFocusBtn={false}
                             showBuyBtn={true}
+                            onAnalyze={openAnalysis}
+                            onRemove={handleRemove}
+                            onRefresh={loadData}
                             strategyTags={strategyPicks[sym] || []}
                             realtimeFlow={realtimeMap?.[sym] || null}
                             showRealtimeDetail

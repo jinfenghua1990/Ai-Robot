@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useLifecycleData } from '../hooks/useLifecycleData';
 import DateNavigator from '../components/DateNavigator';
-import SignalCard from '../components/trading/SignalCard';
+import StrategySignalCard from '../components/trading/StrategySignalCard';
 import { leaderToSignal } from '../utils/format';
 
 export default function LifecycleV3Page() {
@@ -97,15 +97,13 @@ export default function LifecycleV3Page() {
             <span className="text-xs px-2 py-0.5 rounded-full" style={{ background: '#eab308', color: '#fff' }}>{data.second_wave.length}只</span>
             <span className="text-xs" style={{ color: '#eab308' }}>· 衰退后重新走强的股票</span>
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             {data.second_wave.map((leader) => (
-              <SignalCard
+              <StrategySignalCard
                 key={leader.ts_code}
                 signal={leaderToSignal(leader)}
                 mode="watchlist"
                 showWatchBtn
-                showMarketState
-                showBuyPower
                 showAnalysisButton
               />
             ))}
@@ -209,9 +207,9 @@ export default function LifecycleV3Page() {
           <div className="flex items-center justify-center h-96 text-sm" style={{ color: 'var(--text-muted)' }}>加载中...</div>
         ) : pagedLeaders.length > 0 ? (
           <>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               {pagedLeaders.map((leader) => (
-                <SignalCard key={leader.ts_code} signal={leaderToSignal(leader)} mode="watchlist" showWatchBtn showMarketState showBuyPower showAnalysisButton />
+                <StrategySignalCard key={leader.ts_code} signal={leaderToSignal(leader)} mode="watchlist" showWatchBtn showAnalysisButton />
               ))}
             </div>
 

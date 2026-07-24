@@ -19,7 +19,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from db.connection import get_db
 from db.session import get_db_session
 from db.models import SectorFlow, StockFlow, LeaderLifecycle, ConceptSector, ConceptSectorFlow
-from utils.cache import BoundedDict
 
 try:
     from pytdx.hq import TdxHq_API
@@ -641,7 +640,7 @@ def get_stock_money_flow(trade_date):
             if not code:
                 continue
             # 转换为 Tushare 格式代码
-            if code.startswith('6') or code.startswith('688'):
+            if code.startswith(('6', '9')):
                 ts_code = f'{code}.SH'
             else:
                 ts_code = f'{code}.SZ'

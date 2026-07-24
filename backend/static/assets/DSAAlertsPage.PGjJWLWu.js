@@ -1,1 +1,0 @@
-import{j as t}from"./index.BraBnPkH.js";import{D as r}from"./DSAEmbed.B9G_CgPm.js";import"./react-vendor.BSdSoFln.js";function a(){return t.jsx(r,{path:"/alerts",title:"DSA 实时告警"})}export{a as default};

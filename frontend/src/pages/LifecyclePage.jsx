@@ -1,6 +1,6 @@
 import { useState, useMemo } from 'react';
 import { useLifecycleData } from '../hooks/useLifecycleData';
-import SignalCard from '../components/trading/SignalCard';
+import StrategySignalCard from '../components/trading/StrategySignalCard';
 import DateNavigator from '../components/DateNavigator';
 import { STAGE_COLORS } from '../constants/stages';
 import { leaderToSignal } from '../utils/format';
@@ -319,9 +319,9 @@ export default function LifecyclePage() {
           <div className="flex items-center justify-center h-96 text-sm" style={{ color: 'var(--text-muted)' }}>加载中...</div>
         ) : pagedLeaders.length > 0 ? (
           <>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               {pagedLeaders.map((leader) => (
-                <SignalCard key={leader.ts_code} signal={leaderToSignal(leader)} mode="watchlist" showWatchBtn showMarketState showBuyPower showAnalysisButton />
+                <StrategySignalCard key={leader.ts_code} signal={leaderToSignal(leader)} mode="watchlist" showWatchBtn showAnalysisButton />
               ))}
             </div>
             {totalPages > 1 && (

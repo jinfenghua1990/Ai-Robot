@@ -1,12 +1,14 @@
 import { useState, lazy, Suspense, useCallback, useEffect, useMemo } from 'react';
 import { apiFetch } from '../utils/request';
 
+// 策略中心 v2.2 - 新增抗跌深V反转策略 (vreversal tab)
 /**
  * 策略中心：所有策略扁平化单行Tab
  * [龙头] V4双引擎 / V1趋势阶段 / V2强度排行 / V3周期V3
- * [智能] 热度综合 / 白虎V3.0 / 青龙 / 主升浪
+ * [智能] 热度综合 / 白虎V3.0 / 白虎V4.0 / 青龙 / MACD金叉 / 风险退出
  * [BS]   动态策略1 / 动态策略2 / ... + 完整配置
  */
+const StrategyTrackPage = lazy(() => import('./StrategyTrackPage'));
 const LifecycleV4Page = lazy(() => import('./LifecycleV4Page'));
 const LifecyclePage = lazy(() => import('./LifecyclePage'));
 const LifecycleV2Page = lazy(() => import('./LifecycleV2Page'));
@@ -15,23 +17,35 @@ const ScreenerPage = lazy(() => import('./ScreenerPage'));
 const ResonancePage = lazy(() => import('./ResonancePage'));
 const BSScreenerPage = lazy(() => import('./BSScreenerPage'));
 const BSStrategyTab = lazy(() => import('./BSStrategyTab'));
+const StrategyVReversalPage = lazy(() => import('./StrategyVReversalPage'));
+const StrategyDrawdownReboundPage = lazy(() => import('./StrategyDrawdownReboundPage'));
+const WaveAnalysisPage = lazy(() => import('./WaveAnalysisPage'));
 
 // 静态Tab定义（已调试完成的策略，每天看结果）
 const STATIC_TABS = [
+  // 20天跟踪（策略共振股跟踪，置顶）
+  { key: 'strategy-track', label: '20天跟踪', shortLabel: '20天跟踪', icon: '📊', group: 'resonance', Component: StrategyTrackPage },
   // 共振组（聚合视图，置顶）
   { key: 'resonance', label: '多策略共振', shortLabel: '共振', icon: '🎯', group: 'resonance', Component: ResonancePage },
+  // 抗跌深V反转策略（新增）
+  { key: 'vreversal', label: '抗跌深V反转', shortLabel: '深V反转', icon: '🛡️', group: 'resonance', Component: StrategyVReversalPage },
+  // 7月抗跌反弹观察池（净跌0-20% + 今涨≥5%, 固定口径, 无V形态/板块约束）
+  { key: 'drawdown-rebound', label: '7月抗跌反弹', shortLabel: '抗跌反弹', icon: '📉', group: 'rebound', Component: StrategyDrawdownReboundPage },
   // 龙头组
   { key: 'v4', label: '双引擎决策', shortLabel: 'V4双引擎', icon: '🧠', group: 'leader', Component: LifecycleV4Page },
   { key: 'v1', label: '龙头趋势阶段', shortLabel: 'V1趋势阶段', icon: '👑', group: 'leader', Component: LifecyclePage },
   { key: 'v2', label: '龙头强度排行', shortLabel: 'V2强度排行', icon: '⚡', group: 'leader', Component: LifecycleV2Page },
   { key: 'v3', label: '龙头周期V3', shortLabel: 'V3周期', icon: '🔄', group: 'leader', Component: LifecycleV3Page },
-  // 智能选股组（3个子策略拆开）
+  // 智能选股组（5 个策略合并后保留 3 个独立 Tab）
   { key: 'smart-heat', label: '热度综合', shortLabel: '热度综合', icon: '🔥', group: 'smart', Component: ScreenerPage, props: { initialStrategy: 'heat', hideStrategySelector: true } },
   { key: 'smart-baihu', label: '白虎V3.0', shortLabel: '白虎V3.0', icon: '🐯', group: 'smart', Component: ScreenerPage, props: { initialStrategy: 'baihu', hideStrategySelector: true } },
-  { key: 'smart-qinglong', label: '青龙', shortLabel: '青龙', icon: '🐉', group: 'smart', Component: ScreenerPage, props: { initialStrategy: 'qinglong', hideStrategySelector: true } },
-  { key: 'smart-zhushenglang', label: '主升浪', shortLabel: '主升浪', icon: '🚀', group: 'smart', Component: ScreenerPage, props: { initialStrategy: 'zhushenglang', hideStrategySelector: true } },
   { key: 'smart-liangjia', label: '白虎V4.0', shortLabel: '白虎V4.0', icon: '🐯', group: 'smart', Component: ScreenerPage, props: { initialStrategy: 'liangjia', hideStrategySelector: true } },
-  { key: 'smart-wave', label: '波段信号', shortLabel: '波段信号', icon: '🌊', group: 'smart', Component: ScreenerPage, props: { initialStrategy: 'wave_band', hideStrategySelector: true } },
+  { key: 'smart-qinglong', label: '青龙', shortLabel: '青龙', icon: '🐉', group: 'smart', Component: ScreenerPage, props: { initialStrategy: 'qinglong', hideStrategySelector: true } },
+  { key: 'smart-macd', label: 'MACD金叉', shortLabel: 'MACD金叉', icon: '📊', group: 'smart', Component: ScreenerPage, props: { initialStrategy: 'macd', hideStrategySelector: true } },
+  { key: 'smart-risk-exit', label: '风险退出', shortLabel: '风险退出', icon: '🛡️', group: 'smart', Component: ScreenerPage, props: { initialStrategy: 'risk_exit', hideStrategySelector: true } },
+  { key: 'smart-rsi-bounce', label: '超卖反弹', shortLabel: '超卖反弹', icon: '🔄', group: 'smart', Component: ScreenerPage, props: { initialStrategy: 'rsi_bounce', hideStrategySelector: true } },
+  // 波浪分析组
+  { key: 'wave-analysis', label: '波浪分析', shortLabel: '波浪分析', icon: '🌊', group: 'wave', Component: WaveAnalysisPage },
 ];
 
 // BS配置页（策略编辑器，不参与扁平Tab，放右侧操作区）
@@ -39,18 +53,22 @@ const BS_CONFIG_TAB = { key: 'bs-full', label: '策略配置调整中心', Compo
 
 const GROUP_LABELS = {
   resonance: '共振',
-  leader: '龙头',
-  smart: '智能',
+  rebound: '抗跌反弹',
+  leader: '龙头分析',
+  smart: '智能选股',
   bs: 'BS',
   'bs-config': 'BS',
+  wave: '波浪分析',
 };
 
 const GROUP_COLORS = {
   resonance: '#a855f7',
+  rebound: '#f97316',
   leader: '#ef4444',
   smart: '#3b82f6',
   bs: '#22c55e',
   'bs-config': '#22c55e',
+  wave: '#06b6d4',
 };
 
 function TabLoader() {
@@ -63,8 +81,8 @@ function TabLoader() {
 }
 
 export default function StrategyCenterPage() {
-  const [activeKey, setActiveKey] = useState('v4');
-  const [loadedKeys, setLoadedKeys] = useState(() => new Set(['v4']));
+  const [activeKey, setActiveKey] = useState('resonance');
+  const [loadedKeys, setLoadedKeys] = useState(() => new Set(['resonance']));
   const [refreshTicks, setRefreshTicks] = useState({});
   // BS动态策略Tab（从回测历史加载）
   const [bsStrategies, setBsStrategies] = useState([]);

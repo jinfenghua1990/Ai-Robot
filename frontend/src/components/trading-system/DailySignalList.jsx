@@ -4,6 +4,7 @@
 import { useState, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 
+import { stripCode } from '../../utils/format';
 const TABS = [
   { key: 'STRONG_BUY', label: '强买', color: '#ef4444' },
   { key: 'WATCH_BUY', label: '观察买', color: '#f97316' },
@@ -60,7 +61,7 @@ export default function DailySignalList({ signals, summary, loading }) {
         ) : filtered.slice(0, 50).map(s => (
           <div
             key={s.ts_code}
-            onClick={() => navigate(`/stock/${s.ts_code.split('.')[0]}`)}
+            onClick={() => navigate(`/stock/${stripCode(s.ts_code)}`)}
             className="rounded-md border p-2 cursor-pointer hover:shadow-sm transition-all"
             style={{ borderColor: 'var(--border-color)', background: 'var(--bg-primary)' }}
           >
@@ -70,7 +71,7 @@ export default function DailySignalList({ signals, summary, loading }) {
                   {s.name}
                 </span>
                 <span className="text-[10px] flex-shrink-0" style={{ color: 'var(--text-muted)' }}>
-                  {s.ts_code.split('.')[0]}
+                  {stripCode(s.ts_code)}
                 </span>
               </div>
               <span

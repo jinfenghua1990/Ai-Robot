@@ -119,7 +119,7 @@ export default function FocusStocksPage() {
       .slice(0, 6)
       .map(s => ({ code: s.secCode, name: s.secName, heat: s.sectorTrend?.latest_heat ?? 0 }));
     const buyTop = buy
-      .sort((a, b) => (b.buyPower?.score ?? 0) - (a.buyPower?.score ?? 0))
+      .sort((a, b) => (b.overallScore ?? 0) - (a.overallScore ?? 0))
       .slice(0, 6)
       .map(s => ({ code: s.secCode, name: s.secName }));
     const inflowTop = inflow
@@ -130,7 +130,7 @@ export default function FocusStocksPage() {
     return [
       { key: 'heat', label: '板块升温', sub: '热度↑', count: heating.length, color: '#ef4444', top: heatingTop, valKey: 'heat', valFmt: v => `热度${v}` },
       { key: 'buy', label: '可买', sub: 'B信号', count: buy.length, color: BUY_COLOR, top: buyTop, valKey: null, valFmt: () => null },
-      { key: 'flow', label: '资金流入', sub: '净流入', count: inflow.length, color: '#f97316', top: inflowTop, valKey: 'chg', valFmt: v => `${v >= 0 ? '+' : ''}${v}%` },
+      { key: 'flow', label: '资金流入', sub: '净流入', count: inflow.length, color: '#ef4444', top: inflowTop, valKey: 'chg', valFmt: v => `${v >= 0 ? '+' : ''}${v}%` },
     ];
   }, [allStocks]);
 
@@ -155,7 +155,7 @@ export default function FocusStocksPage() {
     if (filters.hit_trend) arr = arr.filter(s => s.hitTags?.includes('trend'));
     if (filters.hit_capital) arr = arr.filter(s => s.hitTags?.includes('capital'));
     if (filters.hit_yuzi) arr = arr.filter(s => s.hitTags?.includes('yuzi'));
-    if (filters.hit_strategy) arr = arr.filter(s => s.hitTags?.includes('strategy'));
+    if (filters.hit_strategy) arr = arr.filter(s => !!strategyPicks[s.secCode]);
     if (filters.hit_popularity) arr = arr.filter(s => s.hitTags?.includes('popularity'));
     if (filters.hit_support) arr = arr.filter(s => s.hitTags?.includes('support'));
     if (filters.hit_accumulation) arr = arr.filter(s => s.hitTags?.includes('accumulation'));
@@ -167,7 +167,8 @@ export default function FocusStocksPage() {
           return lastB?.date || '0000-00-00';
         }
         case 'leader': return (s.bsSignal === 'B' ? 1 : 0) * 1000 + (s.quote?.changePct || 0);
-        case 'buyPower': return s.buyPower?.score || 0;
+        case 'overall': return s.overallScore ?? -1;
+        case 'trend': return s.trendStrength ?? s.technical?.score ?? -1;
         case 'changePct': return s.quote?.changePct ?? -9999;
         case 'heat': return s.sectorTrend?.latest_heat || 0;
         default: return 0;
@@ -180,7 +181,7 @@ export default function FocusStocksPage() {
       return 0;
     });
     return arr;
-  }, [filters, sortKey, sortDir]);
+  }, [filters, sortKey, sortDir, strategyPicks]);
 
   // 按平均涨跌幅排序赛道
   const sortedSectors = useMemo(() => {
@@ -266,7 +267,7 @@ export default function FocusStocksPage() {
           {summary && (
             <span className="text-xs flex items-center gap-1.5" style={{ color: 'var(--text-muted)' }}>
               <span>{summary.total_sectors}赛道 · 涨{summary.up_count} 跌{summary.down_count}</span>
-              {summary.limit_up_count > 0 && <span style={{ color: '#f97316' }}>涨停{summary.limit_up_count}</span>}
+              {summary.limit_up_count > 0 && <span style={{ color: '#ef4444' }}>涨停{summary.limit_up_count}</span>}
             </span>
           )}
         </h2>

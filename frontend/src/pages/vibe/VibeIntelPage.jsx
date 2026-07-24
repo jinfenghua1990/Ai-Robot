@@ -1,5 +1,4 @@
 import VibeEmbed from '../../components/VibeEmbed';
-import AihfMarketKey from '../../components/AihfMarketKey';
 
 export default function VibeIntelPage() {
   return (
@@ -11,7 +10,6 @@ export default function VibeIntelPage() {
             <span className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>Vibe 资讯雷达</span>
           </div>
         </div>
-        <AihfMarketKey />
         <div style={{ flex: 1, minHeight: 0 }}>
           <VibeEmbed path="/intel" title="Vibe 资讯雷达" />
         </div>

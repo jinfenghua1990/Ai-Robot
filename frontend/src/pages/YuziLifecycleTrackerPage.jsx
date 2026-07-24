@@ -22,6 +22,7 @@ import { computeSignalScore, fmtHitCount, computeTrendSignalScore, fmtTrendToolt
 import SinaLink from '../components/SinaLink';
 import StockActionButtons from '../components/trading/StockActionButtons';
 
+import { stripCode } from '../utils/format';
 const fmtPct = (v) => {
   if (v == null) return '-';
   const n = Number(v);
@@ -546,7 +547,7 @@ export default function YuziLifecycleTrackerPage() {
                         )}
                         <SinaLink tsCode={r.ts_code} />
                         <button
-                          onClick={(e) => { e.stopPropagation(); navigate(`/stock/${r.ts_code.split('.')[0]}`); }}
+                          onClick={(e) => { e.stopPropagation(); navigate(`/stock/${stripCode(r.ts_code)}`); }}
                           className="px-1 py-0.5 rounded text-[10px]"
                           style={{ background: 'rgba(59,130,246,0.1)', color: '#3b82f6', border: '1px solid rgba(59,130,246,0.3)' }}
                           title="跳转个股详情页"
@@ -562,7 +563,7 @@ export default function YuziLifecycleTrackerPage() {
                         {r.boss_list_d1.length > 3 && <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>+{r.boss_list_d1.length - 3}</span>}
                       </div>
                       <StockActionButtons
-                        stockCode={r.ts_code.split('.')[0]}
+                        stockCode={stripCode(r.ts_code)}
                         stockName={r.stock_name}
                         size="xs"
                         onRefresh={load}
@@ -695,7 +696,7 @@ export default function YuziLifecycleTrackerPage() {
                             ))}
                           </div>
                           <StockActionButtons
-                            stockCode={r.ts_code.split('.')[0]}
+                            stockCode={stripCode(r.ts_code)}
                             stockName={r.stock_name}
                             size="xs"
                             onRefresh={load}
@@ -743,7 +744,7 @@ export default function YuziLifecycleTrackerPage() {
             </h3>
             <SinaLink tsCode={selected.ts_code} />
             <button
-              onClick={() => navigate(`/stock/${selected.ts_code.split('.')[0]}`)}
+              onClick={() => navigate(`/stock/${stripCode(selected.ts_code)}`)}
               className="px-2 py-0.5 rounded text-xs font-medium"
               style={{ background: 'rgba(59,130,246,0.1)', color: '#3b82f6', border: '1px solid rgba(59,130,246,0.3)' }}
               title="跳转个股详情页（K线/实时/资讯）"

@@ -21,6 +21,7 @@ from typing import Optional, List, Dict
 
 logger = logging.getLogger(__name__)
 from db.connection import get_db
+from db.session import get_db_session
 from api.watchlist._shared import get_quote, fetch_kline_cached
 from analyzers.strategy_engine import _find_sector_for_stock, _get_sector_trend
 from analyzers.buy_power import calc_buy_power_for_signal
@@ -69,6 +70,91 @@ def _get_lifecycle_map(db, ts_codes: List[str], trade_date: str = None) -> Dict[
     return {r.ts_code: r.stage for r in rows}
 
 
+# ============================================================
+# BS 区间计算：SuperTrend 天然交替 B→S→B→S，每个 B-S 对构成一个持仓/空仓区间
+# 区间信息暴露给前端：起止日期、起止价格、持有天数、区间盈亏%
+# ============================================================
+def _calc_bs_interval(bs_signals: list, current_price: float = 0.0) -> dict:
+    """
+    从 BS 信号序列中提取当前所在区间信息。
+
+    返回结构：
+    {
+        'state': 'holding' | 'empty' | 'unknown',
+        'start_date': str,      'start_price': float,
+        'end_date': str,        # S 触发时为卖出日；当前持仓中为最近K线日期
+        'end_price': float,
+        'hold_days': int,
+        'pnl_pct': float,      # 区间盈亏%（仅 holding 时有意义；空仓=区间跌幅）
+    }
+    """
+    if not bs_signals:
+        return {'state': 'unknown'}
+
+    last = bs_signals[-1]
+    last_type = last.get('type')
+    last_date = last.get('date', '')
+    last_price = last.get('price', 0.0) or 0.0
+
+    # 找到上一个反向信号（S→B 时找前一个 B；B→S 时找前一个 S）
+    prev_idx = None
+    for i in range(len(bs_signals) - 2, -1, -1):
+        if bs_signals[i].get('type') != last_type:
+            prev_idx = i
+            break
+
+    # 区间盈亏%（基于当前价 / S 价）
+    ref_price = current_price or last_price
+    if last_type == 'B':
+        # 当前持仓中：B 起点 → 今天（仍未卖出）
+        start_date = last_date
+        start_price = last_price
+        end_date = ''  # 未结束
+        end_price = ref_price
+        state = 'holding'
+        if prev_idx is not None:
+            # 上一个 S 之后才有这个 B —— B 起点 = 当前 B 信号日
+            pass
+        pnl_pct = ((ref_price - start_price) / start_price * 100) if start_price else 0.0
+    elif last_type == 'S':
+        # 已平仓：前一个 B → 当前 S
+        state = 'empty'
+        end_date = last_date
+        end_price = last_price
+        if prev_idx is not None:
+            b_sig = bs_signals[prev_idx]
+            start_date = b_sig.get('date', '')
+            start_price = b_sig.get('price', 0.0) or 0.0
+        else:
+            start_date = ''
+            start_price = 0.0
+        pnl_pct = ((end_price - start_price) / start_price * 100) if start_price else 0.0
+    else:
+        return {'state': 'unknown'}
+
+    # 持有天数
+    hold_days = 0
+    if start_date:
+        try:
+            from datetime import datetime
+            sd = datetime.strptime(str(start_date)[:10].replace('-', ''), '%Y%m%d')
+            ed_str = str(end_date)[:10].replace('-', '') if end_date else datetime.now().strftime('%Y%m%d')
+            ed = datetime.strptime(ed_str, '%Y%m%d')
+            hold_days = max(0, (ed - sd).days)
+        except Exception:
+            hold_days = 0
+
+    return {
+        'state': state,
+        'start_date': str(start_date)[:10] if start_date else '',
+        'start_price': round(start_price, 3) if start_price else 0.0,
+        'end_date': str(end_date)[:10] if end_date else '',
+        'end_price': round(end_price, 3) if end_price else 0.0,
+        'hold_days': hold_days,
+        'pnl_pct': round(pnl_pct, 2),
+    }
+
+
 async def build_signal_for_stock(
     code: str,
     name: str,
@@ -89,6 +175,7 @@ async def build_signal_for_stock(
     """
     # 延迟导入避免与 api.screener 循环引用
     from api.bs_signals import _generate_bs_signals
+    from services.indicators import calc_rsi as _calc_rsi
 
     # 并发获取行情和K线
     quote, klines = await asyncio.gather(
@@ -110,27 +197,52 @@ async def build_signal_for_stock(
     if lifecycle_stage is None:
         lifecycle_stage = _get_lifecycle_stage(db, ts_code)
 
-    # 获取 BS 信号
+    # 获取 BS 信号 + 技术指标（KDJ/MACD/支撑/阻力）
     bs_signal = None
     bs_reasons = []
+    bs_interval = {'state': 'unknown'}
+    indicators = {}
     try:
         if klines and len(klines) > 0:
-            bs_signals, *_ = _generate_bs_signals(klines)
+            # _generate_bs_signals 返回 12 个值：signals, dif, dea, macd, ma5, ma20, k, d, j, support, resistance, trend
+            bs_signals, dif, dea, macd, ma5, ma20, k_vals, d_vals, j_vals, support, resistance, _trend = _generate_bs_signals(klines)
             if bs_signals:
                 last = bs_signals[-1]
-                logger.debug('handled exception', exc_info=True)
+                bs_signal = last.get('type')
                 bs_reasons = last.get('reasons', [])
+                bs_interval = _calc_bs_interval(bs_signals, quote.get('price') if quote else 0.0)
+                # 提取最新 KDJ/MACD/支撑/阻力（最后一根 K 线对应的值）
+                def _last(arr):
+                    return arr[-1] if arr and arr[-1] is not None else None
+                indicators = {
+                    'macd': round(_last(macd), 4) if _last(macd) is not None else None,
+                    'dif': round(_last(dif), 4) if _last(dif) is not None else None,
+                    'dea': round(_last(dea), 4) if _last(dea) is not None else None,
+                    'kdj_k': round(_last(k_vals), 2) if _last(k_vals) is not None else None,
+                    'kdj_d': round(_last(d_vals), 2) if _last(d_vals) is not None else None,
+                    'kdj_j': round(_last(j_vals), 2) if _last(j_vals) is not None else None,
+                    'ma5': round(_last(ma5), 2) if _last(ma5) is not None else None,
+                    'ma20': round(_last(ma20), 2) if _last(ma20) is not None else None,
+                    'support': round(_last(support), 2) if _last(support) is not None else None,
+                    'resistance': round(_last(resistance), 2) if _last(resistance) is not None else None,
+                    'rsi': round(_last(_calc_rsi([k.get('close', 0.0) for k in klines], 14)), 1) if klines and len(klines) >= 15 else None,
+                }
     except Exception as e:
         logger.debug(f'生成 BS 信号失败，跳过: {e}')
 
     price = quote['price'] if quote else 0
     change_pct = quote['changePct'] if quote else (change_rate or 0)
 
-    # 信号标签（卖出信号统一用"减仓防守"，后续由 technical stage 覆写为具体标签）
+    # 信号标签（仅显示 BS 状态；区间详情在下方独立分组展示）
+    bs_pnl = bs_interval.get('pnl_pct', 0.0) if bs_interval else 0.0
     if bs_signal == 'B':
-        signal_label, signal_color, signal_type = '买入', '#ef4444', 'ADD'
+        signal_label = 'B 持仓中'
+        signal_color = '#ef4444'
+        signal_type = 'ADD'
     elif bs_signal == 'S':
-        signal_label, signal_color, signal_type = '减仓防守', '#f97316', 'SELL'
+        signal_label = 'S 已平仓'
+        signal_color = '#f97316'
+        signal_type = 'SELL'
     else:
         signal_label, signal_color, signal_type = '关注', '#3b82f6', 'WATCH'
 
@@ -145,6 +257,8 @@ async def build_signal_for_stock(
         reasons.append(f'当日涨跌: {change_pct:+.2f}%')
     if stage:
         reasons.append(f'策略阶段: {stage}')
+    if bs_pnl:
+        reasons.append(f'BS区间盈亏: {bs_pnl:+.2f}%')
 
     if bs_signal == 'B':
         positive_factors.append({'factor': 'BS买入', 'detail': bs_reasons[0] if bs_reasons else 'SuperTrend突破', 'weight': 2})
@@ -277,6 +391,8 @@ async def build_signal_for_stock(
         'sectorTrend': sector_trend,
         'quote': quote,
         'bsSignal': bs_signal,
+        'bsInterval': bs_interval,
+        'indicators': indicators,  # KDJ/MACD/MA 技术指标（最新一根 K 线）
         'position': {
             'profitPct': 0,
             'posPct': 0,
@@ -627,7 +743,7 @@ async def build_signals_from_strategy_result(
         r['rsi'] = float(detail.get('rsi', 0))
         r['scores'] = json.loads(row.scores_json or '{}')
         r['lowerShadow'] = float(detail.get('lower_shadow', 0))
-        if strategy_key in ('baihu_v26', 'baihu_v30'):
+        if strategy_key in ('baihu_v30', 'liangjia_report'):
             r['ma20'] = float(detail.get('ma20', 0))
             r['volRatio'] = float(detail.get('vol_ratio', 0))
             r['20dayGain'] = float(detail.get('20day_gain', 0))
@@ -636,28 +752,8 @@ async def build_signals_from_strategy_result(
             r['ma5'] = float(detail.get('ma5', 0))
             r['ma10'] = float(detail.get('ma10', 0))
             r['distanceToHigh20'] = float(detail.get('distance_to_high_20', 0))
-        if strategy_key == 'zhushenglang':
-            r['ma5'] = float(detail.get('ma5', 0))
-            r['ma10'] = float(detail.get('ma10', 0))
-            r['ma20'] = float(detail.get('ma20', 0))
-            r['ma60'] = float(detail.get('ma60', 0))
-            r['maSpread'] = float(detail.get('ma_spread', 0))
-            r['bias20'] = float(detail.get('bias_20', 0))
-            r['continuityDays'] = int(detail.get('continuity_days', 0))
-            r['hasMainForce'] = detail.get('has_main_force', False)
-            r['exitSignal'] = detail.get('exit_signal')
-        if strategy_key == 'wave_band':
-            r['ma5'] = float(detail.get('ma5', 0))
-            r['ma10'] = float(detail.get('ma10', 0))
-            r['ma20'] = float(detail.get('ma20', 0))
-            r['rsi6'] = float(detail.get('rsi6') or 0)
-            r['volRatio'] = float(detail.get('vol_ratio', 0))
-            r['changePct'] = float(detail.get('change_pct', 0))
-            r['confidence'] = float(detail.get('confidence', 0))
-            r['waveReason'] = detail.get('reason', '')
-            r['waveSignal'] = detail.get('signal', 'buy')
         if strategy_key == 'liangjia_report':
-            # 量价报告策略：5种形态 + 3层分层 + 交易计划
+            # 量价报告策略：5种形态 + 3层分层 + 交易计划 + 合并维度
             r['pattern'] = detail.get('pattern', '')
             r['patternDesc'] = detail.get('pattern_desc', '')
             r['tier'] = detail.get('tier', '')
@@ -675,6 +771,16 @@ async def build_signals_from_strategy_result(
             r['bullAlignment'] = bool(detail.get('bull_alignment', False))
             r['tradePlan'] = detail.get('trade_plan', {})
             r['strategyMode'] = detail.get('pattern', '')  # 复用 SignalCard 模式标签
+            # 合并吸收的维度
+            r['breakout10d'] = bool(detail.get('breakout_10d', False))
+            r['breakoutPct'] = float(detail.get('breakout_pct', 0))
+            r['mainForceDays'] = int(detail.get('main_force_days', 0))
+            r['hasMainForce'] = bool(detail.get('has_main_force', False))
+        if strategy_key == 'risk_exit':
+            r['worstSeverity'] = detail.get('worst_severity', '')
+            r['worstLabel'] = detail.get('worst_label', '')
+            r['worstReason'] = detail.get('worst_reason', '')
+            r['riskSignals'] = detail.get('signals', [])
         enriched.append(r)
 
     # 补充自选股个股模块字段（moneyFlow/hitTags/actionHint），让 SignalCard 显示完整信息

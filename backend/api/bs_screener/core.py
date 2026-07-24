@@ -47,7 +47,8 @@ async def _get_quote(code: str):
         parts = text.split('"')[1].split(',')
         if len(parts) < 10:
             return None
-        yesterday_close = float(parts[1])
+        # 新浪格式: name, 今开盘, 昨收盘, 当前价, ...
+        yesterday_close = float(parts[2])
         current_price = float(parts[3])
         change = current_price - yesterday_close
         change_pct = (change / yesterday_close * 100) if yesterday_close else 0

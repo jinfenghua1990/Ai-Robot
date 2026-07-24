@@ -286,66 +286,81 @@ async def get_bs_signals(
     返回: K线 + 技术指标BS点 + 交易记录BS点 + MACD/MA/KDJ数据
     内部获取150天数据用于EMA收敛，返回最近datalen天
     """
-    # 1. 获取K线数据（多取用于计算）
-    all_klines = await _fetch_kline(stockCode, CALC_DATALEN)
+    try:
+        # 1. 获取K线数据（多取用于计算）
+        all_klines = await _fetch_kline(stockCode, CALC_DATALEN)
 
-    # 2. 计算技术指标BS点（在全量数据上计算）
-    tech_signals, dif, dea, macd, ma5, ma20, k_vals, d_vals, j_vals, support, resistance, trend = _generate_bs_signals(all_klines)
+        # 2. 计算技术指标BS点（在全量数据上计算）
+        tech_signals, dif, dea, macd, ma5, ma20, k_vals, d_vals, j_vals, support, resistance, trend = _generate_bs_signals(all_klines)
 
-    # 3. 获取交易记录
-    trade_records = await _fetch_trade_records(stockCode)
+        # 3. 获取交易记录（外部API，单独保护不阻断主流程）
+        try:
+            trade_records = await _fetch_trade_records(stockCode)
+        except Exception as e:
+            logger.warning(f'[bs_signals] 交易记录获取失败 {stockCode}: {e}')
+            trade_records = []
 
-    # 4. 截取最近datalen天的数据返回
-    total = len(all_klines)
-    show_start = max(0, total - datalen)
+        # 4. 截取最近datalen天的数据返回
+        total = len(all_klines)
+        show_start = max(0, total - datalen)
 
-    klines = all_klines[show_start:]
-    dif_show = dif[show_start:]
-    dea_show = dea[show_start:]
-    macd_show = macd[show_start:]
-    ma5_show = ma5[show_start:]
-    ma20_show = ma20[show_start:]
-    k_show = k_vals[show_start:]
-    d_show = d_vals[show_start:]
-    j_show = j_vals[show_start:]
+        klines = all_klines[show_start:]
+        dif_show = dif[show_start:]
+        dea_show = dea[show_start:]
+        macd_show = macd[show_start:]
+        ma5_show = ma5[show_start:]
+        ma20_show = ma20[show_start:]
+        k_show = k_vals[show_start:]
+        d_show = d_vals[show_start:]
+        j_show = j_vals[show_start:]
 
-    # SuperTrend操盘线：多头时画支撑线，空头时画阻力线
-    supertrend_show = []
-    for i in range(show_start, total):
-        if trend[i] == 1:
-            val = support[i]
-        else:
-            val = resistance[i]
-        supertrend_show.append(round(val, 2) if val is not None else None)
+        # SuperTrend操盘线：多头时画支撑线，空头时画阻力线
+        supertrend_show = []
+        for i in range(show_start, total):
+            if trend[i] == 1:
+                val = support[i]
+            else:
+                val = resistance[i]
+            supertrend_show.append(round(val, 2) if val is not None else None)
 
-    # 只返回显示区间内的信号
-    show_dates = {k['date'] for k in klines}
-    tech_signals_show = [s for s in tech_signals if s['date'] in show_dates]
+        # 只返回显示区间内的信号
+        show_dates = {k['date'] for k in klines}
+        tech_signals_show = [s for s in tech_signals if s['date'] in show_dates]
 
-    # 5. 组装返回
-    return {
-        'stockCode': stockCode,
-        'klines': klines,
-        'indicators': {
-            'dif': [round(d, 4) if d is not None else None for d in dif_show],
-            'dea': [round(d, 4) if d is not None else None for d in dea_show],
-            'macd': [round(d, 4) if d is not None else None for d in macd_show],
-            'ma5': [round(m, 2) if m is not None else None for m in ma5_show],
-            'ma20': [round(m, 2) if m is not None else None for m in ma20_show],
-            'kdj_k': [round(k, 2) if k is not None else None for k in k_show],
-            'kdj_d': [round(d, 2) if d is not None else None for d in d_show],
-            'kdj_j': [round(j, 2) if j is not None else None for j in j_show],
-            'supertrend': supertrend_show,
-        },
-        'techSignals': tech_signals_show,
-        'tradeRecords': trade_records,
-        'summary': {
-            'klineCount': len(klines),
-            'techSignalCount': len(tech_signals_show),
-            'latestSignal': tech_signals_show[-1] if tech_signals_show else None,
-            'tradeRecordCount': len(trade_records),
-        },
-    }
+        # 5. 组装返回
+        return {
+            'stockCode': stockCode,
+            'klines': klines,
+            'indicators': {
+                'dif': [round(d, 4) if d is not None else None for d in dif_show],
+                'dea': [round(d, 4) if d is not None else None for d in dea_show],
+                'macd': [round(d, 4) if d is not None else None for d in macd_show],
+                'ma5': [round(m, 2) if m is not None else None for m in ma5_show],
+                'ma20': [round(m, 2) if m is not None else None for m in ma20_show],
+                'kdj_k': [round(k, 2) if k is not None else None for k in k_show],
+                'kdj_d': [round(d, 2) if d is not None else None for d in d_show],
+                'kdj_j': [round(j, 2) if j is not None else None for j in j_show],
+                'supertrend': supertrend_show,
+            },
+            'techSignals': tech_signals_show,
+            'tradeRecords': trade_records,
+            'summary': {
+                'klineCount': len(klines),
+                'techSignalCount': len(tech_signals_show),
+                'latestSignal': tech_signals_show[-1] if tech_signals_show else None,
+                'tradeRecordCount': len(trade_records),
+            },
+        }
+    except Exception as e:
+        logger.error(f'[bs_signals] 计算失败 {stockCode}: {e}', exc_info=True)
+        return {
+            'stockCode': stockCode,
+            'klines': [],
+            'indicators': {},
+            'techSignals': [],
+            'tradeRecords': [],
+            'summary': {'klineCount': 0, 'techSignalCount': 0, 'latestSignal': None, 'tradeRecordCount': 0, 'detail': f'计算异常已降级: {str(e)[:200]}'},
+        }
 
 
 # ==================== 分时数据（K线弹窗右侧用）====================

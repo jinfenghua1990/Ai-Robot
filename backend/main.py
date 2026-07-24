@@ -7,9 +7,14 @@ import logging
 import uuid
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# 防御性：在 api/hermes_native/* 等模块把 /Users/gino/Projects/AIROBOT/backend/.hermes-legacy 注入 sys.path 之前，
+# 先把 backend/scripts 包缓存进 sys.modules，避免被 .hermes/robot-1/scripts 遮蔽
+# （Hermes 运行时目录仍残留在磁盘上，其 sys.path 注入会污染顶层包名解析）。
+import scripts  # noqa: F401
+
 from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.gzip import GZipMiddleware
 from contextlib import asynccontextmanager
@@ -17,15 +22,37 @@ from contextlib import asynccontextmanager
 # 启用慢查询监听（>200ms 记录到 logger）
 import utils.slow_query_logger  # noqa: F401
 
-from api import heatmap, rotation, lifecycle, lifecycle_v2, lifecycle_v3, money_flow, screener, portfolio, baihu, trading, analysis, bs_signals, realtime, quality, watchlist, fund_weather, bs_screener, bs_backtest, leader_system, leader_history, mx_skills, sync_pkg, sina_sync, stock_research, focus_stocks, panorama, concept_sector, strategy_tags, auto_trading, mx_trading, trading_system, yuzi, yuzi_tracker, super_panel, money_flow_detail, index_flow, liangjia_report, strategy_resonance, global_market, market_stage, git_push, alerts, report, analysis_reports, stock_tracker
+from api import heatmap, rotation, lifecycle, lifecycle_v2, lifecycle_v3, money_flow, screener, baihu, trading, analysis, bs_signals, realtime, quality, watchlist, fund_weather, bs_screener, bs_backtest, leader_system, leader_history, mx_skills, sync_pkg, stock_research, focus_stocks, panorama, concept_sector, strategy_tags, auto_trading, mx_trading, trading_system, yuzi, yuzi_tracker, super_panel, money_flow_detail, index_flow, liangjia_report, strategy_resonance, global_market, market_stage, git_push, alerts, report, analysis_reports, stock_tracker, strategy_vreversal
+from api import hk_strategy
+from api import strategy_track
+from api import wave_analysis
 from api.rate_limit import RateLimitMiddleware
-from api import vibe, scheduler_api, shared, proxy
+from api import vibe, scheduler_api, shared, proxy, stock_dashboard, data_center
 from api.auth import verify_api_key
+from api import stock_info
+
+# ─── 原生 Hermes API 模块（已从独立进程迁移到主后端，不再需要代理） ───
+from api.hermes_native.ops import router as hermes_ops_router
+from api.hermes_native.main_hub import router as hermes_main_hub_router
+from api.hermes_native.market_review import router as hermes_market_review_router
+from api.hermes_native.mock_trading import router as hermes_mock_trading_router
+from api.hermes_native.global_market import router as hermes_global_market_router
+from api.hermes_native.screener import router as hermes_screener_router
+from api.hermes_native.themes import router as hermes_themes_router
+from api.hermes_native.market import router as hermes_market_router
+from api.hermes_native.fundflow import router as hermes_fundflow_router
+from api.hermes_native.emotion import router as hermes_emotion_router
+from api.hermes_native.cognition import router as hermes_cognition_router
+from api.hermes_native.rotation import router as hermes_rotation_router
+from api.hermes_native.summary import router as hermes_summary_router
 from collectors.scheduler import start_scheduler, scheduler
 from db.session import get_db_session
 from db.models import SectorFlow
 from sqlalchemy import func
 from config import CORS_ORIGINS
+
+# 重新确保 backend 目录在 sys.path 最前面（hermes_native 模块可能添加了旧路径遮蔽 scripts）
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from scripts.migrate import run_migrations
 
 
@@ -157,7 +184,6 @@ app.include_router(lifecycle_v2.router)
 app.include_router(lifecycle_v3.router)
 app.include_router(money_flow.router)
 app.include_router(screener.router)
-app.include_router(portfolio.router)
 app.include_router(analysis_reports.router)
 app.include_router(stock_tracker.router)
 app.include_router(baihu.router)
@@ -171,11 +197,12 @@ app.include_router(fund_weather.router)
 app.include_router(bs_screener.router)
 app.include_router(bs_backtest.router)
 app.include_router(leader_system.router)
+app.include_router(stock_dashboard.router)
 app.include_router(leader_history.router)
 app.include_router(mx_skills.router)
 app.include_router(sync_pkg.router)
-app.include_router(sina_sync.router)
 app.include_router(stock_research.router)
+app.include_router(stock_info.router)
 app.include_router(focus_stocks.router)
 app.include_router(panorama.router)
 app.include_router(index_flow.router)
@@ -186,22 +213,95 @@ app.include_router(mx_trading.router)
 app.include_router(trading_system.router)
 app.include_router(yuzi.router)
 app.include_router(yuzi_tracker.router)
+app.include_router(strategy_track.router)
+app.include_router(wave_analysis.router)
 app.include_router(super_panel.router)
 app.include_router(money_flow_detail.router)
 app.include_router(liangjia_report.router)
 app.include_router(strategy_resonance.router)
+app.include_router(strategy_vreversal.router)
 app.include_router(global_market.router)
+app.include_router(hk_strategy.router)
 app.include_router(market_stage.router)
 app.include_router(git_push.router)
 app.include_router(vibe.router)
 app.include_router(report.router)
 app.include_router(scheduler_api.router)
+app.include_router(data_center.router)  # 数据中心（从 Hermes 迁入）
+
+# ─── 原生 API 路由（从 Hermes 独立进程迁移到主后端，不再需要代理） ───
+app.include_router(hermes_ops_router)
+app.include_router(hermes_main_hub_router)
+app.include_router(hermes_market_review_router)
+app.include_router(hermes_mock_trading_router)
+app.include_router(hermes_global_market_router)
+app.include_router(hermes_screener_router)
+app.include_router(hermes_themes_router)
+app.include_router(hermes_market_router)
+app.include_router(hermes_fundflow_router)
+app.include_router(hermes_emotion_router)
+app.include_router(hermes_cognition_router)
+app.include_router(hermes_rotation_router)
+app.include_router(hermes_summary_router)
 
 # 共享数据层：自选股/持仓/重点关注（所有子系统共享）
 app.include_router(shared.router)
 
-# 反向代理：将 Hermes / DSA 子系统 API 收敛到 9000 端口
+# 反向代理：将 DSA / AIHF / OpenClaw 子系统 API 收敛到 9000 端口
+# （Hermes 子系统的 /api/* 已直接并入本进程，不再经代理转发到 8788）
 app.include_router(proxy.router)
+
+
+# ============================================================================
+# Hermes 子系统路由并入（统一运行时，8788 已废弃）
+# 原 /api/themes、/api/market、/api/fundflow、/api/emotion、/api/summary、
+# /api/main-hub、/api/ops、/api/mock-trading、/api/cognition、/api/dispatch、
+# /api/risk、/api/tomorrow-plan、/api/market-review、/api/global-market、
+# /api/rotation 等由 hermes_backend 提供，之前经 proxy 转发到 8788，
+# 现在直接并入本进程，8788 可停止。
+# 注：/api/global-market、/api/rotation 与 AIROBOT 自有路由同名，按注册顺序
+#     由 AIROBOT 自有版优先（与迁移前 proxy 被遮盖的行为一致）。
+# ============================================================================
+try:
+    from hermes_backend.main import (
+        market_review_router,
+        main_hub_router,
+        ops_router,
+        mock_trading_router,
+        global_market_router,
+        screener_router,
+        themes_router,
+        market_router,
+        fundflow_router,
+        emotion_router,
+        cognition_router,
+        rotation_router,
+        summary_router,
+    )
+    _hermes_routers = [
+        market_review_router,
+        main_hub_router,
+        ops_router,
+        mock_trading_router,
+        global_market_router,
+        screener_router,
+        themes_router,
+        market_router,
+        fundflow_router,
+        emotion_router,
+        cognition_router,
+        rotation_router,
+        summary_router,
+    ]
+    for _r in _hermes_routers:
+        app.include_router(_r)
+    logging.getLogger("airobot").info(
+        "Hermes 路由已并入本进程：%d 个子系统路由（8788 可停止）", len(_hermes_routers)
+    )
+except Exception as _hermes_err:  # noqa: BLE001
+    logging.getLogger("airobot").warning(
+        "Hermes 路由并入失败（相关 /api/* 将不可用）：%s", _hermes_err
+    )
 
 
 @app.get("/api/health")
@@ -280,11 +380,18 @@ async def health_detailed():
 
 
 # 全局异常处理：未捕获异常返回统一结构 + request_id 日志，避免 500 裸奔
-logger = logging.getLogger("airobat")
+logger = logging.getLogger("airobot")
 
 
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception):
+    # HTTPException 已被 ExceptionMiddleware 优先处理，不会进入此 handler。
+    # 但如果中间件（非路由）抛出 HTTPException，会被外层 ServerErrorMiddleware
+    # 兜到此处。此处显式重新抛出，让 Starlette 默认 HTTPException handler 处理，
+    # 避免限流 429 等正确响应被错误地转换成 500。
+    from fastapi import HTTPException as _HE
+    if isinstance(exc, _HE):
+        raise exc
     rid = uuid.uuid4().hex[:8]
     logger.exception("Unhandled error", extra={"request_id": rid})
     return JSONResponse(status_code=500, content={
@@ -435,33 +542,10 @@ if os.path.exists(dsa_static):
             })
         return JSONResponse({"error": "DSA frontend not built"}, status_code=503)
 
-
-# ---------------------------------------------------------------------------
-# Hermes Cockpit 子系统（仅前端静态资源，后端API已停用，数据库已迁移）
-# 前端静态文件由 /_hermes/ 路由提供，API 代理已被移除
-# ---------------------------------------------------------------------------
-
-# Hermes 前端静态资源
-hermes_static = os.path.join(os.path.dirname(__file__), 'static', 'hermes')
-if os.path.exists(hermes_static):
-    app.mount("/_hermes/assets", StaticFiles(directory=os.path.join(hermes_static, 'assets')), name="hermes_assets")
-
-    @app.get("/_hermes/")
-    @app.get("/_hermes/{full_path:path}")
-    async def serve_hermes(full_path: str = ""):
-        if full_path.startswith('api/') or full_path == '':
-            full_path = 'index.html'
-        file_path = os.path.join(hermes_static, full_path)
-        if os.path.isfile(file_path):
-            return FileResponse(file_path)
-        index_path = os.path.join(hermes_static, 'index.html')
-        if os.path.exists(index_path):
-            return FileResponse(index_path, media_type='text/html', headers={
-                "Cache-Control": "no-cache, no-store, must-revalidate",
-                "Pragma": "no-cache",
-                "Expires": "0",
-            })
-        return Response("", status_code=404)
+    @app.get("/_dsa")
+    async def redirect_dsa_root():
+        # 裸 /_dsa（无尾斜杠）重定向到 /_dsa/，避免被主前端 catch-all 兜走
+        return RedirectResponse(url="/_dsa/", status_code=307)
 
 
 # ---------------------------------------------------------------------------
@@ -615,6 +699,7 @@ async def aihf_start():
             [venv_py, "-m", "uvicorn", "app.backend.main:app", "--host", "127.0.0.1", "--port", "8002"],
             cwd=AIHF_DIR, env=env, stdout=logf, stderr=_subprocess.STDOUT, start_new_session=True,
         )
+        logf.close()
         return {"status": "starting", "url": AIHF_BACKEND_URL}
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
@@ -654,13 +739,15 @@ def _restart_aihf():
         env = dict(os.environ)
         env.update(kv)
         env["PYTHONPATH"] = AIHF_DIR
+        _logf = open(os.path.join(AIHF_DIR, "aihf_backend.log"), "a")
         _subprocess.Popen(
             [venv_py, "-m", "uvicorn", "app.backend.main:app",
              "--host", "127.0.0.1", "--port", "8002"],
             cwd=AIHF_DIR, env=env,
-            stdout=open(os.path.join(AIHF_DIR, "aihf_backend.log"), "a"),
+            stdout=_logf,
             stderr=_subprocess.STDOUT, start_new_session=True,
         )
+        _logf.close()
         return True
     except Exception:
         return False
@@ -758,9 +845,6 @@ async def aihf_test_connection():
 # 服务健康聚合：供前端顶栏「健康灯」使用
 # 状态语义：up=运行中(绿) / down=离线(红) / ready|idle=按需/待命(琥珀)
 # ---------------------------------------------------------------------------
-GATEWAY_URL = os.environ.get("GATEWAY_URL", "http://127.0.0.1:8001")
-
-
 @app.get("/api/services/status")
 async def services_status():
     """聚合各子服务健康状态。"""
@@ -775,7 +859,6 @@ async def services_status():
         except Exception:
             return False
 
-    gateway_up = await _up(f"{GATEWAY_URL}/")
     dsa_up = await _up(f"{DSA_BACKEND_URL}/")
     # 注意：AIHF 的 /ping 是 5 秒 SSE 流（非健康探测），此处改探根路径 /（瞬时 200）
     aihf_running = await _up(f"{AIHF_BACKEND_URL}/")
@@ -793,7 +876,6 @@ async def services_status():
 
     services = [
         {"key": "airobot", "label": "AIROBOT", "status": "up", "detail": "门户主服务 · 9000", "path": "/panorama"},
-        {"key": "gateway", "label": "LLM 网关", "status": "up" if gateway_up else "down", "detail": "免费 LLM 网关 · 8001", "path": None},
         {"key": "dsa", "label": "DSA", "status": "up" if dsa_up else "down", "detail": "智能分析 · 8000", "path": "/dsa"},
         {"key": "aihf", "label": "AI Hedge Fund", "status": "up" if aihf_running else "down",
          "detail": "AI 对冲基金 · 8002", "has_market_key": bool(aihf_kv.get("FINANCIAL_DATASETS_API_KEY")), "path": "/aihf"},
@@ -804,22 +886,26 @@ async def services_status():
 
 # 前端静态资源（构建后存在）
 frontend_dist = os.path.join(os.path.dirname(__file__), '..', 'frontend', 'dist')
-if os.path.exists(frontend_dist):
+# 仅当 assets 目录存在时才挂载静态资源（避免 StaticFiles 启动时因目录缺失报错）
+if os.path.exists(os.path.join(frontend_dist, 'assets')):
     app.mount("/assets", StaticFiles(directory=os.path.join(frontend_dist, 'assets')), name="assets")
 
-    @app.get("/{full_path:path}")
-    async def serve_frontend(full_path: str):
-        # API路径返回真实 404 状态码
-        if full_path.startswith('api/'):
-            raise HTTPException(status_code=404, detail="Not found")
-        index_path = os.path.join(frontend_dist, 'index.html')
-        if os.path.exists(index_path):
-            return FileResponse(index_path, media_type='text/html', headers={
-                "Cache-Control": "no-cache, no-store, must-revalidate",
-                "Pragma": "no-cache",
-                "Expires": "0",
-            })
-        return JSONResponse({"error": "Frontend not built"}, status_code=503)
+
+# catch-all 始终注册：无论启动期 dist 是否存在，运行时实时判断 index.html。
+# 这样即便后端先于 `npm run build` 启动，后续 build 完成后也无需重启即可生效。
+@app.get("/{full_path:path}")
+async def serve_frontend(full_path: str):
+    # API路径返回真实 404 状态码
+    if full_path.startswith('api/'):
+        raise HTTPException(status_code=404, detail="Not found")
+    index_path = os.path.join(frontend_dist, 'index.html')
+    if os.path.exists(index_path):
+        return FileResponse(index_path, media_type='text/html', headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        })
+    return JSONResponse({"error": "Frontend not built"}, status_code=503)
 
 
 if __name__ == '__main__':

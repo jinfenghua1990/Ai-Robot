@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import TradeModal from './TradeModal';
@@ -16,7 +16,7 @@ import { apiFetch } from '../../utils/request';
  */
 export default function StockActionModal({ signal, onClose, onRemove, onRefresh }) {
   const navigate = useNavigate();
-  const { executeTrade } = useTrading();
+  const { executeTrade, positions, refreshPositions } = useTrading();
 
   // 子弹窗状态
   const [tradeType, setTradeType] = useState(null);       // 'buy' | 'sell' | null
@@ -32,11 +32,23 @@ export default function StockActionModal({ signal, onClose, onRemove, onRefresh 
   const [noteText, setNoteText] = useState(signal.note || '');
   // 置顶反馈
   const [pinned, setPinned] = useState(false);
+  // 加入重点关注反馈
+  const [focusAdded, setFocusAdded] = useState(false);
   // 错误/提示
   const [tip, setTip] = useState('');
 
   const code = signal?.secCode || '';
   const name = signal?.secName || code;
+
+  // 打开时刷一次最新持仓（避免拿到缓存的旧数据）
+  useEffect(() => { refreshPositions(); }, [refreshPositions]);
+
+  // 当前股票的可卖数量：模拟盘用 count，T+1 用 availCount
+  const myPosition = useMemo(() => {
+    if (!positions?.positions || !code) return null;
+    return positions.positions.find(p => p.secCode === code) || null;
+  }, [positions, code]);
+  const positionCount = myPosition?.count || 0;
 
   // 点击遮罩关闭
   const handleOverlayClick = (e) => {
@@ -104,6 +116,29 @@ export default function StockActionModal({ signal, onClose, onRemove, onRefresh 
     } catch { showTip('置顶失败'); }
   };
 
+  // 加入重点关注（原 StockActionButtons 的"重点"按钮迁入）
+  const doFocus = async () => {
+    if (focusAdded) return;
+    try {
+      const res = await apiFetch('/api/watchlist/add', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ stockCode: code, stockName: name, group: '重点关注' }),
+      });
+      if (res.ok) { setFocusAdded(true); showTip('已加入重点关注'); onRefresh?.(); }
+      else if (res.status === 400) {
+        // 已在自选股其他分组，尝试移动到重点关注
+        const moveRes = await apiFetch(`/api/watchlist/${code}/move-group`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ target_group: '重点关注' }),
+        });
+        if (moveRes.ok) { setFocusAdded(true); showTip('已移动到重点关注'); onRefresh?.(); }
+        else showTip('加入失败');
+      } else showTip('加入失败');
+    } catch { showTip('加入失败'); }
+  };
+
   // 确认移除
   const confirmRemoveAction = () => {
     onRemove?.(code, name);
@@ -120,6 +155,7 @@ export default function StockActionModal({ signal, onClose, onRemove, onRefresh 
     { key: 'move', label: '移动分组', icon: '📁', color: '#eab308', onClick: openMoveGroup },
     { key: 'note', label: '加备注', icon: '📝', color: '#06b6d4', onClick: () => setNoteOpen(true) },
     { key: 'pin', label: pinned ? '已置顶' : '置顶', icon: '📌', color: '#f97316', onClick: doPin },
+    { key: 'focus', label: focusAdded ? '✓已关注' : '重点关注', icon: '⭐', color: '#3b82f6', onClick: doFocus },
     { key: 'remove', label: '移除', icon: '✕', color: '#6b7280', onClick: () => setConfirmRemove(true) },
   ];
 
@@ -226,7 +262,7 @@ export default function StockActionModal({ signal, onClose, onRemove, onRefresh 
           stockCode={code}
           stockName={name}
           type={tradeType}
-          positionCount={0}
+          positionCount={positionCount}
           onClose={() => setTradeType(null)}
           onConfirm={executeTrade}
         />

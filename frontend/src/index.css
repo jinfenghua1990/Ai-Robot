@@ -173,3 +173,19 @@ table td, table th {
   border-color: var(--accent-blue);
   color: var(--accent-blue);
 }
+
+/* 从 Hermes 迁移的「盘中实时」页面所需细滚动条 */
+.scrollbar-thin::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb, rgba(0, 0, 0, 0.1));
+  border-radius: 3px;
+}
+.scrollbar-thin::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover, rgba(0, 0, 0, 0.2));
+}
+.scrollbar-thin::-webkit-scrollbar-track {
+  background: transparent;
+}

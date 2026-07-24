@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import SignalCard from '../components/trading/SignalCard';
+import SignalCard from '../components/trading/SignalCardV4';
 import StrategyOverview from '../components/bs-screener/StrategyOverview';
 import { DEFAULT_BS_PARAMS, SIGNAL_TYPES } from '../components/bs-screener/constants';
 import echarts from '../lib/echarts';
@@ -841,8 +841,6 @@ function mergeSignal(bsSig, wlSig) {
                     orders={[]}
                     showWatchBtn={false}
                     mode="watchlist"
-                    showMarketState
-                    showBuyPower
                     showAnalysisButton
                     strategyTags={strategyPicks[sig.secCode] || []}
                     realtimeFlow={realtimeMap?.[sig.secCode] || null}

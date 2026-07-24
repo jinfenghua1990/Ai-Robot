@@ -18,6 +18,9 @@ from db.models import (
     SectorFlow, StockFlow, LeaderLifecycle, BSStrategy
 )
 import json
+import logging
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/quality", tags=["quality"])
 
@@ -151,7 +154,7 @@ def handle_review(review_id: int, action: str = Body(..., embed=True), final_val
         with get_db_session() as db:
             item = db.query(ManualReviewQueue).filter_by(id=review_id).first()
             if not item:
-                return {"error": "Review not found"}, 404
+                raise HTTPException(status_code=404, detail="Review not found")
             item.status = 'approved' if action == 'approve' else 'rejected'
             item.reviewed_by = reviewer
             item.reviewed_at = datetime.now()
@@ -160,8 +163,8 @@ def handle_review(review_id: int, action: str = Body(..., embed=True), final_val
             db.commit()
             return {"status": "ok", "review_id": review_id, "action": item.status}
     except Exception as e:
-        db.rollback()
-        return {"error": str(e)}
+        logger.exception(f"[quality] handle_review error: {e}")
+        return {"error": "Internal server error"}
 
 
 @router.get("/sources")
@@ -293,8 +296,8 @@ def trigger_auto_review():
             db.commit()
             return {"auto_passed": auto_passed, "kept_manual": kept_manual, "total": len(reviews)}
     except Exception as e:
-        db.rollback()
-        return {"error": str(e)}
+        logger.exception(f"[quality] trigger_auto_review error: {e}")
+        return {"error": "Internal server error"}
 
 
 @router.get("/anomalies")

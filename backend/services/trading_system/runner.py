@@ -115,6 +115,7 @@ async def _compute_async(target_date_str: str) -> List[dict]:
         for i in range(0, len(rows), batch_size):
             batch = rows[i:i + batch_size]
             tasks = [_process_one(row, db) for row in batch]
+            # 注意: 各 task 内部需自行管理 session，不可共用外层 db
             results = await asyncio.gather(*tasks, return_exceptions=True)
             for r in results:
                 if not isinstance(r, Exception) and r is not None:

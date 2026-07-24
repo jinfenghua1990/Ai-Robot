@@ -8,7 +8,6 @@ import logging
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
-from db.connection import get_db
 from db.session import get_db_session
 from db.models import Watchlist
 from ._shared import reset_watchlist_cache
@@ -62,7 +61,7 @@ async def rename_group(req: GroupRenameRequest):
         db.commit()
         reset_watchlist_cache()
         # 同步 JSON：更新该分组下所有股票
-        from .watchlist_local import update_stock, read_local, write_local
+        from .watchlist_local import read_local, write_local
         data = read_local()
         for s in data["stocks"]:
             if s.get("group") == old:
@@ -85,7 +84,7 @@ async def delete_group(name: str, force: bool = Query(False)):
         reset_watchlist_cache()
         # 同步 JSON
         if force and count > 0:
-            from .watchlist_local import update_stock, read_local, write_local
+            from .watchlist_local import read_local, write_local
             data = read_local()
             for s in data["stocks"]:
                 if s.get("group") == name:

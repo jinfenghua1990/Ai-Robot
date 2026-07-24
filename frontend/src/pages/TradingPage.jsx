@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useTrading } from '../context/TradingContext';
 import TradeModal from '../components/trading/TradeModal';
-import SignalCard from '../components/trading/SignalCard';
+import SignalCard from '../components/trading/SignalCardV4';
 import StrategyConfig from '../components/trading/StrategyConfig';
 import ManualTradeBar from '../components/trading/ManualTradeBar';
 import { fmtFlow, formatMoney, formatProfit } from '../utils/format';
@@ -373,8 +373,6 @@ export default function TradingPage() {
               onSell={setSellModal}
               mode="sim_watchlist"
               strategyTags={strategyPicks[sig.secCode] || []}
-              showMarketState
-              showBuyPower
               showAnalysisButton
             />
           ))

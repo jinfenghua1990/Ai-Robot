@@ -23,10 +23,11 @@ from api.watchlist._shared import _get_http_client
 logger = logging.getLogger(__name__)
 
 # ========== Cookie 提取 ==========
+# 优先读容器里的【实时】cookie(需给后端 Python 授 FDA);读不到(TCC 拦截)再回退用户可控副本。
 _THS_COOKIE_PATHS = [
-    os.environ.get('THS_COOKIE_PATH', ''),
     str(Path.home() / "Library/Containers/cn.com.10jqka.macstock/Data/Library/Cookies/Cookies.binarycookies"),
     str(Path.home() / ".airobot_ths_cookies.bin"),
+    os.environ.get('THS_COOKIE_PATH', ''),
 ]
 THS_COOKIE_FILE = None
 for _p in _THS_COOKIE_PATHS:
@@ -41,13 +42,26 @@ THS_BASE = "https://t.10jqka.com.cn"
 
 
 def _extract_ths_cookies() -> dict:
-    """从同花顺 Mac 客户端的 Cookies.binarycookies 提取 cookie"""
+    """从同花顺 Mac 客户端的 Cookies.binarycookies 提取 cookie
+
+    选择第一个「存在且可读」的 cookie 文件。优先用户可控副本
+    (~/.airobot_ths_cookies.bin)，绕过 macOS TCC 对 Container sandbox
+    内 Cookies 的读取限制（运行后端的进程往往没有完全磁盘访问权限）。
+    """
     global THS_COOKIE_FILE
-    if not THS_COOKIE_FILE or not THS_COOKIE_FILE.exists():
-        for _p in _THS_COOKIE_PATHS:
-            if _p and os.path.exists(_p):
-                THS_COOKIE_FILE = Path(_p)
-                break
+    # 候选顺序：已选中的文件放最前重试，其余按路径列表
+    candidates = [str(THS_COOKIE_FILE)] if (THS_COOKIE_FILE and THS_COOKIE_FILE.exists()) else []
+    candidates += [p for p in _THS_COOKIE_PATHS if p]
+    for _p in candidates:
+        if not _p or not os.path.exists(_p):
+            continue
+        try:
+            Path(_p).read_bytes()  # 探测是否可读（TCC 拒绝会抛 PermissionError）
+            THS_COOKIE_FILE = Path(_p)
+            break
+        except (PermissionError, OSError):
+            logger.warning(f"[ths] cookie 文件不可读，跳过: {_p}")
+            continue
     if not THS_COOKIE_FILE or not THS_COOKIE_FILE.exists():
         raise HTTPException(
             status_code=500,
@@ -58,7 +72,7 @@ def _extract_ths_cookies() -> dict:
     except PermissionError:
         raise HTTPException(
             status_code=500,
-            detail=f"无权限读取同花顺 cookie（macOS TCC 限制）。解决方案：1) 系统设置→隐私与安全性→完全磁盘访问权限→添加运行后端的程序；或 2) 终端执行 cp '{THS_COOKIE_FILE}' ~/.airobot_ths_cookies.bin 后重试"
+            detail=f"无权限读取同花顺 cookie（macOS TCC 限制）。解决方案：终端执行 cp '{THS_COOKIE_FILE}' ~/.airobot_ths_cookies.bin 后重试"
         )
     pattern = rb'([\w.]*10jqka\.com\.cn)\x00([^\x00]+)\x00([^\x00]*)\x00([^\x00]+)\x00'
     matches = re.findall(pattern, data)
@@ -225,15 +239,31 @@ async def sync_from_ths(dry_run: bool = False, mirror: bool = False) -> dict:
         }
 
 
+def _norm_code(code: str) -> str:
+    """归一化为 6 位纯代码：去掉 .SH/.SZ/.BJ 等交易所后缀，避免推送给同花顺时被拒。"""
+    if not code:
+        return code
+    c = code.strip().upper()
+    if '.' in c:
+        c = c.split('.')[0]
+    return c
+
+
 async def sync_to_ths(dry_run: bool = False, mirror: bool = False) -> dict:
     """把 AIROBOT 自选股推送到同花顺"""
     ths_list = await ths_get_self_stock()
-    ths_codes = {s["code"] for s in ths_list}
+    ths_codes = {_norm_code(s["code"]) for s in ths_list}
     ths_marketid = {s["code"]: s.get("marketid") for s in ths_list if s.get("marketid")}
 
     with get_db_session() as db:
         local_items = db.query(Watchlist).all()
-        local_codes = {item.stock_code for item in local_items}
+        # 归一化本地代码并建立 归一码 -> 原始记录 映射（去重：688120.SH 与 688120 视为同一只）
+        local_norm: dict = {}
+        for it in local_items:
+            nc = _norm_code(it.stock_code)
+            if nc:
+                local_norm.setdefault(nc, it)
+        local_codes = set(local_norm.keys())
         to_push = local_codes - ths_codes
         to_delete = ths_codes - local_codes if mirror else set()
 

@@ -12,6 +12,12 @@ export default class ErrorBoundary extends React.Component {
 
   componentDidCatch(error, errorInfo) {
     console.error('ErrorBoundary:', error, errorInfo);
+    // 打印完整堆栈用于调试
+    console.error('===ERROR STACK===');
+    console.error(error && error.stack);
+    console.error('===COMPONENT STACK===');
+    console.error(errorInfo && errorInfo.componentStack);
+    console.error('===END STACK===');
   }
 
   render() {

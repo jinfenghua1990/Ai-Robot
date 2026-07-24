@@ -5,7 +5,6 @@ from datetime import datetime, date
 from typing import List, Dict, Optional
 from sqlalchemy import func
 
-from db.connection import get_db
 from db.models import (
     StrategyResult, BSDailyScan, WatchlistSignalDaily,
     AutoTradeConfig, AutoTradeLog,
@@ -15,12 +14,12 @@ logger = logging.getLogger(__name__)
 
 
 STRATEGY_LABELS = {
-    'baihu_v26': '白虎V2.6',
     'baihu_v30': '白虎V3.0',
+    'liangjia_report': '白虎V4.0',
     'qinglong': '青龙',
-    'zhushenglang': '主升浪',
-    'volume_breakout': '放量突破',
     'macd_golden_cross': 'MACD金叉',
+    'risk_exit': '风险退出',
+    'rsi_bounce': 'RSI超卖反弹',
 }
 
 

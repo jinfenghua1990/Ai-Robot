@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useDatePicker } from './useDatePicker';
 import { STAGES, STAGE_COLORS } from '../constants/stages';
 import { apiFetch } from '../utils/request';
@@ -20,6 +20,8 @@ export function useLifecycleData(apiEndpoint, options = {}) {
   const [searchText, setSearchText] = useState('');
   const [sortBy, setSortBy] = useState(options.sortByDefault || 'strength');
   const [currentPage, setCurrentPage] = useState(0);
+  // retryNonce：递增触发 useEffect 重发请求（setSelectedDate 相同值会被 React bail-out 忽略）
+  const [retryNonce, setRetryNonce] = useState(0);
 
   // 数据加载
   useEffect(() => {
@@ -28,13 +30,13 @@ export function useLifecycleData(apiEndpoint, options = {}) {
     setError(null);
     const controller = new AbortController();
     (async () => {
-      const { ok, data: d, error: err } = await apiFetch(
+      const { ok, data: d } = await apiFetch(
         `${apiEndpoint}?date=${selectedDate}`,
         { signal: controller.signal }
       );
+      // 组件卸载 / 依赖变更：直接返回，不 setState
       if (controller.signal.aborted) return;
       if (!ok) {
-        if (/abort/i.test(err || '')) return;
         setError('数据加载失败');
         setLoading(false);
         return;
@@ -43,7 +45,7 @@ export function useLifecycleData(apiEndpoint, options = {}) {
       setLoading(false);
     })();
     return () => controller.abort();
-  }, [selectedDate, apiEndpoint]);
+  }, [selectedDate, apiEndpoint, retryNonce]);
 
   // 筛选变化重置页码
   useEffect(() => { setCurrentPage(0); }, [stageFilter, sectorFilter, searchText, sortBy]);
@@ -88,9 +90,17 @@ export function useLifecycleData(apiEndpoint, options = {}) {
   }, [data, stageFilter, sectorFilter, searchText, sortBy]);
 
   const totalPages = Math.ceil(filteredLeaders.length / PAGE_SIZE);
-  const pagedLeaders = filteredLeaders.slice(currentPage * PAGE_SIZE, (currentPage + 1) * PAGE_SIZE);
+  // pagedLeaders 用 useMemo 缓存，避免每次 render 新建数组引用击穿 SignalCard memo
+  const pagedLeaders = useMemo(
+    () => filteredLeaders.slice(currentPage * PAGE_SIZE, (currentPage + 1) * PAGE_SIZE),
+    [filteredLeaders, currentPage]
+  );
 
-  const retry = () => { setError(null); setSelectedDate(selectedDate); };
+  // retry 用递增 nonce 触发 useEffect 重发请求
+  const retry = useCallback(() => {
+    setError(null);
+    setRetryNonce(n => n + 1);
+  }, []);
 
   return {
     data, loading, error, retry,

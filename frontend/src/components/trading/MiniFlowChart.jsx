@@ -3,7 +3,9 @@
  * 双线：价格（蓝）+ 主力净流入（红/绿）
  * 用于 SignalCard 展开区域
  */
-export default function MiniFlowChart({ points = [], height = 60 }) {
+import { memo } from 'react';
+
+function MiniFlowChart({ points = [], height = 60 }) {
   if (!points || points.length < 2) {
     return <div className="text-[10px] text-center py-2" style={{ color: 'var(--text-muted)' }}>数据不足</div>;
   }
@@ -81,3 +83,5 @@ export default function MiniFlowChart({ points = [], height = 60 }) {
     </div>
   );
 }
+
+export default memo(MiniFlowChart);

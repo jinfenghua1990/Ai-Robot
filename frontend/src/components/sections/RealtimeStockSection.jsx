@@ -1,5 +1,6 @@
 import { useMemo } from 'react';
 
+import { stripCode } from '../../utils/format';
 const fmtFlow = (v) => {
   if (v == null || isNaN(v)) return '—';
   const abs = Math.abs(v);
@@ -71,7 +72,7 @@ export default function RealtimeStockSection({ rtStocks, selectedSector, onSelec
               <span className="col-span-1 text-xs text-center" style={{ color: 'var(--text-muted)' }}>{i + 1}</span>
               <span className="col-span-4 text-sm truncate" style={{ color: 'var(--text-primary)', fontWeight: isSelected ? 700 : 400 }}>
                 {s.name}
-                <span className="text-[10px] ml-1" style={{ color: 'var(--text-muted)' }}>{s.ts_code?.split('.')[0]}</span>
+                <span className="text-[10px] ml-1" style={{ color: 'var(--text-muted)' }}>{stripCode(s.ts_code)}</span>
               </span>
               <span className="col-span-3 text-xs truncate" style={{ color: 'var(--text-muted)' }}>{s.sector || '—'}</span>
               <span className="col-span-2 text-xs text-right font-semibold" style={{ color: isInflow ? '#ef4444' : '#22c55e' }}>

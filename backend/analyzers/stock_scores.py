@@ -14,8 +14,7 @@
   60-80: 强/积极；80-100: 极强/极积极
 - 风险等级为反向指标：低分=安全，高分=危险
 """
-import math
-from typing import Optional, Dict
+from typing import Optional
 
 
 def _clamp(v, lo=0, hi=100):

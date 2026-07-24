@@ -24,7 +24,7 @@ def _resolve_trade_date(db, raw_date):
         try:
             end_date = datetime.strptime(raw_date, '%Y-%m-%d').date()
         except ValueError:
-            raise HTTPException(status_code=400, detail="date must be YYYY-MM-%d format")
+            raise HTTPException(status_code=400, detail="date must be YYYY-MM-DD format")
     else:
         end_date = datetime.now().date()
 
@@ -129,7 +129,7 @@ def get_sector_flow_trend(
         try:
             datetime.strptime(date, '%Y-%m-%d')
         except ValueError:
-            raise HTTPException(status_code=400, detail="date must be YYYY-MM-%d format")
+            raise HTTPException(status_code=400, detail="date must be YYYY-MM-DD format")
 
     sector_list = [s.strip() for s in (sectors or '').split(',') if s.strip()]
     if not sector_list:

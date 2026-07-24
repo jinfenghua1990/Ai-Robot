@@ -5,7 +5,6 @@ import logging
 from fastapi import APIRouter, HTTPException
 
 from config import MX_APIKEY, MX_API_URL
-from db.connection import get_db
 from db.session import get_db_session
 from db.models import Watchlist
 from ._shared import reset_watchlist_cache

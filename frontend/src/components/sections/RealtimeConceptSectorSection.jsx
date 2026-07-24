@@ -13,6 +13,14 @@ export default function RealtimeConceptSectorSection({ rtConceptSectors, sectors
     return [...concepts].sort((a, b) => b.net_flow - a.net_flow).map(d => d.sector);
   }, [rtConceptSectors, sectors]);
 
+  // 判断当前快照是否在交易时段（必须在所有 early return 之前调用）
+  const snapshotTime = rtConceptSectors?.snapshot_time;
+  const isTradingHours = useMemo(() => {
+    if (!snapshotTime) return false;
+    const t = snapshotTime.slice(11, 16);
+    return (t >= '09:30' && t <= '11:30') || (t >= '13:00' && t <= '15:00');
+  }, [snapshotTime]);
+
   if (!rtConceptSectors?.trade_date) {
     return (
       <div className="flex items-center justify-center h-full text-sm" style={{ color: 'var(--text-muted)' }}>
@@ -28,14 +36,6 @@ export default function RealtimeConceptSectorSection({ rtConceptSectors, sectors
       </div>
     );
   }
-
-  // 判断当前快照是否在交易时段
-  const snapshotTime = rtConceptSectors?.snapshot_time;
-  const isTradingHours = useMemo(() => {
-    if (!snapshotTime) return false;
-    const t = snapshotTime.slice(11, 16);
-    return (t >= '09:30' && t <= '11:30') || (t >= '13:00' && t <= '15:00');
-  }, [snapshotTime]);
 
   return (
     <div className="h-full flex flex-col">

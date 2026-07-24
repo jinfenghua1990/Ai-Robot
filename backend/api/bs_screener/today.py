@@ -3,6 +3,7 @@
 """
 import json
 from fastapi import APIRouter, HTTPException, Query
+from sqlalchemy import func
 
 from db.connection import get_db
 from db.session import get_db_session
@@ -36,27 +37,27 @@ def bs_screener_today(backtest_id: int = Query(..., description="BSBacktestResul
 
 @router.get("/api/bs-screener/strategy-picks")
 def strategy_picks_today():
-    """返回当前保留策略（BS-科创-V7、BS-创业-V9）今日命中的个股清单。
+    """返回当前 BS 策略今日命中的个股清单。
+    动态读取 BSDailyScan 最新一日的所有 strategy_name，避免硬编码策略名导致配置漂移。
     前端用于在 Watchlist / 模拟盘 / 自动化页面上标记"策略命中"徽章。
     """
     with get_db_session() as db:
-        retained_names = ['BS-科创-V7', 'BS-创业-V9']
-        rows = db.query(BSDailyScan).filter(
-            BSDailyScan.strategy_name.in_(retained_names)
-        ).order_by(BSDailyScan.trade_date.desc()).all()
-        if not rows:
+        # 1. 动态查询 BSDailyScan 最新一日的所有策略（不再硬编码 retained_names）
+        latest_date = db.query(func.max(BSDailyScan.trade_date)).scalar()
+        if not latest_date:
             return {
                 'date': '',
                 'picks': [],
                 'code_to_strategies': {},
-                'summary': {n: 0 for n in retained_names},
+                'summary': {},
             }
-        latest_date = max(r.trade_date for r in rows)
-        today_rows = [r for r in rows if r.trade_date == latest_date]
+        today_rows = db.query(BSDailyScan).filter(
+            BSDailyScan.trade_date == latest_date
+        ).all()
 
         picks = []
         code_to_strategies = {}
-        summary = {n: 0 for n in retained_names}
+        summary = {}
         for r in today_rows:
             signals = json.loads(r.signals_json or '[]')
             for s in signals:
@@ -80,34 +81,34 @@ def strategy_picks_today():
                     code_to_strategies[code].append(r.strategy_name)
                 summary[r.strategy_name] = summary.get(r.strategy_name, 0) + 1
 
-        if latest_date:
-            # 强势阶段标记为"游资龙头"，所有阶段都返回供前端显示
-            leader_rows = db.query(LeaderLifecycle).filter(
-                LeaderLifecycle.trade_date == latest_date,
-            ).all()
-            for lr in leader_rows:
-                code = lr.ts_code.split('.')[0] if lr.ts_code else ''
-                if not code:
-                    continue
-                stage = lr.stage or ''
-                is_strong = stage in LEADER_STAGES
-                # 强势阶段用"游资龙头"标签，其他阶段用"阶段:XXX"标签
-                tag = '游资龙头' if is_strong else f'游资阶段:{stage}'
-                if code not in code_to_strategies:
-                    code_to_strategies[code] = []
-                    picks.append({
-                        'code': code,
-                        'name': lr.name or '',
-                        'sector': lr.sector or '',
-                        'strategy': tag,
-                        'dimension': 'leader',
-                        'signal': 'L',
-                        'reasons': [f'龙头阶段:{stage}'],
-                        'score': float(lr.strength) if lr.strength else None,
-                    })
-                if tag not in code_to_strategies[code]:
-                    code_to_strategies[code].append(tag)
-                summary[tag] = summary.get(tag, 0) + 1
+        # 2. LeaderLifecycle 用 same latest_date 查询（与 BSDailyScan 一致）
+        # 强势阶段标记为"游资龙头"，所有阶段都返回供前端显示
+        leader_rows = db.query(LeaderLifecycle).filter(
+            LeaderLifecycle.trade_date == latest_date,
+        ).all()
+        for lr in leader_rows:
+            code = lr.ts_code.split('.')[0] if lr.ts_code else ''
+            if not code:
+                continue
+            stage = lr.stage or ''
+            is_strong = stage in LEADER_STAGES
+            # 强势阶段用"游资龙头"标签，其他阶段用"阶段:XXX"标签
+            tag = '游资龙头' if is_strong else f'游资阶段:{stage}'
+            if code not in code_to_strategies:
+                code_to_strategies[code] = []
+                picks.append({
+                    'code': code,
+                    'name': lr.name or '',
+                    'sector': lr.sector or '',
+                    'strategy': tag,
+                    'dimension': 'leader',
+                    'signal': 'L',
+                    'reasons': [f'龙头阶段:{stage}'],
+                    'score': float(lr.strength) if lr.strength else None,
+                })
+            if tag not in code_to_strategies[code]:
+                code_to_strategies[code].append(tag)
+            summary[tag] = summary.get(tag, 0) + 1
 
         return {
             'date': latest_date.strftime('%Y-%m-%d') if hasattr(latest_date, 'strftime') else str(latest_date),

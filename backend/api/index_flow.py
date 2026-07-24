@@ -261,11 +261,11 @@ def _build_member_filter(idx_def: dict):
     return None
 
 
-def _aggregate_index_from_db(idx_def: dict, db, latest_n_days: int = 12) -> dict:
+def _aggregate_index_from_db(idx_def: dict, db, latest_n_days: int = 22) -> dict:
     """从 stock_flow 表聚合单个指数最近 N 天的资金流向
 
     返回：{ts_code, name, dates: [...], main_net: [...], cumulative: [...],
-           inflow_1d, inflow_3d, inflow_5d, inflow_10d, close, pct_change, member_count}
+           inflow_1d, inflow_3d, inflow_5d, inflow_10d, inflow_22d, close, pct_change, member_count}
     """
     member_filter = _build_member_filter(idx_def)
     if member_filter is None:
@@ -324,6 +324,7 @@ def _aggregate_index_from_db(idx_def: dict, db, latest_n_days: int = 12) -> dict
         'inflow_3d': _sum_last(3),
         'inflow_5d': _sum_last(5),
         'inflow_10d': _sum_last(10),
+        'inflow_22d': _sum_last(22),
         'close': latest_close,
         'pct_change': latest_pct,
         'member_count': member_counts[-1] if member_counts else 0,
@@ -453,7 +454,7 @@ async def _build_rank_result(indices_list: list, cache: dict, source_label: str,
     with get_db_session() as db:
         for idx_def in indices_list:
             try:
-                agg = _aggregate_index_from_db(idx_def, db, latest_n_days=12)
+                agg = _aggregate_index_from_db(idx_def, db, latest_n_days=22)
                 if agg and agg.get('latest_date'):
                     db_results.append(agg)
                     db_hit_count += 1
@@ -481,6 +482,7 @@ async def _build_rank_result(indices_list: list, cache: dict, source_label: str,
                 'inflow_3d': agg['inflow_3d'],
                 'inflow_5d': agg['inflow_5d'],
                 'inflow_10d': agg['inflow_10d'],
+                'inflow_22d': agg['inflow_22d'],
                 'abs_1d': abs(agg['inflow_1d']),
                 'member_count': agg.get('member_count', 0),
                 'source': 'db',
@@ -528,6 +530,7 @@ async def _build_rank_result(indices_list: list, cache: dict, source_label: str,
             'inflow_3d': agg['inflow_3d'],
             'inflow_5d': agg['inflow_5d'],
             'inflow_10d': agg['inflow_10d'],
+            'inflow_22d': agg['inflow_22d'],
             'abs_1d': abs(agg['inflow_1d']),
             'member_count': agg.get('member_count', 0),
             'source': 'db',
@@ -551,6 +554,7 @@ async def _build_rank_result(indices_list: list, cache: dict, source_label: str,
             'inflow_3d': _aggregate_flow_em(hist, 3),
             'inflow_5d': _aggregate_flow_em(hist, 5),
             'inflow_10d': _aggregate_flow_em(hist, 10),
+            'inflow_22d': _aggregate_flow_em(hist, 22),
             'abs_1d': abs(_aggregate_flow_em(hist, 1)),
             'member_count': 0,
             'source': 'eastmoney',

@@ -1,7 +1,7 @@
 import { memo, useEffect, useRef, useState } from 'react';
 import { createChart, AreaSeries, HistogramSeries, LineSeries } from 'lightweight-charts';
 import { apiFetch } from '../../utils/request';
-import { POLL_INTERVAL } from '../../utils/constants';
+import { POLL_INTERVAL, isMarketOpenNow } from '../../utils/constants';
 
 /**
  * 分时面板（2×3网格右侧三格）
@@ -28,8 +28,10 @@ function IntradayPanel({ code }) {
       }
     };
     load();
-    const timer = setInterval(load, POLL_INTERVAL);
-    return () => { cancelled = true; clearInterval(timer); cleanupAll(); };
+    // 仅交易时段轮询；盘后分时已收盘不再变化，避免无谓请求
+    let timer = null;
+    if (isMarketOpenNow()) timer = setInterval(load, POLL_INTERVAL);
+    return () => { cancelled = true; if (timer) clearInterval(timer); cleanupAll(); };
   }, [code]);
 
   function cleanupAll() {

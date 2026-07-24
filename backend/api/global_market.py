@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from datetime import datetime
 from typing import Any, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -75,6 +76,8 @@ MARKET_INDICES = {
 # ─── Yahoo Finance 辅助函数 ─────────────────────────────────────────────────────
 
 _YAHOO_HEADERS = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"}
+_cache: dict[str, tuple[float, list[dict] | None]] = {}
+_CACHE_TTL = 300  # 5 分钟缓存，避免对 Yahoo Finance 的重复慢速调用
 
 
 def _get_yahoo_proxies() -> dict[str, str] | None:
@@ -140,6 +143,19 @@ def _yahoo_fetch(symbol: str, range_str: str = "5d") -> list[dict] | None:
         return None
 
 
+def _yahoo_fetch_cached(symbol: str, range_str: str = "5d") -> list[dict] | None:
+    """带缓存的 _yahoo_fetch，5 分钟 TTL 避免重复慢速调用"""
+    cache_key = f"{symbol}:{range_str}"
+    now = time.time()
+    if cache_key in _cache:
+        ts, data = _cache[cache_key]
+        if now - ts < _CACHE_TTL:
+            return data
+    data = _yahoo_fetch(symbol, range_str)
+    _cache[cache_key] = (now, data)
+    return data
+
+
 def _to_yahoo_symbol(market: str, code: str) -> str:
     """把业务代码转成 Yahoo 代码
     HK: 00700 → 0700.HK (去前导0, 加 .HK)
@@ -200,7 +216,7 @@ def _calc_change_pct(closes: list[float], periods: int) -> float | None:
 
 def _fetch_index(idx: dict) -> dict:
     """拉单个指数 (供线程池并行)"""
-    klines = _yahoo_fetch(idx["yahoo"], range_str="5d")
+    klines = _yahoo_fetch_cached(idx["yahoo"], range_str="5d")
     if klines:
         latest = klines[-1]
         return {
@@ -235,7 +251,7 @@ def get_indices(market: str):
 def _fetch_quote_for_stock(market: str, stock: dict) -> dict:
     """拉单只股票的最新行情 (供线程池并行调用)"""
     yahoo_sym = _to_yahoo_symbol(market, stock["code"])
-    klines = _yahoo_fetch(yahoo_sym, range_str="5d")
+    klines = _yahoo_fetch_cached(yahoo_sym, range_str="5d")
     if klines:
         latest = klines[-1]
         return {
@@ -337,7 +353,7 @@ def get_overview(market: str):
 def _fetch_enhanced_for_stock(market: str, stock: dict) -> dict:
     """拉单只股票的增强行情 + 技术指标 (供线程池并行)"""
     yahoo_sym = _to_yahoo_symbol(market, stock["code"])
-    klines = _yahoo_fetch(yahoo_sym, range_str="1mo") or []
+    klines = _yahoo_fetch_cached(yahoo_sym, range_str="1mo") or []
     closes = [k["close"] for k in klines if k.get("close") is not None]
     last_k = klines[-1] if klines else {}
     price = _safe_float(last_k.get("close"))

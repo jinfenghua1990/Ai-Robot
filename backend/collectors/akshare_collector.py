@@ -2,7 +2,6 @@
 AKShare 采集器 - 开源Python库，整合东财/新浪/同花顺等多源数据
 无额度限制，实时行情基于新浪（可用），资金流向基于东财push2his（可能受限）
 """
-import os
 import logging
 from utils.http_constants import clear_proxy_env
 from utils.cache import BoundedDict
@@ -20,7 +19,7 @@ except ImportError:
     AKSHARE_VERSION = None
 
 # 全市场实时行情缓存（避免每次都全量拉取）
-_spot_cache = BoundedDict(maxsize=100)
+_spot_cache = BoundedDict(maxsize=6000)  # A股约5000+只，容量需大于此
 _spot_cache_time = 0
 _SPOT_CACHE_TTL = 60  # 60秒缓存
 
@@ -42,7 +41,7 @@ def akshare_batch_prices(ts_codes):
         # 缓存过期，重新拉取全市场行情
         try:
             df = ak.stock_zh_a_spot()
-            _spot_cache = BoundedDict(maxsize=100)
+            _spot_cache = BoundedDict(maxsize=6000)  # A股约5000+只，容量需大于此
             for _, row in df.iterrows():
                 code = str(row['代码'])  # 如 bj920000, sh600519, sz000001
                 # 标准化为 ts_code 格式

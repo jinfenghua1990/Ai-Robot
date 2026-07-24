@@ -1,1 +1,0 @@
-import{j as t}from"./index.CsuYT-kk.js";import{V as e}from"./VibeEmbed.BdIz3eEc.js";import"./react-vendor.BSdSoFln.js";function m(){return t.jsx(e,{path:"/my-reports",title:"Vibe 我的研报"})}export{m as default};

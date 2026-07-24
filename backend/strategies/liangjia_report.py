@@ -34,8 +34,13 @@ def calc_rsi(closes, period=14):
     return 100 - (100 / (1 + rs))
 
 
-def liangjia_report_strategy(kline, day_index=-1):
+def liangjia_report_strategy(kline, day_index=-1, main_force_history=None):
     """量价报告策略主函数
+
+    参数:
+        kline: K线数据列表
+        day_index: 检查哪一天（默认-1）
+        main_force_history: 近5日主力净流入列表（来自StockFlow，可选）
 
     返回 dict（含 pattern/tier/gain5d/vol_ratio_20/distance_to_high_20/trade_plan 等）或 None
     """
@@ -93,6 +98,11 @@ def liangjia_report_strategy(kline, day_index=-1):
 
         # 多头排列
         bull_alignment = ma5 > ma10 > ma20
+
+        # 突破10日新高（来自 volume_breakout 策略核心维度）
+        high_10d = max(float(k['high']) for k in kline[max(0, day_index - 10):day_index]) if day_index >= 10 else 0
+        breakout_10d = (close > high_10d) if high_10d > 0 else False
+        breakout_pct = (close - high_10d) / high_10d * 100 if high_10d > 0 else 0
 
         # 下影线/上影线
         lower_shadow = (min(close, open_p) - low) / prev_close * 100
@@ -209,6 +219,21 @@ def liangjia_report_strategy(kline, day_index=-1):
         if 30 <= rsi <= 65:
             score += 1
 
+        # === 合并吸收的评分维度 ===
+        # 突破强度（来自 volume_breakout）：突破10日新高加分
+        if breakout_10d and 0 < breakout_pct <= 5:
+            score += 2
+        # 主力连续流入（来自 zhushenglang）：近5日≥3日主力净流入为正
+        main_force_days = 0
+        has_main_force = False
+        if main_force_history and len(main_force_history) >= 3:
+            main_force_days = sum(1 for f in main_force_history if f > 0)
+            has_main_force = main_force_history[-1] > 0 if main_force_history else False
+            if main_force_days >= 4:
+                score += 2
+            elif main_force_days >= 3:
+                score += 1
+
         return {
             'strategy': '白虎V4.0',
             'pattern': pattern,
@@ -232,6 +257,10 @@ def liangjia_report_strategy(kline, day_index=-1):
             'ma20': round(ma20, 2),
             'ma20_rising': ma20_rising,
             'bull_alignment': bull_alignment,
+            'breakout_10d': breakout_10d,
+            'breakout_pct': round(breakout_pct, 2),
+            'main_force_days': main_force_days,
+            'has_main_force': has_main_force,
             'trade_plan': trade_plan,
             'date': latest.get('day', ''),
         }
@@ -295,16 +324,48 @@ def get_kline_from_tdx(code, days=90):
     return _get(code, days)
 
 
-def run_liangjia_report_screen(stock_list, trade_date=None, max_workers=20):
+def run_liangjia_report_screen(stock_list, trade_date=None, max_workers=20, db=None):
     """批量执行量价报告选股（线程池并发）
 
-    返回符合条件的结果列表（含 pattern/tier/trade_plan 等字段）
+    参数:
+        stock_list: 股票代码列表
+        trade_date: 交易日期 (YYYY-MM-DD)
+        max_workers: 线程池大小
+        db: 数据库会话（可选，用于查 StockFlow 主力资金历史）
     """
+    # 预加载主力资金历史（近5个交易日）
+    main_force_map = {}
+    if db and trade_date:
+        from db.models import StockFlow as SF
+        from datetime import datetime, timedelta
+        date_obj = datetime.strptime(trade_date, '%Y-%m-%d')
+        check_dates = []
+        for i in range(0, 15):
+            d = (date_obj - timedelta(days=i)).strftime('%Y-%m-%d')
+            check_dates.append(d)
+        flows = db.query(SF).filter(
+            SF.trade_date.in_(check_dates),
+            SF.ts_code.in_(stock_list),
+        ).all()
+        sf_grouped = {}
+        for f in flows:
+            sf_grouped.setdefault(f.ts_code, []).append({
+                'date': str(f.trade_date),
+                'main_force': float(f.main_force_inflow or 0),
+            })
+        for ts_code, flist in sf_grouped.items():
+            flist.sort(key=lambda x: x['date'], reverse=True)
+            recent5 = flist[:5]
+            if len(recent5) >= 3:
+                recent5.reverse()
+                main_force_map[ts_code] = [f['main_force'] for f in recent5]
+
     def _screen_one(ts_code):
         try:
             kline = get_kline_from_tdx(ts_code, 60)
             if kline and len(kline) >= 30:
-                result = liangjia_report_strategy(kline)
+                mf_history = main_force_map.get(ts_code)
+                result = liangjia_report_strategy(kline, main_force_history=mf_history)
                 if result:
                     result['ts_code'] = ts_code
                     if trade_date:

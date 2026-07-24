@@ -12,14 +12,12 @@
 import time
 import asyncio
 import logging
-import threading
 from datetime import datetime
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 from sqlalchemy import func, text
 
-from db.connection import get_db
 from db.session import get_db_session
 from db.models import Watchlist
 from analyzers.strategy_engine import _find_sector_for_stock, _get_sector_trend
@@ -30,6 +28,7 @@ from analyzers.stock_scores import calc_sentiment, calc_risk, calc_momentum, cal
 from ._shared import (
     _watchlist_cache, _watchlist_refreshing, WATCHLIST_CACHE_TTL,
     get_quote, fetch_kline_cached, reset_watchlist_cache,
+    batch_get_quotes,
 )
 
 
@@ -44,7 +43,6 @@ def _batch_moneyflow_map(db, stock_codes: list) -> dict:
     from db.models import StockMoneyFlowDetail, StockFeaturesDaily
     from db.connection import SessionLocal
     from concurrent.futures import ThreadPoolExecutor, as_completed
-    from sqlalchemy import func as sa_func
 
     if not stock_codes:
         return {}
@@ -89,7 +87,7 @@ def _batch_moneyflow_map(db, stock_codes: list) -> dict:
         try:
             latest_sub = thread_db.query(
                 StockFeaturesDaily.stock_code,
-                sa_func.max(StockFeaturesDaily.trade_date).label('max_date')
+                func.max(StockFeaturesDaily.trade_date).label('max_date')
             ).filter(
                 StockFeaturesDaily.stock_code.in_(valid_codes)
             ).group_by(StockFeaturesDaily.stock_code).subquery()
@@ -221,20 +219,22 @@ def _hit_yuzi(db, ts_codes: list) -> set:
     return {r.ts_code for r in rows}
 
 
-def _hit_strategy(db, valid_codes: list) -> set:
-    """🤖 策略命中：BSDailyScan 最新一日 signals_json 含本股"""
+def _hit_strategy(db, valid_codes: list) -> dict:
+    """🤖 策略命中：BSDailyScan 最新一日 signals_json 含本股
+    返回 {code: strategy_name}，让前端直接显示具体策略名（如 BS-全市场），
+    替代原来的 'strategy' 通用布尔标签，避免与 strategyTags（顶部 BS-XXX 标签）重复。
+    """
     from db.models import BSDailyScan
     import json as _json
     if not valid_codes:
-        return set()
-    rows = db.query(BSDailyScan).filter(
-        BSDailyScan.strategy_name.in_(['BS-科创-V7', 'BS-创业-V9'])
-    ).order_by(BSDailyScan.trade_date.desc()).limit(10).all()
-    if not rows:
-        return set()
-    latest_date = max(r.trade_date for r in rows)
-    today_rows = [r for r in rows if r.trade_date == latest_date]
-    hit_set = set()
+        return {}
+    latest_date = db.query(func.max(BSDailyScan.trade_date)).scalar()
+    if not latest_date:
+        return {}
+    today_rows = db.query(BSDailyScan).filter(
+        BSDailyScan.trade_date == latest_date
+    ).all()
+    hit_map = {}
     for r in today_rows:
         try:
             sigs = _json.loads(r.signals_json or '[]')
@@ -244,8 +244,8 @@ def _hit_strategy(db, valid_codes: list) -> set:
             raw = s.get('secCode') or s.get('code') or ''
             code = raw.split('.')[0] if raw else ''
             if code in valid_codes:
-                hit_set.add(code)
-    return hit_set
+                hit_map[code] = r.strategy_name  # 后写覆盖先写，保留最新策略名
+    return hit_map
 
 
 def _hit_trend(db, valid_codes: list) -> set:
@@ -326,7 +326,6 @@ def _hit_popularity(db, sectors_map: dict) -> set:
 def _hit_accumulation(db, ts_codes: list) -> set:
     """🧲 吸筹命中：最近两期股东户数连续减少（Tushare 暂未返回 avg_shares，先以户数减少为准）"""
     from db.models import StockHolderNumber
-    from sqlalchemy import func
     if not ts_codes:
         return set()
     # 取每只股最近一期
@@ -424,14 +423,10 @@ def _gen_action_hint(tags: list) -> str:
         return '主流抱团龙头，分时拉升直接打板抢筹'
     if {'yuzi', 'capital'} <= s:
         return '游资+主力双共振，低吸跟随'
-    if {'strategy', 'trend'} <= s:
-        return '策略+趋势双确认，突破买点'
     if {'support', 'trend'} <= s:
         return '趋势大单护盘，回踩均线低吸'
     if 'yuzi' in s:
         return '游资共振净买入，关注次日溢价'
-    if 'strategy' in s:
-        return '量化策略命中，按模式死磕'
     if 'trend' in s:
         return '多头排列，回踩均线低吸'
     if 'capital' in s:
@@ -497,13 +492,18 @@ def _batch_hit_tags(db, stock_codes: list, sectors_map: dict) -> dict:
                 logger.warning(f'_hit task future failed: {e}')
 
     out = {}
+    # _hit_strategy 返回 dict（{code: strategy_name}），其他返回 set
+    strategy_map = sets.get('strategy') or {}
+    # strategy 命中时不加 'strategy' 通用标签（与顶部 strategyTags 重复），
+    # 改为加 'strategy:BS-全市场' 形式，让前端直接显示具体策略名
+    # _gen_action_hint 只看基础 6 个标签，不受影响
     for code in valid_codes:
         ts = code_to_ts[code]
         tags = []
         if ts in sets.get('yuzi', set()):
             tags.append('yuzi')
-        if code in sets.get('strategy', set()):
-            tags.append('strategy')
+        # strategy 标签合并：跳过通用 'strategy' 标签，由 strategyTags 顶部标签承担显示
+        # 如需保留命中信息可加：if code in strategy_map: tags.append(f'strategy:{strategy_map[code]}')
         if code in sets.get('trend', set()):
             tags.append('trend')
         if ts in sets.get('capital', set()):
@@ -514,12 +514,46 @@ def _batch_hit_tags(db, stock_codes: list, sectors_map: dict) -> dict:
             tags.append('support')
         if ts in sets.get('accumulation', set()):
             tags.append('accumulation')
-        out[ts] = {'hit_tags': tags, 'action_hint': _gen_action_hint(tags)}
+        out[ts] = {
+            'hit_tags': tags,
+            'action_hint': _gen_action_hint(tags),
+            'strategy_name': strategy_map.get(code),  # 附加策略名，供前端选用
+        }
     return out
 
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _batch_compute_dashboard(codes: list, max_workers: int = 8) -> dict:
+    """并行计算 8 维综合评分（_compute_dashboard 单只 ~0.12s，116只串行=14s，并行=2s）
+
+    SQLAlchemy Session 非线程安全，每个 worker 独占一个 Session。
+    返回 {code: dashboard_dict}，失败 code 值为 None。
+    """
+    from db.connection import SessionLocal
+    from concurrent.futures import ThreadPoolExecutor
+    from api.stock_dashboard import _compute_dashboard
+
+    if not codes:
+        return {}
+
+    def _worker(code):
+        thread_db = SessionLocal()
+        try:
+            return code, _compute_dashboard(code, thread_db)
+        except Exception as e:
+            logger.debug(f'[_batch_compute_dashboard] {code} failed: {e}')
+            return code, None
+        finally:
+            thread_db.close()
+
+    out = {}
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        for code, dash in executor.map(_worker, codes):
+            out[code] = dash
+    return out
 
 
 def _calc_junk_for_signal(stock_name: str, quote: dict, sector_trend: dict) -> dict:
@@ -528,15 +562,22 @@ def _calc_junk_for_signal(stock_name: str, quote: dict, sector_trend: dict) -> d
     return is_junk_stock(stock_name=stock_name, avg_turnover=avg_turnover, sector_heat=sector_heat)
 
 
-async def _fetch_stock_data(item, db):
+async def _fetch_stock_data(item, db, prefetched_quote=None):
     code = item.stock_code
-    quote_task = get_quote(code)
-    kline_task = fetch_kline_cached(code, 60)
-    quote, klines = await asyncio.gather(quote_task, kline_task, return_exceptions=True)
-    if isinstance(quote, Exception):
-        quote = None
-    if isinstance(klines, Exception):
-        klines = []
+    # 优先使用外部预取的行情（批量接口），避免重复 HTTP 请求
+    if prefetched_quote is not None:
+        quote = prefetched_quote
+        klines = await fetch_kline_cached(code, 60)
+        if isinstance(klines, Exception):
+            klines = []
+    else:
+        quote_task = get_quote(code)
+        kline_task = fetch_kline_cached(code, 60)
+        quote, klines = await asyncio.gather(quote_task, kline_task, return_exceptions=True)
+        if isinstance(quote, Exception):
+            quote = None
+        if isinstance(klines, Exception):
+            klines = []
 
     stock_name = item.stock_name or (quote['name'] if quote else '')
     ts_code = f"{code}.SH" if code[0] in ('6', '9') else f"{code}.SZ"
@@ -545,14 +586,37 @@ async def _fetch_stock_data(item, db):
 
     bs_signal = None
     bs_reasons = []
+    bs_interval = {'state': 'unknown'}
+    indicators = {}
     try:
         if klines and len(klines) > 0:
             from api.bs_signals import _generate_bs_signals
-            bs_signals, *_ = _generate_bs_signals(klines)
+            from services.indicators import calc_rsi as _calc_rsi
+            # 返回 12 个值：signals, dif, dea, macd, ma5, ma20, k, d, j, support, resistance, trend
+            bs_signals, dif, dea, macd, ma5, ma20, k_vals, d_vals, j_vals, support, resistance, _trend = _generate_bs_signals(klines)
             if bs_signals:
                 last = bs_signals[-1]
                 bs_signal = last.get('type')
                 bs_reasons = last.get('reasons', [])
+                # 计算 BS 区间：B→今=持仓中；B→S=已平仓区间
+                from services.signal_builder import _calc_bs_interval
+                bs_interval = _calc_bs_interval(bs_signals, quote.get('price') if quote else 0.0)
+                # 提取最新 KDJ/MACD/支撑/阻力（最后一根 K 线对应的值）
+                def _last(arr):
+                    return arr[-1] if arr and arr[-1] is not None else None
+                indicators = {
+                    'macd': round(_last(macd), 4) if _last(macd) is not None else None,
+                    'dif': round(_last(dif), 4) if _last(dif) is not None else None,
+                    'dea': round(_last(dea), 4) if _last(dea) is not None else None,
+                    'kdj_k': round(_last(k_vals), 2) if _last(k_vals) is not None else None,
+                    'kdj_d': round(_last(d_vals), 2) if _last(d_vals) is not None else None,
+                    'kdj_j': round(_last(j_vals), 2) if _last(j_vals) is not None else None,
+                    'ma5': round(_last(ma5), 2) if _last(ma5) is not None else None,
+                    'ma20': round(_last(ma20), 2) if _last(ma20) is not None else None,
+                    'support': round(_last(support), 2) if _last(support) is not None else None,
+                    'resistance': round(_last(resistance), 2) if _last(resistance) is not None else None,
+                    'rsi': round(_last(_calc_rsi([k.get('close', 0.0) for k in klines], 14)), 1) if klines and len(klines) >= 15 else None,
+                }
     except Exception as e:
         logger.debug(f"BS signal compute failed for {code}: {e}")
 
@@ -564,6 +628,8 @@ async def _fetch_stock_data(item, db):
         'sector_trend': sector_trend,
         'bs_signal': bs_signal,
         'bs_reasons': bs_reasons,
+        'bs_interval': bs_interval,
+        'indicators': indicators,
     }
 
 
@@ -574,19 +640,26 @@ async def build_watchlist() -> dict:
             Watchlist.sort_order, Watchlist.created_at.desc()
         ).all()
 
-        from services.signal_builder import _get_lifecycle_map
-        _wl_ts_codes = [f"{c}.SH" if c[0] in ('6', '9') else f"{c}.SZ"
-                        for c in (i.stock_code for i in items) if c and len(c) == 6]
-        _lifecycle_map = _get_lifecycle_map(db, _wl_ts_codes)
-
         # 批量拉所有自选股的最新一日 4 档资金流（一次 IN 查询避免 N+1）
         _moneyflow_map = _batch_moneyflow_map(db, [i.stock_code for i in items if i.stock_code])
+
+        # 批量预取所有自选股的实时行情（116只 → 3 次 HTTP，替代 N 次串行调用）
+        # 这一步把 N 次 get_quote() 合并为 ceil(N/50) 次批量 HTTP，显著降低首屏延迟
+        all_codes = [i.stock_code for i in items if i.stock_code]
+        try:
+            _quotes_map = await batch_get_quotes(all_codes)
+        except Exception as e:
+            logger.warning(f'[build_watchlist] batch_get_quotes failed, fallback to per-stock: {e}')
+            _quotes_map = {}
 
         results = []
         BATCH = 20
         for i in range(0, len(items), BATCH):
             batch = items[i:i + BATCH]
-            tasks = [_fetch_stock_data(item, db) for item in batch]
+            tasks = [
+                _fetch_stock_data(item, db, prefetched_quote=_quotes_map.get(item.stock_code))
+                for item in batch
+            ]
             results.extend(await asyncio.gather(*tasks, return_exceptions=True))
 
         # 批量计算 6 大命中标签（需要 sectors_map，从 results 提取）
@@ -595,6 +668,23 @@ async def build_watchlist() -> dict:
             if not isinstance(r, Exception) and r.get('item') and r['item'].stock_code:
                 _sectors_map[r['item'].stock_code] = r.get('sector') or ''
         _hit_tags_map = _batch_hit_tags(db, [i.stock_code for i in items if i.stock_code], _sectors_map)
+
+        # 预加载跟踪表共振 note（用于前端显示共振标签）
+        _tracker_note_map = {}
+        try:
+            from db.models import StockTracker
+            tracker_rows = db.query(StockTracker).filter(
+                StockTracker.active == True,
+                StockTracker.note.like('%共振选股%'),
+            ).all()
+            for t in tracker_rows:
+                _tracker_note_map[t.stock_code] = t.note
+        except Exception:
+            pass
+
+        # 并行预计算所有自选股的 8 维综合评分（_compute_dashboard 单只 ~0.12s，
+        # 116只串行=14s+，8 worker 并行=2s 左右）。每 worker 用独立 Session。
+        _dashboard_map = _batch_compute_dashboard([i.stock_code for i in items if i.stock_code])
 
         signals = []
         buy_count = 0
@@ -611,6 +701,8 @@ async def build_watchlist() -> dict:
                 continue
             bs_signal = r['bs_signal']
             bs_reasons = r['bs_reasons']
+            bs_interval = r.get('bs_interval') or {'state': 'unknown'}
+            indicators = r.get('indicators') or {}
             quote = r['quote']
             sector = r['sector']
             sector_trend = r['sector_trend']
@@ -646,14 +738,16 @@ async def build_watchlist() -> dict:
                     inflow_top.append({"code": item.stock_code, "name": stock_name, "chg": round(chg, 2)})
 
             if bs_signal == 'B':
-                signal_label = '买入'
+                # 持仓中（区间详情在下方独立分组展示）
+                signal_label = 'B 持仓中'
                 signal_color = '#ef4444'
                 signal_type = 'ADD'
                 buy_count += 1
                 if len(buy_top) < 9:
                     buy_top.append({"code": item.stock_code, "name": stock_name})
             elif bs_signal == 'S':
-                signal_label = '减仓防守'
+                # 已平仓（区间详情在下方独立分组展示）
+                signal_label = 'S 已平仓'
                 signal_color = '#f97316'
                 signal_type = 'SELL'
                 sell_count += 1
@@ -669,6 +763,8 @@ async def build_watchlist() -> dict:
             reasons = list(bs_reasons or [])
             if quote:
                 reasons.append(f'当日涨跌: {change_pct:+.2f}%')
+            if bs_interval.get('pnl_pct'):
+                reasons.append(f'BS区间盈亏: {bs_interval["pnl_pct"]:+.2f}%')
 
             positive_factors = []
             negative_factors = []
@@ -700,7 +796,6 @@ async def build_watchlist() -> dict:
                 'signal': signal_type,
                 'signalLabel': signal_label,
                 'signalColor': signal_color,
-                'riskLevel': 'low',
                 'score': score,
                 'reasons': reasons,
                 'positiveFactors': positive_factors,
@@ -709,9 +804,12 @@ async def build_watchlist() -> dict:
                 'sectorTrend': sector_trend,
                 'quote': quote,
                 'bsSignal': bs_signal,
+                'bsInterval': bs_interval,  # BS 区间：state/start_date/start_price/end_date/end_price/hold_days/pnl_pct
+                'indicators': indicators,  # KDJ/MACD/MA 技术指标（最新一根 K 线）
                 'moneyFlow': money_flow,  # 4 档资金流(主/特大/大/小/散, 单位:万元)
                 'hitTags': _hit_tags_map.get(ts_code_cur, {}).get('hit_tags', []),
                 'actionHint': _hit_tags_map.get(ts_code_cur, {}).get('action_hint', ''),
+                'strategyName': _hit_tags_map.get(ts_code_cur, {}).get('strategy_name'),  # 具体策略名（如 BS-全市场）
                 'position': {
                     'profitPct': 0,
                     'posPct': 0,
@@ -724,20 +822,19 @@ async def build_watchlist() -> dict:
                     'profit': 0,
                 },
                 'note': item.note,
+                'trackerNote': _tracker_note_map.get(item.stock_code, ''),
                 'group': item.group_name or '默认',
                 'watchlistId': item.id,
                 'qualityStatus': item.quality_status or '普通',
-                'lifecycleStage': _lifecycle_map.get(
-                    f"{item.stock_code}.SH" if item.stock_code[0] in ('6', '9') else f"{item.stock_code}.SZ"
-                ) if item.stock_code and len(item.stock_code) == 6 else None,
-                'buyPower': calc_buy_power_for_signal(quote, sector_trend, bs_signal),
+                # buyPower 字段已下线：与 8 维综合评分重复，统一改用 overall_score + trend_strength
+                # 内部仍计算 bp_internal 供 calc_risk 等下游使用，但不再暴露到响应
                 'marketState': get_latest_state(item.stock_code) or {'market_state': 'PENDING', 'reasons': ['待计算']},
             })
             # 为上一条 signal 补充 5 维评分（需要 marketState.features）
             last_signal = signals[-1]
             ms_data = last_signal.get('marketState', {})
             ms_features = ms_data.get('features') or {}
-            bp_data = last_signal.get('buyPower')
+            bp_data = calc_buy_power_for_signal(quote, sector_trend, bs_signal)  # 内部使用，不暴露
             last_signal['sentiment'] = calc_sentiment(quote, sector_trend, ms_features)
             last_signal['risk'] = calc_risk(ms_features, bp_data, None)
             last_signal['momentum'] = calc_momentum(sector_trend, ms_features)
@@ -745,6 +842,56 @@ async def build_watchlist() -> dict:
             technical_result = calc_technical(ms_features)
             last_signal['technical'] = technical_result
             last_signal['sectorResonance'] = calc_sector_resonance(sector_trend, ms_features)
+
+            # === 8 维综合评分（与 /api/stock-dashboard 完全对齐）===
+            # 直接取预计算的 _compute_dashboard 结果（已在外层并行执行），保证与个股详情页完全一致。
+            # 失败时降级到 6 维均值（sentiment+risk+momentum+mainForce+technical+sectorResonance）。
+            try:
+                dash = _dashboard_map.get(item.stock_code)
+                if dash and dash.get('overall_score') is not None:
+                    last_signal['overallScore'] = dash['overall_score']
+                    last_signal['trendStrength'] = dash.get('trend_strength')
+                    # 暴露 8 维子项分数（可选，前端用于显示维度雷达）
+                    last_signal['scoreDimensions'] = {
+                        'trend_strength': dash.get('trend_strength'),
+                        'capital_momentum': dash.get('capital_momentum'),
+                        'sector_resonance': dash.get('sector_resonance'),
+                        'relative_strength': dash.get('relative_strength'),
+                        'volume_health': dash.get('volume_health'),
+                        'volatility_health': dash.get('volatility_health'),
+                        'drawdown_status': dash.get('drawdown_status'),
+                        'institution_signal': dash.get('institution_signal'),
+                    }
+                    last_signal['actionLabel'] = dash.get('action_label')
+                    last_signal['actionColor'] = dash.get('action_color')
+                else:
+                    raise ValueError('dash returns None')
+            except Exception:
+                # 降级：用已有 6 维数据映射出 8 维 scoreDimensions，保证所有个股结构一致
+                _sentiment = (last_signal.get('sentiment') or {}).get('score')
+                _risk = (last_signal.get('risk') or {}).get('score')
+                _momentum = (last_signal.get('momentum') or {}).get('score')
+                _mainForce = (last_signal.get('mainForce') or {}).get('score')
+                _technical = (last_signal.get('technical') or {}).get('score')
+                _sectorResonance = (last_signal.get('sectorResonance') or {}).get('score')
+                _scores = [_sentiment, _risk, _momentum, _mainForce, _technical, _sectorResonance]
+                _valid_scores = [s for s in _scores if s is not None]
+                last_signal['overallScore'] = round(sum(_valid_scores) / len(_valid_scores), 1) if _valid_scores else None
+                last_signal['trendStrength'] = (technical_result or {}).get('score')
+                # 6 维 → 8 维映射：trend=technical, capital=mainForce, resonance=sector, relative=momentum,
+                # volume=50(默认), volatility=risk, drawdown=sentiment, institution=mainForce
+                last_signal['scoreDimensions'] = {
+                    'trend_strength': _technical,
+                    'capital_momentum': _mainForce,
+                    'sector_resonance': _sectorResonance,
+                    'relative_strength': _momentum,
+                    'volume_health': 50,
+                    'volatility_health': _risk,
+                    'drawdown_status': _sentiment,
+                    'institution_signal': _mainForce,
+                }
+                last_signal['actionLabel'] = None
+                last_signal['actionColor'] = None
 
             # 根据 technical stage 覆写信号标签：让卖出信号更犀利、基于技术指标
             if bs_signal == 'S' and technical_result:
@@ -828,8 +975,12 @@ class MoveGroupRequest(BaseModel):
 
 
 @router.get("/api/watchlist")
-async def get_watchlist():
+async def get_watchlist(force: bool = False):
     """获取自选股列表（stale-while-revalidate）"""
+    if force:
+        reset_watchlist_cache()
+        return await run_in_threadpool(_sync_build_watchlist)
+
     now = time.time()
     cached = _watchlist_cache["data"]
     cache_age = now - _watchlist_cache["ts"]
@@ -962,7 +1113,7 @@ async def sync_quality_from_market_state():
         items = db.query(Watchlist).all()
         latest_sub = db.query(
             StockFeaturesDaily.stock_code,
-            sa_func.max(StockFeaturesDaily.trade_date).label('latest_date')
+            func.max(StockFeaturesDaily.trade_date).label('latest_date')
         ).filter(
             StockFeaturesDaily.stock_code.in_([i.stock_code for i in items])
         ).group_by(StockFeaturesDaily.stock_code).subquery()

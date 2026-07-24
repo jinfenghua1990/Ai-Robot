@@ -22,6 +22,7 @@ import { UP_COLOR, DOWN_COLOR, UP_DARK, DOWN_DARK, BULLISH_COLOR, BEARISH_COLOR,
 import SinaLink from '../components/SinaLink';
 import StockActionButtons from '../components/trading/StockActionButtons';
 
+import { stripCode } from '../utils/format';
 const fmtWan = (v) => {
   if (v == null) return '-';
   const n = Number(v);
@@ -355,7 +356,7 @@ export default function YuziBillboardPage() {
                         background: s.side === 'BUY' ? upBg(0.1) : downBg(0.1),
                         color: s.side === 'BUY' ? UP_COLOR : DOWN_COLOR,
                       }}
-                      onClick={(e) => { e.stopPropagation(); navigate(`/stock/${s.ts_code.split('.')[0]}`); }}
+                      onClick={(e) => { e.stopPropagation(); navigate(`/stock/${stripCode(s.ts_code)}`); }}
                       title={`${s.name} (${s.ts_code}) ${s.side === 'BUY' ? '买入' : '卖出'} ${fmtNet(s.net)}\n上榜原因: ${s.reason || '-'}`}
                     >
                       {s.name} {fmtNet(s.net)}
@@ -394,7 +395,7 @@ export default function YuziBillboardPage() {
                   <span
                     className="text-sm font-bold cursor-pointer"
                     style={{ color: s.change_pct >= 0 ? UP_COLOR : DOWN_COLOR }}
-                    onClick={() => navigate(`/stock/${s.ts_code.split('.')[0]}`)}
+                    onClick={() => navigate(`/stock/${stripCode(s.ts_code)}`)}
                   >{s.name || s.ts_code}</span>
                   <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{s.ts_code}</span>
                   <SinaLink tsCode={s.ts_code} />
@@ -422,7 +423,7 @@ export default function YuziBillboardPage() {
                 {s.list_reason && <div className="text-[10px] mt-0.5" style={{ color: 'var(--text-muted)' }}>上榜：{s.list_reason}</div>}
                 <div className="flex items-center gap-1.5 flex-wrap mt-0.5">
                   <StockActionButtons
-                    stockCode={s.ts_code.split('.')[0]}
+                    stockCode={stripCode(s.ts_code)}
                     stockName={s.name || s.ts_code}
                     size="xs"
                     onRefresh={loadData}
@@ -430,7 +431,7 @@ export default function YuziBillboardPage() {
                   <button
                     className="text-[10px] px-1.5 py-0.5 rounded border"
                     style={{ borderColor: 'rgba(168,85,247,0.4)', color: '#a855f7', background: 'rgba(168,85,247,0.05)' }}
-                    onClick={() => navigate(`/yuzi-tracker?ts_code=${s.ts_code.split('.')[0]}&min_score=0`)}
+                    onClick={() => navigate(`/yuzi-tracker?ts_code=${stripCode(s.ts_code)}&min_score=0`)}
                     title="跳转到20天跟踪页面查看该股生命周期"
                   >📊 20天跟踪</button>
                 </div>
@@ -485,7 +486,7 @@ export default function YuziBillboardPage() {
                             background: s.side === 'BUY' ? upBg(0.1) : downBg(0.1),
                             color: s.side === 'BUY' ? UP_COLOR : DOWN_COLOR,
                           }}
-                          onClick={() => navigate(`/stock/${s.ts_code.split('.')[0]}`)}
+                          onClick={() => navigate(`/stock/${stripCode(s.ts_code)}`)}
                         >{s.name} {fmtNet(s.net)}</span>
                       ))}
                     </div>

@@ -13,7 +13,6 @@ main.py 仍可通过 `from api import watchlist` 然后 `app.include_router(watc
 （这两个符号在 main.py startup 里被引用）。
 """
 from fastapi import APIRouter
-from fastapi.routing import APIRouter as _APIRouter
 import importlib
 
 from ._shared import _watchlist_cache

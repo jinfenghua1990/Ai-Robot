@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import SankeyChart from '../components/charts/SankeyChart';
 import CategoryLineChart from '../components/charts/CategoryLineChart';
 import DateNavigator from '../components/DateNavigator';
@@ -41,9 +41,9 @@ export default function AfterCapitalSection({
     return () => controller.abort();
   }, [selectedDate, lookbackDays]);
 
-  const handleSectorClick = (sectorName) => {
+  const handleSectorClick = useCallback((sectorName) => {
     if (onSelectSector) onSelectSector(sectorName);
-  };
+  }, [onSelectSector]);
 
   const { totalInflow, totalOutflow, netFlow, topInflow, combinedData } = useMemo(() => {
     const totalIn = rotationData?.total_inflow || 0;
@@ -70,7 +70,7 @@ export default function AfterCapitalSection({
     };
   }, [combinedData]);
 
-  const tooltipFormatter = (params) => {
+  const tooltipFormatter = useCallback((params) => {
     const p = params[0];
     const extra = chartData.extras[p.name] || {};
     const absVal = Math.abs(p.value);
@@ -88,7 +88,7 @@ export default function AfterCapitalSection({
     return `<div style="font-weight:700;font-size:13px;margin-bottom:2px">${p.name}</div>` +
            `<div style="font-size:12px;color:#ccc">${type}：<span style="color:${color};font-weight:600">${formatted}</span></div>` +
            `<div style="font-size:11px;color:#999">今日：${fmtVal(current)} · ${lookbackDays}天前：${fmtVal(past)}</div>${tip}`;
-  };
+  }, [chartData.extras, lookbackDays]);
 
   if (error) {
     return (

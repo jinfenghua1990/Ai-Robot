@@ -35,8 +35,9 @@ async def _get_realtime_price(code: str) -> dict:
         if len(parts) < 10:
             raise HTTPException(status_code=500, detail="行情数据格式异常")
         name = parts[0]
-        yesterday_close = float(parts[1]) if parts[1] else 0.0
-        open_price = float(parts[2]) if parts[2] else 0.0
+        # 新浪格式: name, 今开盘, 昨收盘, 当前价, ...
+        yesterday_close = float(parts[2]) if parts[2] else 0.0
+        open_price = float(parts[1]) if parts[1] else 0.0
         current_price = float(parts[3]) if parts[3] else 0.0
         high = float(parts[4]) if parts[4] else 0.0
         low = float(parts[5]) if parts[5] else 0.0

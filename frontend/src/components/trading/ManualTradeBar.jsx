@@ -7,7 +7,7 @@ import { apiFetch } from '../../utils/request';
  * 手动输入股票买入栏
  * 支持代码(000001)或中文名(平安银行)双模式搜索
  */
-export default function ManualTradeBar({ children }) {
+export default function ManualTradeBar({ children, compact = false, showLabel = true, placeholder }) {
   const { executeTrade } = useTrading();
   const [query, setQuery] = useState('');
   const [results, setResults] = useState([]);
@@ -89,17 +89,19 @@ export default function ManualTradeBar({ children }) {
 
   return (
     <>
-      <div ref={containerRef} className="relative flex items-center gap-2 px-3 py-2 rounded-lg border flex-wrap" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
-        <span className="text-sm font-medium flex-shrink-0" style={{ color: 'var(--text-primary)' }}>🔍 手动买入</span>
-        <div className="relative w-64 max-w-[16rem]">
+      <div ref={containerRef} className={`relative flex items-center gap-2 rounded-lg border flex-wrap ${compact ? 'px-2 py-1' : 'px-3 py-2'}`} style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
+        {showLabel && (
+          <span className="text-sm font-medium flex-shrink-0" style={{ color: 'var(--text-primary)' }}>🔍 手动买入</span>
+        )}
+        <div className={`relative ${compact ? 'w-44 max-w-[11rem]' : 'w-64 max-w-[16rem]'}`}>
           <input
             type="text"
             value={query}
             onChange={e => { setQuery(e.target.value); setSelected(null); }}
             onKeyDown={handleKeyDown}
             onFocus={() => results.length > 0 && setShowResults(true)}
-            placeholder="输入代码或名称（如 000001 / 平安银行）"
-            className="w-full px-3 py-1.5 rounded-md text-sm outline-none"
+            placeholder={placeholder || (compact ? '代码或名称' : '输入代码或名称（如 000001 / 平安银行）')}
+            className={`w-full rounded-md outline-none ${compact ? 'px-2 py-1 text-xs' : 'px-3 py-1.5 text-sm'}`}
             style={{ background: 'var(--bg-surface)', color: 'var(--text-primary)', border: '1px solid var(--border-color)' }}
           />
           {/* 搜索结果下拉 */}

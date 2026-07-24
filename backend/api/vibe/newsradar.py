@@ -10,6 +10,7 @@ AI「今日要点」不在此模块——复用 Vibe-Research 的可插拔 AI �
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import urllib.request
@@ -17,6 +18,8 @@ import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone, timedelta
 from email.utils import parsedate_to_datetime
+
+logger = logging.getLogger(__name__)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SOURCES_FILE = os.path.join(HERE, "news_sources.json")
@@ -94,13 +97,20 @@ def _fetch_source(src: dict, per: int, cutoff, redline: list[str]):
                 d["time"] = "—"
             out.append(d)
         return out
-    except Exception:
+    except Exception as e:
+        logger.warning("RSS fetch failed for %s (%s): %s", src.get("name", "?"), src.get("url", "?"), e)
         return None
+
+
+def _load_sources() -> dict:
+    """安全读取 news_sources.json，文件缺失时抛带上下文的异常。"""
+    with open(SOURCES_FILE, encoding="utf-8") as f:
+        return json.load(f)
 
 
 def fetch_radar() -> dict:
     """抓全部源，返回 12 赛道数据并落盘缓存。"""
-    cfg = json.load(open(SOURCES_FILE, encoding="utf-8"))
+    cfg = _load_sources()
     days = cfg.get("fetch", {}).get("recent_days", 7)
     per = cfg.get("fetch", {}).get("per_source", 6)
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
@@ -153,7 +163,7 @@ def load_cache():
 
 def skeleton() -> dict:
     """无缓存时返回赛道骨架（空 items），前端提示点刷新。"""
-    cfg = json.load(open(SOURCES_FILE, encoding="utf-8"))
+    cfg = _load_sources()
     byhint: dict[str, int] = {}
     for s in cfg["sources"]:
         byhint[s["hint"]] = byhint.get(s["hint"], 0) + 1

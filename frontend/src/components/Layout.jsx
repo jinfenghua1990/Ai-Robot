@@ -6,15 +6,28 @@ import SystemCheckBanner from './SystemCheckBanner';
 
 // AIROBOT 主菜单 — 底部子系统模块，共享数据入口统一放到顶部栏
 const mainSections = [
+  { section: '数据中心', items: [
+    { path: '/data-center/overview', label: '三市场总览', icon: '🗂️' },
+    { path: '/data-center/a-share', label: 'A股数据', icon: '🇨🇳' },
+    { path: '/data-center/hk', label: '港股数据', icon: '🇭🇰' },
+    { path: '/data-center/us', label: '美股数据', icon: '🇺🇸' },
+    { path: '/data-center/schedule', label: '定时采集', icon: '⏰' },
+  ]},
   { section: '市场分析', items: [
+    { path: '/today', label: '盘中实时', icon: '⚡' },
+    { path: '/theme-review', label: '题材复盘', icon: '🔥' },
+    { path: '/consolidated', label: '综合数据', icon: '🧩' },
+    { path: '/stock-monitor', label: '选股持仓', icon: '🎯' },
+    { path: '/robot-strategies', label: '策略信号', icon: '🤖' },
+    { path: '/strategy-position', label: '波段信号', icon: '🌊' },
+    { path: '/mock-trading', label: '模拟交易', icon: '📈' },
     { path: '/panorama', label: '板块全景', icon: '🔥' },
     { path: '/concept-flow', label: '资金流向', icon: '💸' },
     { path: '/fund-weather', label: '资金气象', icon: '🌦️' },
     { path: '/concept-flow-compare', label: '概念资金', icon: '📊' },
     { path: '/index-flow', label: '指数资金', icon: '🇨🇳' },
-    { path: '/hk-market', label: '港股', icon: '🇭🇰' },
-    { path: '/us-market', label: '美股', icon: '🇺🇸' },
     { path: '/strategy-center', label: '策略中心', icon: '🎯' },
+    { path: '/wave-analysis', label: '波浪分析', icon: '🌊' },
     { path: '/yuzi-center', label: '游资中心', icon: '🐉' },
     { path: '/yuzi-tracker-20d', label: '20天跟踪', icon: '🧬' },
   ]},
@@ -67,36 +80,6 @@ const projectMenus = {
       { path: '/dsa/settings', label: 'DSA 设置', icon: '⚙️' },
     ],
   },
-  hermes: {
-    title: 'Hermes',
-    icon: '⚡',
-    sections: [
-      { section: 'Hermes A股', items: [
-        { path: '/hermes/today', label: '盘中实时', icon: '⚡' },
-        { path: '/hermes/main-hub', label: '主控中心', icon: '🎛️' },
-        { path: '/hermes/theme-review', label: '题材复盘', icon: '🔥' },
-        { path: '/hermes/wave-analysis', label: '波浪分析', icon: '🌊' },
-        { path: '/hermes/stock-monitor', label: '选股持仓', icon: '🎯' },
-        { path: '/hermes/stock-analysis', label: '选股分析', icon: '🔍' },
-        { path: '/hermes/strategies', label: '策略信号', icon: '🤖' },
-        { path: '/hermes/screener', label: '智能选股', icon: '🔬' },
-        { path: '/hermes/mock-trading', label: '模拟交易', icon: '📈' },
-        { path: '/hermes/strategy-position', label: '波段信号', icon: '波段' },
-      ]},
-      { section: 'Hermes 港美股', items: [
-        { path: '/hermes/us-market', label: '美股总览', icon: '🇺🇸' },
-        { path: '/hermes/us-monitor', label: '美股监控', icon: '📡' },
-        { path: '/hermes/us-analysis', label: '美股分析', icon: '📊' },
-        { path: '/hermes/us-strategies', label: '美股策略', icon: '🎯' },
-        { path: '/hermes/us-trading', label: '美股交易', icon: '💹' },
-        { path: '/hermes/hk-market', label: '港股总览', icon: '🇭🇰' },
-        { path: '/hermes/hk-monitor', label: '港股监控', icon: '📡' },
-        { path: '/hermes/hk-analysis', label: '港股分析', icon: '📊' },
-        { path: '/hermes/hk-strategies', label: '港股策略', icon: '🎯' },
-        { path: '/hermes/hk-trading', label: '港股交易', icon: '💹' },
-      ]},
-    ],
-  },
   aihf: {
     title: 'AI Hedge Fund',
     icon: '🦅',
@@ -112,13 +95,6 @@ const projectMenus = {
     ],
   },
   gostock: null,
-  llm: {
-    title: 'LLM 网关',
-    icon: '🔌',
-    items: [
-      { path: '/llm', label: '网关状态', icon: '🔌' },
-    ],
-  },
   openclaw: {
     title: 'OpenClaw 控制面板',
     icon: '🔧',
@@ -136,34 +112,43 @@ const projectMenus = {
       { path: '/ai-agents/openclaw', label: 'OpenClaw', icon: '🔧' },
     ],
   },
+  tracker: {
+    title: '股票跟踪',
+    icon: '📈',
+    items: [
+      { path: '/stock-tracker', label: '跟踪列表', icon: '📈' },
+    ],
+  },
 };
 
 const projectKeys = [
   { key: 'main', label: 'AIROBOT', icon: '🔷' },
   { key: 'vibe', label: 'Vibe', icon: '📡' },
   { key: 'dsa', label: 'DSA', icon: '🤖' },
-  { key: 'hermes', label: 'Hermes', icon: '⚡' },
-  { key: 'llm', label: '网关', icon: '🔌' },
   { key: 'ai-agents', label: '智能体投资团', icon: '🤖' },
+  { key: 'tracker', label: '跟踪', icon: '📈' },
+  { key: 'hk', label: '港股', icon: '🇭🇰' },
+  { key: 'hk-strategy', label: '港策', icon: '🎯' },
+  { key: 'us', label: '美股', icon: '🇺🇸' },
 ];
 
 function detectProject(pathname) {
   if (pathname.startsWith('/vibe/') || pathname === '/vibe') return 'vibe';
   if (pathname.startsWith('/dsa/') || pathname === '/dsa') return 'dsa';
-  if (pathname.startsWith('/hermes/') || pathname === '/hermes') return 'hermes';
   if (pathname.startsWith('/aihf/') || pathname === '/aihf') return 'aihf';
   if (pathname.startsWith('/tagents/') || pathname === '/tagents') return 'tagents';
   if (pathname.startsWith('/gostock/') || pathname === '/gostock') return 'gostock';
-  if (pathname.startsWith('/llm/') || pathname === '/llm') return 'llm';
   if (pathname.startsWith('/openclaw/') || pathname === '/openclaw') return 'openclaw';
   if (pathname.startsWith('/ai-agents')) return 'ai-agents';
+  if (pathname.startsWith('/stock-tracker')) return 'tracker';
+  if (pathname.startsWith('/hk-market')) return 'hk';
+  if (pathname.startsWith('/hk-strategy')) return 'hk-strategy';
+  if (pathname.startsWith('/us-market')) return 'us';
   return 'main';
 }
 
 /** 将侧边栏内部路径转为外部独立页URL(新标签页),返回null表示内部路由 */
 function externalPageUrl(path) {
-  if (path.startsWith('/hermes/')) return `/_hermes/#${path.replace('/hermes', '')}`;
-  if (path === '/hermes') return '/_hermes/';
   if (path.startsWith('/dsa'))    return `/_dsa${path.replace('/dsa', '') || '/'}`;
   if (path.startsWith('/vibe'))   return `/_vibe${path.replace('/vibe', '') || '/'}`;
   if (path.startsWith('/aihf'))   return `/_aihf/${path.replace('/aihf', '')}`;
@@ -185,6 +170,8 @@ export default function Layout() {
   const [sharedData, setSharedData] = useState({ watchlist: [], portfolio: null, focus: null });
   const location = useLocation();
   const [activeProject, setActiveProject] = useState(() => detectProject(location.pathname));
+  // 个股分析页为独立工具页，左侧不再继承「市场分析」项目菜单栏（自身已有内部 tab 导航）
+  const isStockAnalysis = location.pathname.startsWith('/stock-analysis');
 
   useEffect(() => {
     const saved = localStorage.getItem('airobot-theme') || 'light';
@@ -299,6 +286,9 @@ export default function Layout() {
     }
 
     const project = projectMenus[activeProject];
+    if (!project) {
+      return <div className="px-2.5 py-4 text-xs text-center" style={{ color: 'var(--text-muted)' }}>选择模块查看详情</div>;
+    }
     if (project.sections) {
       return (
         <>
@@ -389,6 +379,7 @@ export default function Layout() {
 
   return (
     <div className="h-screen flex flex-col md:flex-row overflow-hidden" style={{ background: 'var(--bg-primary)' }}>
+      {!isStockAnalysis && (<>
       {/* 移动端顶栏 hamburger */}
       <button
         onClick={() => setNavOpen(!navOpen)}
@@ -416,11 +407,12 @@ export default function Layout() {
       {navOpen && (
         <div onClick={() => setNavOpen(false)} className="md:hidden fixed inset-0 z-30" style={{ background: 'rgba(0,0,0,0.4)' }} />
       )}
+      </>)}
 
       {/* 右侧内容区 */}
       <div className="flex-1 flex flex-col w-full min-w-0 h-full overflow-hidden">
         {/* 顶栏 */}
-        <header className="shrink-0 z-30 h-10 border-b flex items-center justify-between pl-12 md:pl-4 pr-2 md:pr-4"
+        <header className={`shrink-0 z-30 h-10 border-b flex items-center justify-between ${isStockAnalysis ? 'pl-4' : 'pl-12'} md:pl-4 pr-2 md:pr-4`}
           style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
           <div className="flex items-center gap-1">
             {projectKeys.map(({ key, label, icon }) => {
@@ -439,6 +431,26 @@ export default function Layout() {
                     {label}
                     <span className="text-[9px]" style={{ color: 'var(--text-muted)' }}>↗</span>
                   </a>
+                );
+              }
+              // hk/us/港策 直接走独立页面，不切换侧边栏项目
+              if (key === 'hk' || key === 'us' || key === 'hk-strategy') {
+                const targetPath = key === 'hk' ? '/hk-market' : key === 'hk-strategy' ? '/hk-strategy' : '/us-market';
+                return (
+                  <NavLink
+                    key={key}
+                    to={targetPath}
+                    onClick={() => setNavOpen(false)}
+                    className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-xs transition-colors whitespace-nowrap ${active ? 'font-medium' : ''}`}
+                    style={{
+                      background: active ? 'var(--bg-hover)' : 'transparent',
+                      color: active ? 'var(--accent-blue)' : 'var(--text-secondary)',
+                      border: active ? '1px solid var(--accent-blue)' : '1px solid transparent',
+                    }}
+                  >
+                    <span>{icon}</span>
+                    {label}
+                  </NavLink>
                 );
               }
               return (
@@ -481,7 +493,10 @@ export default function Layout() {
             <NavLink to="/research-center" className="flex items-center gap-1 hover:opacity-80 no-underline" style={{ color: 'var(--text-secondary)' }}>
               <span>📋</span><span>研报中心</span>
             </NavLink>
-          </div>
+            <NavLink to="/stock-analysis" className="flex items-center gap-1 hover:opacity-80 no-underline" style={{ color: 'var(--text-secondary)' }}>
+              <span>📊</span><span>个股分析</span>
+            </NavLink>
+            </div>
           <div className="flex items-center gap-1 ml-2">
             <NavLink to="/research-center" className="relative flex items-center gap-1 px-1.5 py-1 rounded-md text-xs hover:opacity-80 no-underline"
               style={{ color: reportNotifCount > 0 ? '#ef4444' : 'var(--text-secondary)' }}>

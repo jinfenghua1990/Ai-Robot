@@ -696,7 +696,9 @@ def _check_itick():
 
 
 def itick_batch_quotes(ts_codes):
-    """iTick批量实时行情（A股，逐个请求，5次/秒限流）"""
+    """iTick批量实时行情（A股，逐个请求，5次/秒限流）
+    注意：超时已从10s降至5s，最多查询10只股票以避免阻塞采集链路。
+    """
     if not _check_itick():
         _record_call('itick', False, 'no token')
         return {}
@@ -707,7 +709,7 @@ def itick_batch_quotes(ts_codes):
             'accept': 'application/json',
             'token': ITICK_TOKEN,
         }
-        for tc in ts_codes[:30]:
+        for tc in ts_codes[:10]:  # 限制10只，避免阻塞
             try:
                 code = _ts_to_code(tc)
                 if tc.endswith('.SH'):
@@ -718,13 +720,12 @@ def itick_batch_quotes(ts_codes):
                     region = 'SZ'
                 url = f'{ITICK_BASE_URL}/stock/quote'
                 params = {'region': region, 'code': code}
-                resp = requests.get(url, headers=headers, params=params, timeout=10)
+                resp = requests.get(url, headers=headers, params=params, timeout=5)
                 if resp.status_code != 200:
                     continue
                 data = resp.json().get('data', {})
                 if not data:
                     continue
-                # data.ld=最新价, data.p=昨收, data.ch=涨跌额, data.chp=涨跌幅%
                 price = float(data.get('ld', 0) or 0)
                 pre_close = float(data.get('p', 0) or 0)
                 pct_chg = float(str(data.get('chp', 0) or '0').replace('%', ''))

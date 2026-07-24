@@ -8,7 +8,6 @@ import asyncio
 from datetime import datetime
 from typing import List, Optional
 import httpx
-from db.connection import get_db
 from db.models import SectorFlow, StockFlow
 from analyzers.buy_power import calc_buy_power_for_signal
 from analyzers.market_state import get_latest_state, compute_quality_from_features
@@ -61,7 +60,7 @@ def update_config(new_config: dict):
 def _find_sector_for_stock(db, ts_code: str) -> Optional[str]:
     """从 stock_flow 表查找股票所属板块（跳过空 sector 记录）"""
     row = db.query(StockFlow.sector).filter(
-        StockFlow.ts_code.like(f"%{ts_code}%"),
+        StockFlow.ts_code == ts_code,
         StockFlow.sector != None,
         StockFlow.sector != '',
     ).order_by(StockFlow.trade_date.desc()).first()
@@ -304,7 +303,8 @@ async def _get_quote(code: str):
         if len(parts) < 10:
             _quote_cache[code] = (None, time.time())
             return None
-        yesterday_close = float(parts[1])
+        # 新浪格式: name, 今开盘, 昨收盘, 当前价, ...
+        yesterday_close = float(parts[2])
         current_price = float(parts[3])
         change = current_price - yesterday_close
         change_pct = (change / yesterday_close * 100) if yesterday_close else 0
@@ -313,7 +313,7 @@ async def _get_quote(code: str):
             'name': parts[0],
             'price': current_price,
             'yesterdayClose': yesterday_close,
-            'open': float(parts[2]),
+            'open': float(parts[1]),
             'high': float(parts[4]),
             'low': float(parts[5]),
             'volume': int(float(parts[8])),

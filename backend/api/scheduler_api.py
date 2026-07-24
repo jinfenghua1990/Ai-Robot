@@ -25,7 +25,7 @@ _DAILY_ETL_FOCUS = {
     "daily_report",          # 20:00 综合日报 HTML 生成
     "archive",               # 15:05 收盘归档 → sector_flow/stock_flow
     "analyze",               # 15:30 盘后分析
-    "dragon_tiger_evening",  # 18:30 龙虎榜
+    "dragon_tiger_evening",  # 18:05 龙虎榜（Tushare 18:00 发布数据，18:05 首次采，18:30 兜底）
     "moneyflow_detail",      # 17:30 四档资金流
 }
 

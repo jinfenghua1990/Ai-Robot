@@ -10,8 +10,9 @@ TUSHARE_TOKEN = os.getenv("TUSHARE_TOKEN", "")
 API_PORT = int(os.getenv("API_PORT", "9000"))
 API_READ_KEY = os.getenv("API_READ_KEY", "")
 CORS_ORIGINS = [o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost:9000,http://127.0.0.1:9000").split(",") if o.strip()]
-RATE_LIMIT_MAX_REQUESTS = int(os.getenv("RATE_LIMIT_MAX_REQUESTS", "300"))
+RATE_LIMIT_MAX_REQUESTS = int(os.getenv("RATE_LIMIT_MAX_REQUESTS", "1000"))
 RATE_LIMIT_WINDOW_SECONDS = int(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "60"))
+RATE_LIMIT_MAX_CONNECTIONS_PER_IP = int(os.getenv("RATE_LIMIT_MAX_CONNECTIONS_PER_IP", "50"))
 
 # 国信证券接口
 GS_API_KEY = os.getenv("GS_API_KEY", "")

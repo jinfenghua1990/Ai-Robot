@@ -35,7 +35,7 @@ export default function SystemCheckBanner() {
       setChecked(true);
     };
     load();
-    const t = setInterval(load, 30000);
+    const t = setInterval(load, 60000);
     return () => { alive = false; clearInterval(t); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

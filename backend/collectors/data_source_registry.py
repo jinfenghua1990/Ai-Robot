@@ -2,7 +2,9 @@
 数据源注册器 - 可扩展的多数据源管理
 后续添加新数据源只需要在 DATA_SOURCES 中添加一条配置 + 实现采集函数
 """
-import os
+import logging
+
+logger = logging.getLogger(__name__)
 from utils.http_constants import clear_proxy_env
 
 clear_proxy_env()
@@ -304,7 +306,7 @@ def register_source(name, config):
     }
     """
     DATA_SOURCES[name] = config
-    print(f'[registry] Registered data source: {name} ({config.get("display_name", "")})')
+    logger.info(f'[registry] Registered data source: {name} ({config.get("display_name", "")})')
 
 
 def get_source_info():

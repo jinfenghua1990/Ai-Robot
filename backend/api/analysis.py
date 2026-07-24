@@ -32,6 +32,9 @@ def _today() -> date:
 
 
 def _parse_date(d: Optional[str]) -> Optional[date]:
+    if d is None:
+        return None
+    d = str(d) if not isinstance(d, str) else d
     if not d:
         return None
     try:

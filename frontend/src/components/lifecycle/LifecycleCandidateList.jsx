@@ -1,12 +1,10 @@
 import { useState } from 'react';
-import SignalCard from '../trading/SignalCard';
+import SignalCard from '../trading/SignalCardV4';
 
 const SIGNAL_CARD_PROPS = {
   orders: [],
   showWatchBtn: true,
   mode: 'watchlist',
-  showMarketState: true,
-  showBuyPower: true,
   showAnalysisButton: true,
 };
 

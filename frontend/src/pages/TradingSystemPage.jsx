@@ -21,8 +21,17 @@ const STAGE_COLORS = {
   '启动': '#f59e0b', '发酵': '#ef4444',
   '关注': '#a78bfa', '吸筹': '#3b82f6', '跟随': '#64748b',
   '衰退': '#94a3b8', '退潮': '#94a3b8',
+  // 真实技术形态阶段（calc_technical 输出）
+  '破位': '#64748b', '弱势': '#94a3b8', '震荡': '#06b6d4',
+  '偏多': '#22c55e', '多头': '#16a34a', '顶部': '#ef4444',
 };
 const stageColor = (s) => STAGE_COLORS[s] || '#06b6d4';
+// 生命周期 5 阶段配色（与龙头引擎 calc_lifecycle 对齐：蓄势/突破/主升/分歧/衰退）
+const PHASE_COLOR_MAP = {
+  '蓄势': '#64748b', '突破': '#facc15', '主升': '#dc2626', '分歧': '#f97316', '衰退': '#94a3b8',
+};
+const phaseColor = (p) => PHASE_COLOR_MAP[p] || '#94a3b8';
+const trendArrow = (t) => (t === 'rising' ? '↑' : t === 'falling' ? '↓' : '→');
 
 // 板块状态配色
 const SECTOR_STATE_COLORS = {
@@ -130,9 +139,29 @@ export default function TradingSystemPage() {
         </div>
       )}
 
+      {/* 主龙衰退预警（龙头引擎：主龙进入衰退阶段时触发） */}
+      {data?.decay_warning && (
+        <div className="rounded-md p-2 text-xs flex items-start gap-2"
+          style={{ background: 'rgba(239,68,68,0.1)', color: '#ef4444', border: '1px solid rgba(239,68,68,0.3)' }}>
+          <span className="text-base">📉</span>
+          <div>
+            <span className="font-bold">主龙衰退预警：</span>
+            当前主龙进入衰退阶段，建议关注下方接棒候选
+          </div>
+        </div>
+      )}
+
       {/* 主龙头加冕卡 */}
       <section>
         <div className="text-[11px] font-bold mb-1" style={{ color: 'var(--text-muted)' }}>👑 主龙头</div>
+        {data?.sector_rotation?.current_leader_sector && (
+          <div className="text-[10px] mb-1" style={{ color: 'var(--text-muted)' }}>
+            主龙板块：<span style={{ color: '#a855f7', fontWeight: 600 }}>{data.sector_rotation.current_leader_sector}</span>
+            {data?.current_leader_track?.consecutive_days_as_leader > 1 && (
+              <span className="ml-2">连续担任主龙 {data.current_leader_track.consecutive_days_as_leader} 天</span>
+            )}
+          </div>
+        )}
         {loading && !leader ? (
           <div className="rounded-lg border p-6 text-center text-xs" style={{ borderColor: 'var(--border-color)', color: 'var(--text-muted)' }}>
             ⏳ 加载中…
@@ -221,7 +250,7 @@ function LeaderHeroCard({ leader, onClick, onRefresh }) {
         {/* 左侧：阶段 + 评分 */}
         <div className="flex-shrink-0 flex flex-col items-center justify-center w-20 h-20 rounded-lg"
           style={{ background: `${color}15`, border: `2px solid ${color}` }}>
-          <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>游资阶段</span>
+          <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>真实阶段</span>
           <span className="text-base font-bold mt-0.5" style={{ color }}>{stage}</span>
           {rawLeaderScore != null && (
             <span className="text-[10px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
@@ -241,6 +270,11 @@ function LeaderHeroCard({ leader, onClick, onRefresh }) {
             {leader.sector && (
               <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: 'rgba(168,85,247,0.1)', color: '#a855f7' }}>
                 板块：{leader.sector}
+              </span>
+            )}
+            {leader.phase && (
+              <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: `${phaseColor(leader.phase)}22`, color: phaseColor(leader.phase), fontWeight: 700 }}>
+                {leader.phase} {trendArrow(leader.phase_trend)}
               </span>
             )}
           </div>
@@ -283,6 +317,26 @@ function LeaderHeroCard({ leader, onClick, onRefresh }) {
           </div>
         </div>
       </div>
+
+      {/* 近 N 日技术演进轨迹（阶段色块：破位/弱势/震荡/偏多/多头/突破/顶部） */}
+      {leader.track && leader.track.length > 0 && (
+        <div className="mt-3">
+          <div className="text-[10px] mb-1" style={{ color: 'var(--text-muted)' }}>
+            近 {leader.track.length} 日技术演进（左→右为时间序）
+          </div>
+          <div className="flex gap-1 overflow-x-auto pb-1">
+            {leader.track.map((t, i) => (
+              <div key={i} className="flex flex-col items-center flex-shrink-0"
+                title={`${t.date}: ${t.technical_stage} | 技术分 ${t.score}`}>
+                <div className="w-3.5 h-3.5 rounded-sm" style={{ background: stageColor(t.technical_stage) }} />
+                <span className="text-[8px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
+                  {String(t.date).slice(4, 6)}/{String(t.date).slice(6, 8)}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* 操作按钮 */}
       <div className="mt-3 flex items-center justify-between flex-wrap gap-2">

@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { apiFetch } from '../../utils/request';
 
+import { stripCode } from '../../utils/format';
 const fmtFlow = (v) => {
   if (v == null || isNaN(v)) return '—';
   const abs = Math.abs(v);
@@ -131,7 +132,7 @@ export default function StockCompareSection({ selectedDate, rtStocks, selectedSt
           <div className="flex items-center gap-1.5 min-w-0">
             <span className="text-xs font-bold flex-shrink-0" style={{ color: idx < 3 && !isNewcomer ? '#ef4444' : 'var(--text-muted)' }}>{idx + 1}</span>
             <span className="text-sm font-bold truncate" style={{ color: 'var(--text-primary)' }}>{item.name}</span>
-            <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{item.ts_code?.split('.')[0]}</span>
+            <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{stripCode(item.ts_code)}</span>
           </div>
           <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold flex-shrink-0"
             style={{ background: status.bg, color: status.color }}>{status.text}</span>

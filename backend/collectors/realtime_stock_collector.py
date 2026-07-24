@@ -212,18 +212,26 @@ def collect_realtime_stock_flow(trade_date):
         ('qstock',        top20_for_flow,  'collectors.extended_collectors', 'qstock_batch_quotes'),
     ]
 
+    # 多源采集并行化，避免串行阻塞（itick单个请求可能超时，串行会拖垮整个采集）
     price_results = {}
-    for name, codes_list, mod_path, func_name in _PRICE_COLLECTORS:
-        result = {}
+    def _fetch_collector(name, codes_list, mod_path, func_name):
         ts_codes = [s['ts_code'] for s in codes_list]
         try:
             mod = importlib.import_module(mod_path)
             func = getattr(mod, func_name)
             result = func(ts_codes)
             print(f'[realtime] {name} prices: {len(result)} stocks')
+            return name, result
         except Exception as e:
             logger.warning(f'[realtime] {name} price error: {e}', exc_info=True)
-        price_results[name] = result
+            return name, {}
+
+    with ThreadPoolExecutor(max_workers=min(len(_PRICE_COLLECTORS), 8)) as executor:
+        futures = [executor.submit(_fetch_collector, name, codes_list, mod_path, func_name)
+                   for name, codes_list, mod_path, func_name in _PRICE_COLLECTORS]
+        for future in as_completed(futures):
+            name, result = future.result()
+            price_results[name] = result
 
     tencent_prices       = price_results['tencent']
     tdx_prices           = price_results['tdx']

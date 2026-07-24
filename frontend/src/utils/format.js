@@ -9,6 +9,28 @@ export const formatMoney = (val) => {
 };
 
 /**
+ * 安全保留2位小数（null/NaN→'0.00'）
+ */
+export const f2 = (v) => {
+  const n = Number(v);
+  return isNaN(n) ? '0.00' : n.toFixed(2);
+};
+
+/**
+ * 涨跌色：正→红 #ef4444，负→绿 #22c55e，零/NaN→灰 #888
+ */
+export const colorForPct = (v) => {
+  const n = Number(v);
+  if (isNaN(n) || n === 0) return '#888';
+  return n > 0 ? '#ef4444' : '#22c55e';
+};
+
+/**
+ * 去掉股票代码的 .SH/.SZ/.BJ 后缀
+ */
+export const stripCode = (code) => String(code || '').split('.')[0];
+
+/**
  * 格式化盈亏：带正负号 + 2位小数
  * @param {number} val - 盈亏金额
  * @returns {string} 带正负号的字符串
@@ -38,6 +60,18 @@ export const fmtFlow = (v) => {
 export const fmtPct = (v) => {
   if (v > 0) return `+${v.toFixed(2)}%`;
   return `${v.toFixed(2)}%`;
+};
+
+/**
+ * 格式化金额（元为输入单位）：超 1 亿显示"X.XX亿"，超 1 万显示"X.Xw"，否则保留 2 位小数
+ * @param {number} v - 金额（元）
+ * @returns {string} 格式化后的字符串
+ */
+export const formatWan = (v) => {
+  if (v == null) return '-';
+  if (Math.abs(v) >= 1e8) return (v / 1e8).toFixed(2) + '亿';
+  if (Math.abs(v) >= 10000) return (v / 10000).toFixed(1) + 'w';
+  return v.toFixed(2);
 };
 
 /**

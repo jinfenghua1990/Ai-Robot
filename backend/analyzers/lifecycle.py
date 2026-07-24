@@ -8,7 +8,6 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import logging
 from datetime import datetime
-from db.connection import get_db
 from db.session import get_db_session
 from db.models import LeaderLifecycle, StockFlow
 from sqlalchemy import func
@@ -144,7 +143,7 @@ def update_lifecycle(trade_date):
             db.commit()
         print(f'[lifecycle] Updated {updated} stocks ({created} created) for {trade_date}')
     except Exception as e:
-        db.rollback()
+        pass  # with context auto-rollbacks
         logger.exception(f'[lifecycle] Error')
         return {'error': str(e)}
 

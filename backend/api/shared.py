@@ -219,7 +219,14 @@ async def _sync_miaoxiang_to_dsa(mx_items: list[dict]) -> int:
     
     策略：按 symbol 比较妙想 vs DSA 当前持仓，通过创建交易使 DSA 与妙想一致。
     返回：创建的交易笔数
+    
+    安全机制：妙想空返回时跳过同步，避免误清所有 DSA 持仓
     """
+    # 妙想无数据时跳过同步（API 可能临时故障，不应清空 DSA 持仓）
+    if not mx_items:
+        logger.warning("桥接同步跳过：妙想持仓为空，可能 API 临时故障，保留 DSA 现有持仓不变")
+        return 0
+    
     DSA_ACCOUNT_ID = 1
     dsa_api = "http://127.0.0.1:8000/api/v1/portfolio"
     today_s = date.today().isoformat()

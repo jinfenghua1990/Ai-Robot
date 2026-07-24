@@ -1,13 +1,11 @@
 """反向代理：将子系统 API 统一收敛到 AIROBOT 端口 9000。
 
-Hermes / DSA / AIHF / LLM Gateway / OpenClaw 后端仍然独立运行，
-但浏览器/外部调用只需访问 localhost:9000：
-- /api/ops/*          -> Hermes localhost:8788
-- /api/mock-trading/* -> Hermes localhost:8788
-- /api/v1/*           -> DSA   localhost:8000
-- /_aihf_api/*        -> AIHF  localhost:8002（去掉前缀）
-- /_llm_api/*         -> LLM Gateway localhost:8001（去掉前缀）
-- /_openclaw/*        -> OpenClaw    localhost:18789（去掉前缀）
+Hermes 子系统已并入本进程（见 backend/main.py 中 hermes_backend 路由并入），
+不再经此代理转发到 8788。此处仅保留仍独立运行的子系统：
+
+- /api/v1/*          -> DSA   localhost:8000
+- /_aihf_api/*       -> AIHF  localhost:8002（去掉前缀）
+- /_openclaw/*       -> OpenClaw    localhost:18789（去掉前缀）
 """
 import logging
 import os
@@ -20,10 +18,8 @@ logger = logging.getLogger("airobot.proxy")
 router = APIRouter()
 
 # 子系统代理目标（内部端口）
-_HERMES_BASE = "http://127.0.0.1:8788"
 _DSA_BASE = "http://127.0.0.1:8000"
 _AIHF_BASE = os.environ.get("AIHF_BACKEND_URL", "http://127.0.0.1:8002")
-_LLM_GATEWAY_BASE = os.environ.get("LLM_GATEWAY_URL", "http://127.0.0.1:8001")
 _OPENCLAW_BASE = os.environ.get("OPENCLAW_UI_URL", "http://127.0.0.1:18789")
 
 _HOP_BY_HOP_HEADERS = {
@@ -79,7 +75,6 @@ async def _proxy_request(
         for k, v in request.headers.items()
         if k.lower() not in _HOP_BY_HOP_HEADERS and k.lower() != "host"
     }
-
     try:
         body = await request.body()
         resp = await client.request(
@@ -112,36 +107,9 @@ async def _proxy_request(
     )
 
 
-@router.api_route(
-    "/api/ops/health",
-    methods=["GET"],
-    include_in_schema=False,
-)
-async def proxy_hermes_health(request: Request) -> Response:
-    return await _proxy_request(
-        request, _HERMES_BASE, "health",
-        strip_prefix="/api/ops/",
-    )
-
-
-@router.api_route(
-    "/api/ops/{path:path}",
-    methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"],
-    include_in_schema=False,
-)
-async def proxy_hermes_ops(request: Request, path: str) -> Response:
-    return await _proxy_request(request, _HERMES_BASE, path)
-
-
-@router.api_route(
-    "/api/mock-trading/{path:path}",
-    methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"],
-    include_in_schema=False,
-)
-async def proxy_hermes_mock_trading(request: Request, path: str) -> Response:
-    return await _proxy_request(request, _HERMES_BASE, path)
-
-
+# ---------------------------------------------------------------------------
+# DSA API 代理：/api/v1/* 收敛到后端 8000
+# ---------------------------------------------------------------------------
 @router.api_route(
     "/api/v1/{path:path}",
     methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"],
@@ -163,22 +131,6 @@ async def proxy_aihf_api(request: Request, path: str) -> Response:
     return await _proxy_request(
         request, _AIHF_BASE, path,
         strip_prefix="/_aihf_api/",
-        timeout=120.0,
-    )
-
-
-# ---------------------------------------------------------------------------
-# LLM Gateway 代理：同源路径 /_llm_api/* 收敛到后端 8001
-# ---------------------------------------------------------------------------
-@router.api_route(
-    "/_llm_api/{path:path}",
-    methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"],
-    include_in_schema=False,
-)
-async def proxy_llm_gateway(request: Request, path: str) -> Response:
-    return await _proxy_request(
-        request, _LLM_GATEWAY_BASE, path,
-        strip_prefix="/_llm_api/",
         timeout=120.0,
     )
 

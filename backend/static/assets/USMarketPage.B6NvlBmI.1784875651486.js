@@ -1,0 +1,2 @@
+import{j as r}from"./index.BxZRnzg3.1784875651486.js";import t from"./GlobalMarketPage.by622zNN.1784875651486.js";import"./react-vendor.DJibnzm3.1784875651486.js";import"./colors.zcUzlBNA.1784875651486.js";import"./TrackButton.C_GwozMC.1784875651486.js";import"./format.CHrUVyvi.1784875651486.js";function s(){return r.jsx(t,{market:"US"})}export{s as default};
+//# sourceMappingURL=USMarketPage.B6NvlBmI.1784875651486.js.map

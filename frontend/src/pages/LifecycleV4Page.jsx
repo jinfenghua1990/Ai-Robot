@@ -34,7 +34,7 @@ export default function LifecycleV4Page() {
   const [error, setError] = useState(null);
   const [stats, setStats] = useState(null);
   const [history, setHistory] = useState([]);
-  const [autoRefresh, setAutoRefresh] = useState(true);
+  const [autoRefresh, setAutoRefresh] = useState(false);
   const [snapshotTime, setSnapshotTime] = useState('');
 
   const fetchSystem = useCallback(async (date) => {

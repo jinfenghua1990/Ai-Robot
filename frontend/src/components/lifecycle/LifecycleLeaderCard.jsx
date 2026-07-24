@@ -1,4 +1,4 @@
-import SignalCard from '../trading/SignalCard';
+import SignalCard from '../trading/SignalCardV4';
 
 /**
  * ② 主龙卡（保留主龙特殊样式，叠加切换预警和评分明细）
@@ -63,8 +63,6 @@ export default function LifecycleLeaderCard({ leader, switchWarning }) {
           orders={[]}
           showWatchBtn
           mode="watchlist"
-          showMarketState
-          showBuyPower
           showAnalysisButton
         />
       </div>

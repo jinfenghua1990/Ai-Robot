@@ -5,7 +5,7 @@
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import logging
-from db.connection import get_db
+from datetime import datetime
 from db.session import get_db_session
 from db.models import StockFlow, LeaderLifecycle
 

@@ -86,8 +86,8 @@ async def run_backtest(req: BacktestRequest):
     async def backtest_one(code: str):
         async with semaphore:
             try:
-                klines = await _fetch_kline(code, 300)
-                if not klines or len(klines) < 100:
+                klines = await _fetch_kline(code, 500)
+                if not klines or len(klines) < 50:
                     return {'code': code, 'trades': [], 'stats': {}, 'equity_curve': [], 'error': f'kline too short: {len(klines) if klines else 0}'}
                 mf_db = None
                 if req.main_force_filter:

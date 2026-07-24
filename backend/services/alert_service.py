@@ -5,7 +5,12 @@
 - 提供查询最近告警的 API 方法
 - 提供实时数据断层检测方法
 """
-import sys, os, json
+import sys
+import os
+import json
+import logging
+
+logger = logging.getLogger(__name__)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from datetime import datetime, date, timedelta
 from typing import Optional, Dict, Any, List

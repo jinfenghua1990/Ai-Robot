@@ -4,18 +4,43 @@ import { useTrading } from '../context/TradingContext';
 import TradeModal from '../components/trading/TradeModal';
 import WatchlistItem from '../components/trading/WatchlistItem';
 import ManualTradeBar from '../components/trading/ManualTradeBar';
-import KLineChart from '../components/charts/KLineChart';
 import GroupBar from '../components/watchlist/GroupBar';
-import SortBar, { SORTS } from '../components/watchlist/SortBar';
+import SortBar from '../components/watchlist/SortBar';
 import BatchBar from '../components/watchlist/BatchBar';
 import FilterBar from '../components/watchlist/FilterBar';
+import MarketRankTable from '../components/watchlist/MarketRankTable';
 import { BUY_COLOR } from '../utils/colors';
 import { apiFetch } from '../utils/request';
 import { TOAST_DURATION } from '../utils/constants';
 import { useWatchlistRealtimeStream } from '../hooks/useWatchlistRealtimeStream';
 
+// === 模块级常量（避免每次渲染重建，提升 useMemo 引用稳定性） ===
+// 稳定空数组引用，避免 strategyPicks[code] || [] 每次新建导致 WatchlistItem memo 失效
+const EMPTY_ARR = [];
+// 板块图标映射
+const SECTOR_ICONS = {
+  'MLCC': '', 'CPO': '', 'PCB': '🟩', '存储芯片': '💾', '先进封装': '🔧',
+  '光纤光缆': '🔆', 'AI PC': '🖥️', 'AI芯片': '🧠', 'AI服务器': '🖧', 'OCS': '🔷',
+  '培育钻石': '', '玻璃基板': '🔲', '陶瓷基板': '🏺', '高速链接': '⚡', '铜箔': '🟫',
+  '树脂': '🍃', '电子布': '🧵', '液冷': '❄️', '六氟化钨': '⚗️', '碳酸铁锂': '🔋',
+};
+// 板块配色（按出现顺序循环分配）
+const SECTOR_COLORS = [
+  '#6366f1','#a855f7','#ec4899','#f43f5e','#f97316','#eab308','#22c55e','#14b8a6',
+  '#06b6d4','#3b82f6','#8b5cf6','#d946ef','#64748b','#84cc16','#10b981','#0ea5e9',
+];
+// 7阶段趋势定义（基于当日涨跌幅推断阶段）
+const STAGE_DEFS = [
+  { key: '主升', color: '#dc2626', test: c => c >= 9.5 },
+  { key: '加速', color: '#ef4444', test: c => c >= 5 && c < 9.5 },
+  { key: '突破', color: '#f97316', test: c => c >= 1 && c < 5 },
+  { key: '蓄势', color: 'var(--accent-amber)', test: c => c >= 0 && c < 1 },
+  { key: '留意', color: 'var(--accent-blue)', test: c => c < 0 && c >= -3 },
+  { key: '观望', color: 'var(--text-muted)', test: c => c < -3 && c >= -5 },
+  { key: '衰退', color: 'var(--accent-green)', test: c => c < -5 },
+];
+
 export default function WatchlistPage() {
-  const navigate = useNavigate();
   const { executeTrade, tradeResult, clearTradeResult } = useTrading();
   const [sellModal, setSellModal] = useState(null);
   const [signals, setSignals] = useState(null);
@@ -29,13 +54,15 @@ export default function WatchlistPage() {
   const [picksDate, setPicksDate] = useState('');
   const syncRef = useRef(null);
   const initialSelectedRef = useRef(false);
+  const navigate = useNavigate();
+  const openAnalysis = useCallback((c) => navigate(`/stock-analysis?code=${c}`), [navigate]);
 
   // === 分组/排序/批量/筛选状态（分组=归类，筛选=过滤，排序=排序，三者独立）===
   const [groups, setGroups] = useState([{ name: '默认', count: 0 }]);
   const [activeGroup, setActiveGroup] = useState('全部');
   const [sortKey, setSortKey] = useState('bs');
   const [sortDir, setSortDir] = useState('desc');
-  const [filters, setFilters] = useState({ junk: false, buyOnly: false, heating: false, hit_yuzi: false, hit_strategy: false, hit_trend: false, hit_capital: false, hit_popularity: false, hit_support: false, hit_accumulation: false });
+  const [filters, setFilters] = useState({ junk: false, buyOnly: false, heating: false, hit_yuzi: false, hit_strategy: false, hit_trend: false, hit_capital: false, hit_popularity: false, hit_support: false, hit_accumulation: false, stage: null });
   const [batchMode, setBatchMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState([]);
   const [collapsedSectors, setCollapsedSectors] = useState(new Set());
@@ -48,13 +75,11 @@ export default function WatchlistPage() {
   };
   // 手动触发采集进度
   const [collect, setCollect] = useState({ running: false, done: 0, total: 0, started_at: null, finished_at: null, last_error: null });
-  // 全市场资金流排行
-  const [marketOpen, setMarketOpen] = useState(false);
-  const [marketTab, setMarketTab] = useState('inflow');
-  const [marketRank, setMarketRank] = useState(null); // { inflow:{items,updated_at}, outflow:{...} }
   const collectTimer = useRef(null);
+  const finishTimerRef = useRef(null);    // 采集完成 6s 后清空 finished_at 的 setTimeout
+  const removeTimerRef = useRef(null);   // 删除自选股后 3s 重新拉取的 setTimeout
 
-  const addLog = (type, text) => setLog(l => [...l.slice(-4), { ts: new Date(), type, text }]);
+  const addLog = useCallback((type, text) => setLog(l => [...l.slice(-4), { ts: new Date(), type, text }]), []);
 
   const toTsCode = useCallback((code) => {
     if (!code) return '';
@@ -62,11 +87,6 @@ export default function WatchlistPage() {
     return code.startsWith('6') || code.startsWith('9') ? `${code}.SH`
       : code.startsWith('8') || code.startsWith('4') ? `${code}.BJ`
       : `${code}.SZ`;
-  }, []);
-
-  const loadRealtimeBatch = useCallback(async (sigs) => {
-    // 兼容旧调用：实际由 SSE hook 接管实时数据
-    if (!sigs || sigs.length === 0) return;
   }, []);
 
   const loadWatchlist = useCallback(async () => {
@@ -125,46 +145,41 @@ export default function WatchlistPage() {
           collectTimer.current = null;
           addLog('success', `采集完成：${s.data.done}/${s.data.total} 只`);
           loadWatchlist(); loadData();
-          setTimeout(() => setCollect(c => ({ ...c, finished_at: null })), 6000);
+          if (finishTimerRef.current) clearTimeout(finishTimerRef.current);
+          finishTimerRef.current = setTimeout(() => setCollect(c => ({ ...c, finished_at: null })), 6000);
         }
       }
     }, 1500);
   }, [collect.running, loadWatchlist, loadData, addLog]);
 
-  // 组件卸载时清理轮询定时器
-  useEffect(() => () => { if (collectTimer.current) clearInterval(collectTimer.current); }, []);
-
-  // === 全市场资金流排行 ===
-  const loadMarketRank = useCallback(async (type) => {
-    const { ok, data } = await apiFetch(`/api/watchlist/market-capital-ranking?rtype=${type}&top=50`);
-    if (ok) setMarketRank(prev => ({ ...prev, [type]: data }));
+  // 组件卸载时清理所有定时器（轮询 + finish + remove）
+  useEffect(() => () => {
+    if (collectTimer.current) clearInterval(collectTimer.current);
+    if (finishTimerRef.current) clearTimeout(finishTimerRef.current);
+    if (removeTimerRef.current) clearTimeout(removeTimerRef.current);
   }, []);
-
-  const toggleMarket = (open) => {
-    setMarketOpen(open);
-    if (open) {
-      if (!marketRank?.inflow) loadMarketRank('inflow');
-      if (!marketRank?.outflow) loadMarketRank('outflow');
-    }
-  };
 
   // === 实时数据：SSE 推送（5s 自动刷新），selectedCode 变化时拉分时点明细补全 ===
   const { realtimeMap: sseRealtimeMap, streamStatus } = useWatchlistRealtimeStream();
 
-  // 合并 SSE 实时数据到 realtimeMap
+  // 合并 SSE 实时数据到 realtimeMap（仅对变化的 code 替换引用，保留已有 intraday_points）
   useEffect(() => {
     if (!sseRealtimeMap || Object.keys(sseRealtimeMap).length === 0) return;
     setRealtimeMap(prev => {
-      const next = { ...prev };
+      let next = prev;
+      let dirty = false;
       for (const [code, item] of Object.entries(sseRealtimeMap)) {
         const existing = prev[code];
-        if (existing && existing.intraday_points && existing.intraday_points.length > 0) {
-          next[code] = { ...existing, ...item, intraday_points: existing.intraday_points };
-        } else {
-          next[code] = item;
+        // 保留已有 intraday_points（selectedCode 拉取的分时明细）
+        const merged = existing?.intraday_points?.length
+          ? { ...existing, ...item, intraday_points: existing.intraday_points }
+          : item;
+        if (merged !== existing) {
+          if (!dirty) { next = { ...prev }; dirty = true; }
+          next[code] = merged;
         }
       }
-      return next;
+      return dirty ? next : prev;
     });
   }, [sseRealtimeMap]);
 
@@ -201,21 +216,30 @@ export default function WatchlistPage() {
     addLog('info', `已移除 ${name || code}（3秒后云端同步删除）`);
     // 2. 后台异步请求删除 + 静默拉取最新数据
     await apiFetch(`/api/watchlist/${code}`, { method: 'DELETE' });
-    // 3. 3秒防抖：等云端同步触发后再拉取最新数据
-    setTimeout(() => { loadWatchlist(); loadData(); }, 3000);
+    // 3. 3秒防抖：等云端同步触发后再拉取最新数据（保存 timer 以便卸载时清理）
+    if (removeTimerRef.current) clearTimeout(removeTimerRef.current);
+    removeTimerRef.current = setTimeout(() => {
+      removeTimerRef.current = null;
+      loadWatchlist(); loadData();
+    }, 3000);
   }, [loadWatchlist, loadData]);
+
+  // 同步模式：incremental=增量(只加不删) / mirror=镜像(完全覆盖)
+  const [syncMode, setSyncMode] = useState('incremental');
 
   const runOne = async (action, label) => {
     if (busy) { addLog('error', '有操作进行中，请稍候'); return; }
     setBusy(action);
     addLog('info', `${label}...`);
     try {
-      const url = {
+      const urlMap = {
         pull_ths: '/api/sync/ths/pull', push_ths: '/api/sync/ths/push',
         pull_mx: '/api/sync/mx/pull', push_mx: '/api/sync/mx/push',
-        pull_sina: '/api/sync/sina/pull', push_sina: '/api/sync/sina/push',
-      }[action];
-      const { ok, data, error } = await apiFetch(url, { method: 'POST' });
+      };
+      // 增量模式只加不删（mirror=false）；镜像模式完全覆盖（mirror=true）
+      const url = `${urlMap[action]}?mirror=${syncMode === 'mirror'}`;
+      // 同步可能涉及逐股推送 100+ 股票，单次请求耗时较长，用 5 分钟超时
+      const { ok, data, error } = await apiFetch(url, { method: 'POST' }, 300000, 0);
       if (!ok) {
         addLog('error', error || `${label}失败`);
       } else {
@@ -232,14 +256,8 @@ export default function WatchlistPage() {
 
   const ths = syncStatus?.platforms?.ths || {};
   const mx = syncStatus?.platforms?.mx || {};
-  const sina = syncStatus?.platforms?.sina || {};
   const local = syncStatus?.platforms?.local || {};
   const totalCount = signals?.signals?.length || 0;
-  const selected = useMemo(
-    () => signals?.signals?.find(s => s.secCode === selectedCode),
-    [signals, selectedCode]
-  );
-  const selectedSectorTrend = selected?.sectorTrend;
 
   // === 分组（归类）→ 筛选（过滤）→ 排序（排序）三步独立处理 ===
   const displaySignals = useMemo(() => {
@@ -253,12 +271,18 @@ export default function WatchlistPage() {
     if (filters.heating) arr = arr.filter(s => s.sectorTrend?.heat_trend === 'up');
     // 6 大命中标签过滤
     if (filters.hit_yuzi) arr = arr.filter(s => s.hitTags?.includes('yuzi'));
-    if (filters.hit_strategy) arr = arr.filter(s => s.hitTags?.includes('strategy'));
+    // 策略筛选改用 strategyPicks（顶部 📊 BS-XXX / 🔥 游资龙头 数据源）
+    if (filters.hit_strategy) arr = arr.filter(s => !!strategyPicks[s.secCode]);
     if (filters.hit_trend) arr = arr.filter(s => s.hitTags?.includes('trend'));
     if (filters.hit_capital) arr = arr.filter(s => s.hitTags?.includes('capital'));
     if (filters.hit_popularity) arr = arr.filter(s => s.hitTags?.includes('popularity'));
     if (filters.hit_support) arr = arr.filter(s => s.hitTags?.includes('support'));
     if (filters.hit_accumulation) arr = arr.filter(s => s.hitTags?.includes('accumulation'));
+    // 阶段筛选：按当日涨跌幅区间过滤
+    if (filters.stage) {
+      const stageDef = STAGE_DEFS.find(d => d.key === filters.stage);
+      if (stageDef) arr = arr.filter(s => stageDef.test(s.quote?.changePct ?? 0));
+    }
     // 3. 排序
     const dir = sortDir === 'desc' ? -1 : 1;
     const getVal = (s) => {
@@ -268,7 +292,8 @@ export default function WatchlistPage() {
           return lastB?.date || '0000-00-00';
         }
         case 'leader': return (s.bsSignal === 'B' ? 1 : 0) * 1000 + (s.quote?.changePct || 0);
-        case 'buyPower': return s.buyPower?.score || 0;
+        case 'overall': return s.overallScore ?? -1;   // 8维综合评分（替代原 buyPower）
+        case 'trend': return s.trendStrength ?? s.technical?.score ?? -1;  // 趋势强度单维
         case 'changePct': return s.quote?.changePct ?? -9999;
         case 'heat': return s.sectorTrend?.latest_heat || 0;
         default: return 0;
@@ -284,16 +309,6 @@ export default function WatchlistPage() {
   }, [signals, activeGroup, filters, sortKey, sortDir]);
 
   // 按板块分组（同重点关注排版）
-  const SECTOR_ICONS = {
-    'MLCC': '', 'CPO': '', 'PCB': '🟩', '存储芯片': '💾', '先进封装': '🔧',
-    '光纤光缆': '🔆', 'AI PC': '🖥️', 'AI芯片': '🧠', 'AI服务器': '🖧', 'OCS': '🔷',
-    '培育钻石': '', '玻璃基板': '🔲', '陶瓷基板': '🏺', '高速链接': '⚡', '铜箔': '🟫',
-    '树脂': '🍃', '电子布': '🧵', '液冷': '❄️', '六氟化钨': '⚗️', '碳酸铁锂': '🔋',
-  };
-  const SECTOR_COLORS = [
-    '#6366f1','#a855f7','#ec4899','#f43f5e','#f97316','#eab308','#22c55e','#14b8a6',
-    '#06b6d4','#3b82f6','#8b5cf6','#d946ef','#64748b','#84cc16','#10b981','#0ea5e9',
-  ];
   const groupedSectors = useMemo(() => {
     const map = {};
     for (const sig of displaySignals) {
@@ -302,9 +317,34 @@ export default function WatchlistPage() {
       map[sec].push(sig);
     }
     return Object.entries(map).map(([sector, stocks], i) => {
-      const avgChg = stocks.reduce((sum, s) => sum + (s.quote?.changePct ?? 0), 0) / Math.max(stocks.length, 1);
-      const upCount = stocks.filter(s => (s.quote?.changePct ?? 0) > 0).length;
-      return { sector, stocks, avgChg, upCount, color: SECTOR_COLORS[i % SECTOR_COLORS.length] };
+      const changes = stocks.map(s => s.quote?.changePct ?? 0);
+      const avgChg = changes.reduce((a, b) => a + b, 0) / Math.max(stocks.length, 1);
+      const upCount = changes.filter(v => v > 0).length;
+      const downCount = changes.filter(v => v < 0).length;
+      const flatCount = stocks.length - upCount - downCount;
+      // 龙头股（涨幅最高）和落后股（跌幅最大）
+      const topStock = stocks.reduce((best, s) => {
+        const v = s.quote?.changePct ?? -9999;
+        return v > (best?.quote?.changePct ?? -9999) ? s : best;
+      }, stocks[0]);
+      const bottomStock = stocks.reduce((worst, s) => {
+        const v = s.quote?.changePct ?? 9999;
+        return v < (worst?.quote?.changePct ?? 9999) ? s : worst;
+      }, stocks[0]);
+      // 7阶段分布（按 STAGE_DEFS 推断）
+      const stageDist = {};
+      STAGE_DEFS.forEach(d => stageDist[d.key] = 0);
+      stocks.forEach(s => {
+        const chg = s.quote?.changePct ?? 0;
+        const stage = STAGE_DEFS.find(d => d.test(chg));
+        if (stage) stageDist[stage.key]++;
+      });
+      // B 信号数 / 主力净流入合计（buyPower.score 累加）
+      const bCount = stocks.filter(s => s.bsSignal === 'B').length;
+      return {
+        sector, stocks, avgChg, upCount, downCount, flatCount, topStock, bottomStock, stageDist, bCount,
+        color: SECTOR_COLORS[i % SECTOR_COLORS.length],
+      };
     }).sort((a, b) => b.avgChg - a.avgChg);
   }, [displaySignals]);
 
@@ -349,29 +389,31 @@ export default function WatchlistPage() {
   // 当切换分组时清空选中
   useEffect(() => { setSelectedIds([]); }, [activeGroup]);
 
+  // 选中集合的 Set 视图：渲染 80+ 卡片时 O(1) 查询，避免每张卡都跑 includes()
+  const selectedIdSet = useMemo(() => new Set(selectedIds), [selectedIds]);
+
   const platforms = [
     { key: 'ths', name: '同花顺', color: 'var(--accent-blue)', bg: 'rgba(59,130,246,0.1)', st: ths, pull: 'pull_ths', push: 'push_ths' },
     { key: 'mx', name: '妙想', color: 'var(--accent-amber)', bg: 'rgba(234,179,8,0.1)', st: mx, pull: 'pull_mx', push: 'push_mx' },
-    { key: 'sina', name: '新浪', color: '#ef4444', bg: 'rgba(239,68,68,0.1)', st: sina, pull: 'pull_sina', push: 'push_sina' },
   ];
+
+  // 策略命中数（避免在 header 中重复计算 Object.values().filter().length）
+  const strategyCounts = useMemo(() => {
+    const arr = Object.values(strategyPicks);
+    return {
+      kechuangV7: arr.filter(a => a.includes('BS-科创-V7')).length,
+      chuoyeV9: arr.filter(a => a.includes('BS-创业-V9')).length,
+    };
+  }, [strategyPicks]);
 
   // 状态卡：板块升温 | 可买 | 资金流入（资金流入用个股自身涨幅，不再重复板块flow）
   const statCards = [
     { key: 'heat', label: '板块升温', sub: '热度↑', count: signals?.summary?.sector_heating ?? 0, color: '#ef4444', top: signals?.summary?.sector_heating_top, valKey: 'heat', valFmt: v => `热度${v}` },
     { key: 'buy', label: '可买', sub: 'B信号', count: signals?.summary?.buy ?? 0, color: BUY_COLOR, top: signals?.summary?.buy_top, valKey: null, valFmt: () => null },
-    { key: 'flow', label: '资金流入', sub: '净流入', count: signals?.summary?.inflow ?? 0, color: '#f97316', top: signals?.summary?.inflow_top, valKey: 'chg', valFmt: v => `${v >= 0 ? '+' : ''}${v}%` },
+    { key: 'flow', label: '资金流入', sub: '净流入', count: signals?.summary?.inflow ?? 0, color: '#ef4444', top: signals?.summary?.inflow_top, valKey: 'chg', valFmt: v => `${v >= 0 ? '+' : ''}${v}%` },
   ];
 
   // 7阶段趋势阶段状态栏（基于当日涨跌幅推断阶段）
-  const STAGE_DEFS = [
-    { key: '主升', color: '#dc2626', test: c => c >= 9.5 },
-    { key: '加速', color: '#ef4444', test: c => c >= 5 && c < 9.5 },
-    { key: '突破', color: '#f97316', test: c => c >= 1 && c < 5 },
-    { key: '蓄势', color: 'var(--accent-amber)', test: c => c >= 0 && c < 1 },
-    { key: '留意', color: 'var(--accent-blue)', test: c => c < 0 && c >= -3 },
-    { key: '观望', color: 'var(--text-muted)', test: c => c < -3 && c >= -5 },
-    { key: '衰退', color: 'var(--accent-green)', test: c => c < -5 },
-  ];
   const stageStats = useMemo(() => {
     const sigs = signals?.signals || [];
     const stats = {};
@@ -392,46 +434,118 @@ export default function WatchlistPage() {
         </div>
       )}
 
-      {/* ===== 悬浮置顶栏：标题 + 所有操作按钮（滚动时固定）===== */}
-      <div className="sticky top-0 z-30 rounded-xl p-2.5 space-y-2"
+      {/* ===== 悬浮置顶栏：紧凑单行，标题、搜索、筛选、操作全部排满 ===== */}
+      <div className="sticky top-0 z-30 rounded-xl p-2 space-y-1.5"
         style={{
           background: 'var(--bg-card)',
           borderBottom: '2px solid var(--border-color)',
           boxShadow: '0 2px 12px rgba(0,0,0,0.06)',
         }}>
 
-        {/* Row 1: 标题（左）| 主操作按钮组（右）*/}
-        <div className="flex items-center justify-between flex-wrap gap-2">
-          <h2 className="text-xl font-bold flex items-center gap-2 flex-wrap" style={{ color: 'var(--text-primary)' }}>
-            <span>自选股 <span className="text-xs px-1.5 py-0.5 rounded" style={{ background: 'rgba(34,197,94,0.1)', color: 'var(--accent-green)' }}>{totalCount}只</span></span>
+        <div className="flex items-center justify-between gap-2 flex-wrap">
+          {/* 左侧：标题 + 数量 + 策略命中 */}
+          <div className="flex items-center gap-2 flex-wrap">
+            <h2 className="text-base font-bold flex items-center gap-1.5" style={{ color: 'var(--text-primary)' }}>
+              <span>自选股 <span className="text-xs px-1.5 py-0.5 rounded" style={{ background: 'rgba(34,197,94,0.1)', color: 'var(--accent-green)' }}>{totalCount}只</span></span>
+            </h2>
             {/* 保留策略命中数（科创V7 + 创业V9） */}
             {Object.keys(strategyPicks).length > 0 && (
-              <span className="text-xs flex items-center gap-1.5" style={{ color: 'var(--text-muted)' }}>
+              <span className="text-xs flex items-center gap-1" style={{ color: 'var(--text-muted)' }}>
                 <span className="px-1.5 py-0.5 rounded" style={{ background: 'rgba(168,85,247,0.15)', color: '#a855f7', border: '1px solid rgba(168,85,247,0.3)' }}>
-                  📊 科创V7 {Object.values(strategyPicks).filter(arr => arr.includes('BS-科创-V7')).length}
+                  科创V7 {strategyCounts.kechuangV7}
                 </span>
                 <span className="px-1.5 py-0.5 rounded" style={{ background: 'rgba(249,115,22,0.15)', color: '#f97316', border: '1px solid rgba(249,115,22,0.3)' }}>
-                  📊 创业V9 {Object.values(strategyPicks).filter(arr => arr.includes('BS-创业-V9')).length}
+                  创业V9 {strategyCounts.chuoyeV9}
                 </span>
                 {picksDate && <span className="text-[10px]">({picksDate})</span>}
               </span>
             )}
-          </h2>
+          </div>
 
-          {/* 右侧操作按钮组：手动买入 / 同步 / 采集 / 刷新 —— 同一维度整齐排列 */}
+          {/* 右侧：搜索 + 筛选 + 操作按钮，填满不留大片空白 */}
           <div className="flex items-center gap-1.5 flex-wrap">
-            {/* 手动买入入口 */}
-            <ManualTradeBar>
-              <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>·</span>
-            </ManualTradeBar>
+            {/* 手动买入入口（紧凑） */}
+            <ManualTradeBar compact showLabel={false} />
+
+            {/* 筛选器 */}
+            <GroupBar
+              groups={groups}
+              active={activeGroup}
+              onChange={setActiveGroup}
+              onRefresh={loadGroups}
+              addLog={addLog}
+            />
+            <FilterBar
+              activeFilters={filters}
+              onToggle={(key, val) => setFilters(f => ({ ...f, [key]: val }))}
+              addLog={addLog}
+            />
+            {/* 命中快捷筛选按钮 */}
+            <button
+              onClick={() => setFilters(f => ({ ...f, hit_trend: !f.hit_trend }))}
+              className="px-2 py-1 rounded-lg border text-[11px] flex items-center gap-1"
+              style={{
+                borderColor: filters.hit_trend ? 'rgba(59,130,246,0.5)' : 'var(--border-color)',
+                background: filters.hit_trend ? 'rgba(59,130,246,0.12)' : 'var(--bg-hover)',
+                color: filters.hit_trend ? 'var(--accent-blue)' : 'var(--text-secondary)',
+              }}
+              title="只显示多头排列/底部突破的股票"
+            >
+              📈 趋势
+            </button>
+            <button
+              onClick={() => setFilters(f => ({ ...f, hit_capital: !f.hit_capital }))}
+              className="px-2 py-1 rounded-lg border text-[11px] flex items-center gap-1"
+              style={{
+                borderColor: filters.hit_capital ? 'rgba(239,68,68,0.5)' : 'var(--border-color)',
+                background: filters.hit_capital ? 'rgba(239,68,68,0.12)' : 'var(--bg-hover)',
+                color: filters.hit_capital ? '#ef4444' : 'var(--text-secondary)',
+              }}
+              title="只显示主力净流入创30天新高的股票"
+            >
+              💰 资金
+            </button>
+            <SortBar
+              sortKey={sortKey}
+              sortDir={sortDir}
+              onChange={(k, d) => { if (d) setSortDir(d); else setSortKey(k); }}
+              addLog={addLog}
+            />
+            <BatchBar
+              batchMode={batchMode}
+              selectedIds={selectedIds}
+              allStocks={displaySignals}
+              groups={groups}
+              activeGroup={activeGroup}
+              onToggleBatch={() => setBatchMode(b => !b)}
+              onSelectAll={onSelectAll}
+              onInvert={onInvert}
+              onClearSel={onClearSel}
+              onBatchDelete={onBatchDelete}
+              onBatchMove={onBatchMove}
+              onExport={onExport}
+              addLog={addLog}
+            />
+
             {/* 分隔线 */}
-            <span className="w-px h-4 bg-gray-300 dark:bg-gray-600" />
+            <span className="w-px h-3 bg-gray-300 dark:bg-gray-600 mx-1" />
+
+            {/* 实时连接状态 */}
+            <span
+              className="w-1.5 h-1.5 rounded-full"
+              style={{
+                background: streamStatus === 'open' ? 'var(--accent-green)' : streamStatus === 'fallback' ? '#facc15' : 'var(--text-muted)',
+                boxShadow: streamStatus === 'open' ? '0 0 4px #22c55e' : 'none',
+              }}
+              title={streamStatus === 'open' ? '实时推送已连接' : streamStatus === 'fallback' ? '推送中断,使用轮询' : '连接中'}
+            />
+
             {/* 云端同步下拉按钮 */}
             <div className="relative" ref={syncRef}>
               <button onClick={() => setSyncOpen(o => !o)}
-                className="px-2.5 py-1 rounded-lg border text-xs flex items-center gap-1"
+                className="px-2 py-1 rounded-lg border text-[11px] flex items-center gap-1"
                 style={{ borderColor: 'rgba(168,85,247,0.4)', color: '#a855f7', background: syncOpen ? 'rgba(168,85,247,0.1)' : 'transparent' }}>
-                🔗 云端同步 {syncOpen ? '▴' : '▾'}
+                🔗 同步 {syncOpen ? '▴' : '▾'}
               </button>
               {syncOpen && (
                 <div className="absolute right-0 top-full mt-1 w-80 rounded-xl border p-2.5 z-40 shadow-xl"
@@ -439,6 +553,21 @@ export default function WatchlistPage() {
                   <div className="flex items-center justify-between mb-1.5">
                     <span className="text-xs font-bold" style={{ color: '#a855f7' }}>🔗 云端同步</span>
                     <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>本地 {local.count ?? 0} 只 · 增删自动同步</span>
+                  </div>
+                  <div className="flex items-center gap-1 mb-2">
+                    <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>模式</span>
+                    <div className="flex rounded-lg overflow-hidden border text-[10px]" style={{ borderColor: 'rgba(168,85,247,0.3)' }}>
+                      <button onClick={() => setSyncMode('incremental')}
+                        className="px-2 py-0.5"
+                        style={{ background: syncMode === 'incremental' ? '#a855f7' : 'transparent', color: syncMode === 'incremental' ? '#fff' : 'var(--text-muted)' }}>
+                        增量(只加)
+                      </button>
+                      <button onClick={() => setSyncMode('mirror')}
+                        className="px-2 py-0.5"
+                        style={{ background: syncMode === 'mirror' ? '#a855f7' : 'transparent', color: syncMode === 'mirror' ? '#fff' : 'var(--text-muted)' }}>
+                        镜像(覆盖)
+                      </button>
+                    </div>
                   </div>
                   <div className="space-y-1">
                     {platforms.map(p => {
@@ -466,129 +595,64 @@ export default function WatchlistPage() {
                       ))}
                     </div>
                   )}
-              </div>
-            )}
-          </div>
-          {/* 刷新 + 立即采集 + 实时连接状态 */}
-          <div className="flex items-center gap-1.5">
-            <span
-              className="w-1.5 h-1.5 rounded-full"
-              style={{
-                background: streamStatus === 'open' ? 'var(--accent-green)' : streamStatus === 'fallback' ? '#facc15' : 'var(--text-muted)',
-                boxShadow: streamStatus === 'open' ? '0 0 4px #22c55e' : 'none',
-              }}
-              title={streamStatus === 'open' ? '实时推送已连接' : streamStatus === 'fallback' ? '推送中断,使用轮询' : '连接中'}
-            />
+                </div>
+              )}
+            </div>
+
             {collect.running && (
               <span className="text-[10px] px-1.5 py-0.5 rounded flex items-center gap-1" style={{ background: 'rgba(59,130,246,0.12)', color: 'var(--accent-blue)' }}>
                 <span className="inline-block w-2 h-2 rounded-full border-2 border-blue-400 border-t-transparent animate-spin" />
                 {collect.total > 0
-                  ? `采集中 ${collect.done}/${collect.total} · 约剩 ${Math.max(0, Math.round((collect.total - collect.done) * 0.7))}s`
+                  ? `${collect.done}/${collect.total}`
                   : '采集中…'}
               </span>
             )}
             {!collect.running && collect.finished_at && (
-              <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: 'rgba(34,197,94,0.12)', color: 'var(--accent-green)' }}>✅ 采集完成</span>
+              <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: 'rgba(34,197,94,0.12)', color: 'var(--accent-green)' }} title="✅ 采集完成">✅</span>
             )}
             <button
               onClick={triggerCollect}
               disabled={collect.running}
-              className="px-2.5 py-1 rounded-lg border text-xs flex items-center gap-1 disabled:opacity-50"
+              className="px-2 py-1 rounded-lg border text-[11px] flex items-center gap-1 disabled:opacity-50"
               style={{ borderColor: 'rgba(59,130,246,0.4)', color: 'var(--accent-blue)', background: collect.running ? 'rgba(59,130,246,0.06)' : 'transparent' }}
               title="立即触发一次全量自选股实时资金流采集（约 60-90 秒）"
             >
-              ⚡ 立即采集
+              ⚡ 采集
             </button>
-            <button onClick={() => { loadWatchlist(); loadData(); }} className="px-2.5 py-1 rounded-lg border text-xs" style={{ borderColor: 'var(--border-color)', color: 'var(--text-secondary)' }}>🔄 刷新</button>
-          </div>{/* /右侧操作按钮组 */}
-        </div>{/* /Row 1: 标题 | 操作按钮 */}
+            <button onClick={() => { loadWatchlist(); loadData(); }} className="px-2 py-1 rounded-lg border text-[11px]" style={{ borderColor: 'var(--border-color)', color: 'var(--text-secondary)' }}>🔄 刷新</button>
 
-        {/* Row 2: 分组 · 筛选 · 趋势/资金快捷 · 排序 · 批量 · 计数 */}
-        <div className="flex items-center gap-1.5 flex-wrap">
-          <GroupBar
-            groups={groups}
-            active={activeGroup}
-            onChange={setActiveGroup}
-            onRefresh={loadGroups}
-            addLog={addLog}
-          />
-          <FilterBar
-            activeFilters={filters}
-            onToggle={(key, val) => setFilters(f => ({ ...f, [key]: val }))}
-            addLog={addLog}
-          />
-          {/* 命中快捷筛选按钮 */}
-          <button
-            onClick={() => setFilters(f => ({ ...f, hit_trend: !f.hit_trend }))}
-            className="px-2 py-1 rounded-lg border text-[11px] flex items-center gap-1"
-            style={{
-              borderColor: filters.hit_trend ? 'rgba(59,130,246,0.5)' : 'var(--border-color)',
-              background: filters.hit_trend ? 'rgba(59,130,246,0.12)' : 'var(--bg-hover)',
-              color: filters.hit_trend ? 'var(--accent-blue)' : 'var(--text-secondary)',
-            }}
-            title="只显示多头排列/底部突破的股票"
-          >
-            📈 趋势
-          </button>
-          <button
-            onClick={() => setFilters(f => ({ ...f, hit_capital: !f.hit_capital }))}
-            className="px-2 py-1 rounded-lg border text-[11px] flex items-center gap-1"
-            style={{
-              borderColor: filters.hit_capital ? 'rgba(239,68,68,0.5)' : 'var(--border-color)',
-              background: filters.hit_capital ? 'rgba(239,68,68,0.12)' : 'var(--bg-hover)',
-              color: filters.hit_capital ? '#ef4444' : 'var(--text-secondary)',
-            }}
-            title="只显示主力净流入创30天新高的股票"
-          >
-            💰 资金
-          </button>
-          <SortBar
-            sortKey={sortKey}
-            sortDir={sortDir}
-            onChange={(k, d) => { if (d) setSortDir(d); else setSortKey(k); }}
-            addLog={addLog}
-          />
-          <BatchBar
-            batchMode={batchMode}
-            selectedIds={selectedIds}
-            allStocks={displaySignals}
-            groups={groups}
-            activeGroup={activeGroup}
-            onToggleBatch={() => setBatchMode(b => !b)}
-            onSelectAll={onSelectAll}
-            onInvert={onInvert}
-            onClearSel={onClearSel}
-            onBatchDelete={onBatchDelete}
-            onBatchMove={onBatchMove}
-            onExport={onExport}
-            addLog={addLog}
-          />
-          <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
-            {displaySignals.length} / {totalCount} 只{filters.junk && ' · 拒绝震荡'}{filters.buyOnly && ' · 仅可买'}{filters.heating && ' · 板块升温'}{filters.hit_trend && ' · 趋势命中'}{filters.hit_capital && ' · 资金命中'}
-          </span>
-        </div>{/* /Row 2: 筛选工具栏 */}
+            {/* 计数 */}
+            <span className="text-[10px] whitespace-nowrap" style={{ color: 'var(--text-muted)' }}>
+              {displaySignals.length}/{totalCount}只
+            </span>
+          </div>{/* /右侧 */}
+        </div>{/* /主工具行 */}
       </div>{/* /sticky 悬浮置顶栏 */}
 
-      {/* 左右并排：左=合并状态模块(3卡)  右=K线图 */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-        {/* 左：合并状态模块（3 张状态卡竖排在一个容器内） */}
-        <div className="rounded-xl border p-2.5 space-y-2" style={{ borderColor: 'rgba(99,102,241,0.3)', background: 'var(--bg-card)' }}>
-          <div className="text-[11px] font-bold flex items-center gap-2" style={{ color: 'var(--text-secondary)' }}>
-            📊 池子状态 <span style={{ color: 'var(--text-muted)' }}>· 点击个股标签联动右侧K线</span>
-          </div>
-          {/* 7阶段趋势阶段状态栏 */}
-          <div className="flex items-center gap-1 flex-wrap rounded-lg p-1.5" style={{ background: 'var(--bg-surface)' }}>
+      {/* 池子状态模块（概览） — 紧凑单行布局，横向铺满不留空白 */}
+      <div className="rounded-xl border p-2 space-y-1.5" style={{ borderColor: 'rgba(99,102,241,0.3)', background: 'var(--bg-card)' }}>
+        {/* 标题 + 7阶段趋势条 同一行，flex-wrap 自适应 */}
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="text-[11px] font-bold flex items-center gap-1.5 flex-shrink-0" style={{ color: 'var(--text-secondary)' }}>
+            📊 池子状态
+          </span>
+          <div className="flex items-center gap-1 flex-wrap">
             {STAGE_DEFS.map(stage => {
               const count = stageStats[stage.key] || 0;
               const pct = totalCount > 0 ? Math.round(count / totalCount * 100) : 0;
-              const active = filters.buyOnly && stage.key === '主升';
+              const active = filters.stage === stage.key;
               return (
                 <button
                   key={stage.key}
-                  onClick={() => {/* 预留：点击筛选该阶段 */}}
-                  className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] flex-shrink-0"
-                  style={{ background: `${stage.color}15`, border: `1px solid ${stage.color}30`, color: stage.color }}
-                  title={`${stage.key}阶段：涨跌幅区间`}
+                  onClick={() => setFilters(f => ({ ...f, stage: f.stage === stage.key ? null : stage.key }))}
+                  className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] flex-shrink-0 transition-all"
+                  style={{
+                    background: active ? `${stage.color}40` : `${stage.color}15`,
+                    border: active ? `1px solid ${stage.color}` : `1px solid ${stage.color}30`,
+                    color: stage.color,
+                    boxShadow: active ? `0 0 0 2px ${stage.color}25` : 'none',
+                  }}
+                  title={`${stage.key}阶段：涨跌幅区间（点击筛选）`}
                 >
                   <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: stage.color }} />
                   <span className="font-bold">{stage.key}</span>
@@ -598,17 +662,20 @@ export default function WatchlistPage() {
               );
             })}
           </div>
+        </div>
+        {/* 3 张状态卡：横向三列网格（窄屏自动竖排），铺满宽度 */}
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-1.5">
           {statCards.map(card => {
             const pct = totalCount > 0 ? Math.round(card.count / totalCount * 100) : 0;
             return (
-              <div key={card.key} className="rounded-lg border p-2" style={{ borderColor: `${card.color}25`, background: `${card.color}08` }}>
-                <div className="flex items-center gap-2 mb-1">
-                  <span className="text-xl font-bold leading-none" style={{ color: card.color }}>{card.count}</span>
-                  <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>·{pct}%</span>
-                  <span className="text-xs font-medium" style={{ color: 'var(--text-primary)' }}>{card.label}</span>
-                  <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{card.sub}</span>
+              <div key={card.key} className="rounded-lg border p-1.5 flex flex-col" style={{ borderColor: `${card.color}25`, background: `${card.color}08` }}>
+                <div className="flex items-center gap-1.5 mb-1">
+                  <span className="text-lg font-bold leading-none" style={{ color: card.color }}>{card.count}</span>
+                  <span className="text-[9px]" style={{ color: 'var(--text-muted)' }}>·{pct}%</span>
+                  <span className="text-[11px] font-medium" style={{ color: 'var(--text-primary)' }}>{card.label}</span>
+                  <span className="text-[9px] ml-auto" style={{ color: 'var(--text-muted)' }}>{card.sub}</span>
                 </div>
-                <div className="flex flex-wrap gap-1">
+                <div className="flex flex-wrap gap-1 content-start">
                   {card.top && card.top.length > 0 ? card.top.map((s, i) => {
                     const val = card.valKey ? card.valFmt(s[card.valKey]) : null;
                     const active = selectedCode === s.code;
@@ -625,31 +692,6 @@ export default function WatchlistPage() {
               </div>
             );
           })}
-        </div>
-
-        {/* 右：K线图（联动选中） */}
-        <div className="rounded-xl border p-2.5" style={{ borderColor: 'rgba(99,179,237,0.3)', background: 'var(--bg-card)' }}>
-          <div className="flex items-center justify-between mb-1.5">
-            <span className="text-sm font-bold" style={{ color: '#60a5fa' }}>📈 K线 · 操盘线 · 板块趋势</span>
-            {selected && (
-              <span className="text-[10px] flex items-center gap-2" style={{ color: 'var(--text-secondary)' }}>
-                <span className="font-bold" style={{ color: 'var(--accent-green)' }}>{selected.secName}</span>
-                <span>{selected.secCode}</span>
-                {selected.quote && selected.quote.changePct != null && <span style={{ color: selected.quote.changePct >= 0 ? '#ef4444' : 'var(--accent-green)' }}>{selected.quote.changePct >= 0 ? '+' : ''}{selected.quote.changePct}%</span>}
-                {selected.sector && <span style={{ color: 'var(--text-muted)' }}>{selected.sector}</span>}
-                {selectedSectorTrend?.available && (
-                  <span style={{ color: selectedSectorTrend.heat_trend === 'up' ? '#ef4444' : selectedSectorTrend.heat_trend === 'down' ? 'var(--accent-green)' : 'var(--text-muted)' }}>
-                    {selectedSectorTrend.heat_trend === 'up' ? '🔥' : selectedSectorTrend.heat_trend === 'down' ? '❄' : '·'} {selectedSectorTrend.latest_heat}
-                  </span>
-                )}
-              </span>
-            )}
-          </div>
-          {selectedCode ? (
-            <KLineChart code={selectedCode} height={260} />
-          ) : (
-            <div className="h-[260px] flex items-center justify-center text-xs" style={{ color: 'var(--text-muted)' }}>点击左侧股票或状态卡标签查看K线</div>
-          )}
         </div>
       </div>
 
@@ -682,6 +724,73 @@ export default function WatchlistPage() {
                     </span>
                   </div>
                   {expanded && (
+                    <>
+                    {/* 板块汇总统计条：分隔头部与子组件（个股卡片），展示板块整体画像 */}
+                    <div className="flex items-center gap-3 px-3 py-1 flex-wrap text-[10px]"
+                      style={{ background: 'var(--bg-surface)', borderBottom: '1px solid var(--border-color)' }}>
+                      {/* 板块色标识 + 名称 */}
+                      <span className="flex items-center gap-1.5 flex-shrink-0">
+                        <span className="inline-block w-1 h-3 rounded-full" style={{ background: sec.color }} />
+                        <span className="font-bold" style={{ color: sec.color }}>{sec.sector}</span>
+                        <span style={{ color: 'var(--text-muted)' }}>{sec.stocks.length}只</span>
+                      </span>
+                      {/* 上涨/平/下跌分布 */}
+                      <span className="flex items-center gap-1.5 flex-shrink-0">
+                        <span style={{ color: '#ef4444' }}>↑{sec.upCount}</span>
+                        {sec.flatCount > 0 && <span style={{ color: 'var(--text-muted)' }}>平{sec.flatCount}</span>}
+                        <span style={{ color: 'var(--accent-green)' }}>↓{sec.downCount}</span>
+                      </span>
+                      {/* 平均涨跌幅 */}
+                      <span className="flex-shrink-0" style={{ color: sec.avgChg >= 0 ? '#ef4444' : 'var(--accent-green)', fontWeight: 600 }}>
+                        均{fmtChg(sec.avgChg)}
+                      </span>
+                      {/* B 信号数 */}
+                      {sec.bCount > 0 && (
+                        <span className="flex-shrink-0 px-1 rounded" style={{ background: 'rgba(34,197,94,0.12)', color: 'var(--accent-green)' }}>
+                          B{sec.bCount}
+                        </span>
+                      )}
+                      {/* 7阶段分布（仅显示有命中的阶段，紧凑） */}
+                      <span className="flex items-center gap-1 flex-wrap">
+                        {STAGE_DEFS.map(st => {
+                          const n = sec.stageDist[st.key] || 0;
+                          if (n === 0) return null;
+                          return (
+                            <span key={st.key} className="flex items-center gap-0.5 px-1 rounded"
+                              style={{ background: `${st.color}15`, color: st.color }}>
+                              {st.key}{n}
+                            </span>
+                          );
+                        })}
+                      </span>
+                      {/* 龙头 / 落后股 */}
+                      {sec.topStock && (sec.topStock.quote?.changePct != null) && (
+                        <span className="flex items-center gap-1 ml-auto flex-shrink-0">
+                          <span style={{ color: 'var(--text-muted)' }}>领涨</span>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); setSelectedCode(sec.topStock.secCode); }}
+                            className="font-bold hover:underline" style={{ color: 'var(--text-primary)' }}>
+                            {sec.topStock.secName}
+                          </button>
+                          <span style={{ color: sec.topStock.quote.changePct >= 0 ? '#ef4444' : 'var(--accent-green)' }}>
+                            {fmtChg(sec.topStock.quote.changePct)}
+                          </span>
+                        </span>
+                      )}
+                      {sec.bottomStock && sec.bottomStock !== sec.topStock && (sec.bottomStock.quote?.changePct != null) && (
+                        <span className="flex items-center gap-1 flex-shrink-0">
+                          <span style={{ color: 'var(--text-muted)' }}>领跌</span>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); setSelectedCode(sec.bottomStock.secCode); }}
+                            className="font-bold hover:underline" style={{ color: 'var(--text-primary)' }}>
+                            {sec.bottomStock.secName}
+                          </button>
+                          <span style={{ color: sec.bottomStock.quote.changePct >= 0 ? '#ef4444' : 'var(--accent-green)' }}>
+                            {fmtChg(sec.bottomStock.quote.changePct)}
+                          </span>
+                        </span>
+                      )}
+                    </div>
                     <div className="grid grid-cols-1 xl:grid-cols-2 gap-2 px-3 py-2">
                       {sec.stocks.map(sig => (
                         <WatchlistItem
@@ -694,12 +803,14 @@ export default function WatchlistPage() {
                           onSell={setSellModal}
                           onRefresh={loadWatchlist}
                           batchMode={batchMode}
-                          checked={selectedIds.includes(sig.secCode)}
+                          checked={selectedIdSet.has(sig.secCode)}
                           onToggleCheck={onToggleCheck}
-                          strategyTags={strategyPicks[sig.secCode] || []}
+                          strategyTags={strategyPicks[sig.secCode] || EMPTY_ARR}
+                          onAnalyze={openAnalysis}
                         />
                       ))}
                     </div>
+                    </>
                   )}
                 </div>
               );
@@ -713,82 +824,10 @@ export default function WatchlistPage() {
         )
       ) : [1,2,3,4].map(i => <div key={i} className="h-20 rounded-xl animate-pulse" style={{ background: 'var(--bg-hover)' }} />)}
 
-      {/* 全市场资金流排行（东财批量排行榜，单次请求） */}
-      <div className="rounded-xl border mt-3" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
-        <div className="flex items-center justify-between px-3 py-2">
-          <button onClick={() => toggleMarket(!marketOpen)} className="flex items-center gap-2 text-sm font-bold" style={{ color: 'var(--text-primary)' }}>
-            <span>{marketOpen ? '▾' : '▸'}</span>
-            <span>🌐 全市场资金流</span>
-            <span className="text-[10px] font-normal" style={{ color: 'var(--text-muted)' }}>主力净流入/流出 Top 50 · 共 5537 只 A 股</span>
-          </button>
-          {marketOpen && (
-            <div className="flex items-center gap-1.5">
-              <div className="flex rounded-lg overflow-hidden border" style={{ borderColor: 'var(--border-color)' }}>
-                <button onClick={() => { setMarketTab('inflow'); loadMarketRank('inflow'); }} className="px-2.5 py-1 text-[11px]" style={{ background: marketTab === 'inflow' ? 'rgba(239,68,68,0.15)' : 'transparent', color: marketTab === 'inflow' ? '#ef4444' : 'var(--text-secondary)' }}>🔥 净流入</button>
-                <button onClick={() => { setMarketTab('outflow'); loadMarketRank('outflow'); }} className="px-2.5 py-1 text-[11px]" style={{ background: marketTab === 'outflow' ? 'rgba(59,130,246,0.15)' : 'transparent', color: marketTab === 'outflow' ? 'var(--accent-blue)' : 'var(--text-secondary)' }}>💧 净流出</button>
-              </div>
-              <button onClick={() => loadMarketRank(marketTab)} className="px-2 py-1 rounded-lg border text-[11px]" style={{ borderColor: 'var(--border-color)', color: 'var(--text-secondary)' }}>🔄</button>
-            </div>
-          )}
-        </div>
-        {marketOpen && (() => {
-          const rank = marketRank?.[marketTab];
-          const items = rank?.items || [];
-          const fmtMoney = (v) => {
-            if (v == null) return '-';
-            const a = Math.abs(v);
-            if (a >= 1e8) return (v / 1e8).toFixed(2) + '亿';
-            if (a >= 1e4) return (v / 1e4).toFixed(0) + '万';
-            return String(Math.round(v));
-          };
-          return (
-            <div className="px-3 pb-3">
-              {rank?.updated_at && <div className="text-[10px] mb-1" style={{ color: 'var(--text-muted)' }}>更新于 {rank.updated_at}</div>}
-              <div className="overflow-x-auto">
-                <table className="w-full text-[11px]">
-                  <thead>
-                    <tr style={{ color: 'var(--text-muted)' }}>
-                      <th className="text-left py-1 px-1 font-medium">#</th>
-                      <th className="text-left py-1 px-1 font-medium">代码</th>
-                      <th className="text-left py-1 px-1 font-medium">名称</th>
-                      <th className="text-right py-1 px-1 font-medium">现价</th>
-                      <th className="text-right py-1 px-1 font-medium">涨跌幅</th>
-                      <th className="text-right py-1 px-1 font-medium">主力净流入</th>
-                      <th className="text-right py-1 px-1 font-medium">占比</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {items.length === 0 && rank?.error && (
-                      <tr><td colSpan={7} className="text-center py-4" style={{ color: '#f59e0b' }}>排行榜加载失败（东财接口偶发限流），<button onClick={() => loadMarketRank(marketTab)} className="underline">点此重试</button></td></tr>
-                    )}
-                    {items.length === 0 && !rank?.error && (
-                      <tr><td colSpan={7} className="text-center py-4" style={{ color: 'var(--text-muted)' }}>加载中…</td></tr>
-                    )}
-                    {items.map((it, i) => {
-                      const up = (it.main_net || 0) >= 0;
-                      const pctUp = (it.pct || 0) >= 0;
-                      return (
-                        <tr key={it.code} style={{ borderTop: '1px solid var(--border-color)' }}>
-                          <td className="py-1 px-1" style={{ color: 'var(--text-muted)' }}>{i + 1}</td>
-                          <td className="py-1 px-1" style={{ color: 'var(--text-secondary)' }}>{it.code}</td>
-                          <td className="py-1 px-1 font-medium" style={{ color: 'var(--text-primary)' }}>{it.name}</td>
-                          <td className="py-1 px-1 text-right">{it.price != null ? it.price.toFixed(2) : '-'}</td>
-                          <td className="py-1 px-1 text-right" style={{ color: pctUp ? '#ef4444' : 'var(--accent-green)' }}>{it.pct != null ? (pctUp ? '+' : '') + it.pct.toFixed(2) + '%' : '-'}</td>
-                          <td className="py-1 px-1 text-right font-semibold" style={{ color: up ? '#ef4444' : 'var(--accent-green)' }}>{up ? '+' : ''}{fmtMoney(it.main_net)}</td>
-                          <td className="py-1 px-1 text-right" style={{ color: up ? '#ef4444' : 'var(--accent-green)' }}>{it.main_net_pct != null ? (up ? '+' : '') + it.main_net_pct.toFixed(2) + '%' : '-'}</td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          );
-        })()}
-      </div>
+      {/* 全市场资金流排行（已抽取为独立组件，自管理 open/tab/数据状态） */}
+      <MarketRankTable defaultOpen={false} />
 
       {sellModal && <TradeModal stockCode={sellModal.stockCode} stockName={sellModal.stockName} type="sell" positionCount={sellModal.positionCount || 0} onClose={() => setSellModal(null)} onConfirm={executeTrade} />}
-      </div>
     </div>
   );
 }

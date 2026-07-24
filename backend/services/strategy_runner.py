@@ -1,9 +1,15 @@
 """
 策略扫描服务
 - 数据就绪检测（复用 scheduler._has_today_data 逻辑）
-- 每日盘后跑 4 个策略（白虎V2.6/V3.0、青龙、主升浪），结果落 StrategyResult 表
+- 每日盘后跑 5 个策略，结果落 StrategyResult 表
 - 每次运行写 StrategyRunLog，用于健康检查
 - 防重复跑：同 trade_date × strategy_key 只跑一次（唯一约束）
+
+已废弃（2026-07-15 合并审计）：
+  baihu_v26 → 被 baihu_v30 完全覆盖
+  volume_breakout → 被合并进 liangjia_report breakout 评分维度
+  zhushenglang → 被合并进 liangjia_report trend 评分维度（主力连续流入）
+  wave_band → buy 被 V4.0+V3 覆盖，sell 独立为 risk_exit 通用模块
 """
 import sys
 import os
@@ -15,33 +21,33 @@ from decimal import Decimal
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from sqlalchemy import func
-from db.connection import get_db
 from db.session import get_db_session
-from db.models import StrategyResult, StrategyRunLog, StockFlow, SectorFlow
+from db.models import StrategyResult, StrategyRunLog, StockFlow, SectorFlow, StockDailyKline
+from services.indicators import calc_supertrend
 import logging
 logger = logging.getLogger(__name__)
 
 
 # ============================================================
-# 策略注册表（统一管理 4 个策略的元数据）
+# 策略注册表（8→5 合并后保留 5 个策略）
 # ============================================================
 
 STRATEGIES = [
     {
-        'key': 'baihu_v26',
-        'name': '白虎',
-        'icon': '🐯',
-        'module': 'strategies.baihu_v26',
-        'func': 'run_baihu_screen',
-        'needs_db': False,
-    },
-    {
         'key': 'baihu_v30',
-        'name': '白虎V3',
+        'name': '白虎V3.0',
         'icon': '🐯',
         'module': 'strategies.baihu_v30',
         'func': 'run_baihu_v30_screen',
         'needs_db': False,
+    },
+    {
+        'key': 'liangjia_report',
+        'name': '朱雀V3.0',
+        'icon': '🐯',
+        'module': 'strategies.liangjia_report',
+        'func': 'run_liangjia_report_screen',
+        'needs_db': True,  # 需要查 StockFlow 获取主力资金数据
     },
     {
         'key': 'qinglong',
@@ -49,22 +55,6 @@ STRATEGIES = [
         'icon': '🐉',
         'module': 'strategies.qinglong',
         'func': 'run_qinglong_screen',
-        'needs_db': False,
-    },
-    {
-        'key': 'zhushenglang',
-        'name': '主升浪',
-        'icon': '🚀',
-        'module': 'strategies.zhushenglang',
-        'func': 'run_zhushenglang_screen',
-        'needs_db': True,
-    },
-    {
-        'key': 'volume_breakout',
-        'name': '放量突破',
-        'icon': '🔥',
-        'module': 'strategies.volume_breakout',
-        'func': 'run_volume_breakout_screen',
         'needs_db': False,
     },
     {
@@ -76,19 +66,19 @@ STRATEGIES = [
         'needs_db': False,
     },
     {
-        'key': 'liangjia_report',
-        'name': '白虎V4.0',
-        'icon': '🐯',
-        'module': 'strategies.liangjia_report',
-        'func': 'run_liangjia_report_screen',
+        'key': 'risk_exit',
+        'name': '风险退出',
+        'icon': '🛡️',
+        'module': 'strategies.risk_exit',
+        'func': 'run_risk_exit_screen',
         'needs_db': False,
     },
     {
-        'key': 'wave_band',
-        'name': '波段信号',
-        'icon': '🌊',
-        'module': 'strategies.wave_band',
-        'func': 'run_wave_band_screen',
+        'key': 'rsi_bounce',
+        'name': 'RSI超卖反弹',
+        'icon': '🔄',
+        'module': 'strategies.rsi_bounce',
+        'func': 'run_rsi_bounce_screen',
         'needs_db': False,
     },
 ]
@@ -124,6 +114,27 @@ def check_data_ready(target_date=None) -> bool:
     except Exception as e:
         logger.error(f'[strategy_runner] check_data_ready error: {e}')
         return False
+
+
+def is_market_healthy(db, target_date) -> bool:
+    """市场宽度过滤：上涨股票占比 > 40% 才执行买入策略
+    用 StockDailyKline.pct_chg 计算当日上涨比例，避免在普跌日做多。
+    """
+    try:
+        total = db.query(StockDailyKline).filter(
+            StockDailyKline.trade_date == target_date
+        ).count()
+        up = db.query(StockDailyKline).filter(
+            StockDailyKline.trade_date == target_date,
+            StockDailyKline.pct_chg > 0
+        ).count()
+        healthy = (up / total) > 0.4 if total > 0 else False
+        if not healthy:
+            logger.info(f'[strategy_runner] 市场宽度不足({up}/{total}={(up/total)*100:.0f}%)，跳过买入策略')
+        return healthy
+    except Exception as e:
+        logger.error(f'[strategy_runner] is_market_healthy error: {e}')
+        return True  # 兜底：数据异常时放行，避免漏掉信号
 
 
 # ============================================================
@@ -360,18 +371,205 @@ def run_all_strategies(trade_date=None) -> dict:
     results = []
     total_hits = 0
     for s in STRATEGIES:
+        # 市场宽度过滤：大盘弱势时只跑风险退出，跳过买入策略
+        if s['key'] != 'risk_exit':
+            with get_db_session() as db:
+                if not is_market_healthy(db, trade_date):
+                    results.append({'strategy_key': s['key'], 'strategy_name': s['name'],
+                                    'status': 'skipped', 'message': '市场宽度不足(上涨<40%)，跳过'})
+                    continue
         r = run_single_strategy(s['key'], trade_date)
         results.append(r)
         if r.get('status') == 'success':
             total_hits += r.get('hit_count', 0)
 
     logger.info(f'[strategy_runner] ===== 全量扫描完成，总命中 {total_hits} =====')
+
+    # 自动将 ≥3 共振股加入跟踪列表（StockTracker）
+    resonance_result = _auto_add_resonance_to_tracker(trade_date)
+
     return {
         'trade_date': str(trade_date),
         'status': 'completed',
         'results': results,
         'total_hits': total_hits,
+        'resonance_added': resonance_result,
     }
+
+
+def _extract_v4_pattern(row):
+    """从量价报告（liangjia_report）的 detail/scores 中提取 pattern 字段"""
+    try:
+        if row.detail_json:
+            detail = json.loads(row.detail_json) if isinstance(row.detail_json, str) else row.detail_json
+            return detail.get('pattern')
+    except Exception:
+        pass
+    try:
+        if row.scores_json:
+            scores = json.loads(row.scores_json) if isinstance(row.scores_json, str) else row.scores_json
+            return scores.get('pattern')
+    except Exception:
+        pass
+    return None
+
+
+_V4_PATTERN_META = {
+    'pullback': {'name': '朱雀V3.0回踩'},
+    'breakout': {'name': '朱雀V3.0突破'},
+    'trend': {'name': '朱雀V3.0趋势'},
+    'repair': {'name': '朱雀V3.0修复'},
+}
+
+
+def _get_current_bs_signal(db, stock_code: str) -> int:
+    """获取股票当前 SuperTrend BS 信号
+    
+    Returns:
+        1 = B (多头/买入), -1 = S (空头/卖出), 0 = 数据不足
+    """
+    try:
+        ts_code = f"{stock_code}.{'SH' if stock_code.startswith(('6','9','68')) else 'SZ' if not stock_code.startswith('8') else 'BJ'}"
+        rows = db.query(StockDailyKline).filter(
+            StockDailyKline.ts_code == ts_code
+        ).order_by(StockDailyKline.trade_date.desc()).limit(150).all()
+        if len(rows) < 30:
+            return 0
+        closes = [float(r.close) for r in reversed(rows)]
+        highs = [float(r.high) for r in reversed(rows)]
+        lows = [float(r.low) for r in reversed(rows)]
+        _, _, trend, _ = calc_supertrend(highs, lows, closes, period=10, multiplier=1.0)
+        return trend[-1] if trend else 0
+    except Exception:
+        return 0
+
+
+def _auto_add_resonance_to_tracker(trade_date) -> dict:
+    """策略扫描完成后，自动将 ≥3 共振股加入跟踪列表（StockTracker）
+
+    逻辑：
+    - 查当日 StrategyResult，按 ts_code 聚合共振数（与共振页面口径一致）
+    - 风险退出策略不参与共振；朱雀 V3.0 按子形态拆分为独立维度
+    - 共振 ≥3 的股票自动加入跟踪，note 标注「共振选股」+ 共振维度
+    - 已在跟踪中的：更新 note 为最新共振信息
+    - 不再 ≥3 共振的旧共振跟踪股：软删除（active=False），note 标注退出原因
+    """
+    from db.models import StrategyResult, StockTracker, StockDailyKline
+    from collections import defaultdict
+
+    trade_date_str = str(trade_date) if not isinstance(trade_date, str) else trade_date
+
+    with get_db_session() as db:
+        # 1. 聚合当日共振（与 /api/strategy-resonance 口径保持一致）
+        rows = db.query(StrategyResult).filter(
+            StrategyResult.trade_date == trade_date_str
+        ).all()
+        grouped = defaultdict(list)
+        name_map = {}
+        for r in rows:
+            name_map[r.ts_code] = r.name or ''
+            # 风险退出是卖出信号，不参与共振计数
+            if r.strategy_key == 'risk_exit':
+                continue
+            # 朱雀 V3.0 子形态拆分
+            if r.strategy_key == 'liangjia_report':
+                pattern = _extract_v4_pattern(r)
+                if pattern in (None, 'weak'):
+                    continue
+                pmeta = _V4_PATTERN_META.get(pattern)
+                if not pmeta:
+                    continue
+                grouped[r.ts_code].append(pmeta['name'])
+                continue
+            grouped[r.ts_code].append(r.strategy_name or r.strategy_key)
+
+        high_resonance = {}  # {code: {name, resonance_count, strategies, note}}
+        for ts_code, strategy_names in grouped.items():
+            if len(strategy_names) >= 3:
+                code = ts_code.split('.')[0]
+                name = name_map.get(ts_code, '')
+                note = f'共振选股 共振{len(strategy_names)}: {"+".join(strategy_names)}'
+                high_resonance[code] = {
+                    'name': name,
+                    'resonance_count': len(strategy_names),
+                    'strategies': strategy_names,
+                    'note': note,
+                }
+
+        # 2. 加入跟踪列表（BS 信号为 S 的股票不加入）
+        added = []
+        updated = []
+        bs_filtered = []
+        for code, info in high_resonance.items():
+            bs = _get_current_bs_signal(db, code)
+            if bs == -1:
+                bs_filtered.append(f"{info['name']}({code}) BS=S")
+                continue
+
+            existing = db.query(StockTracker).filter_by(stock_code=code, active=True).first()
+            if existing:
+                existing.note = info['note']
+                updated.append(f"{info['name']}({code})")
+            else:
+                old = db.query(StockTracker).filter_by(stock_code=code, active=False).first()
+                latest = db.query(StockDailyKline)\
+                    .filter(StockDailyKline.ts_code.like(f"{code}%"))\
+                    .order_by(StockDailyKline.trade_date.desc())\
+                    .first()
+                entry_date = latest.trade_date if latest else trade_date
+                entry_price = latest.close if latest else 0
+                if old:
+                    old.active = True
+                    old.entry_date = entry_date
+                    old.entry_price = entry_price
+                    old.stock_name = info['name']
+                    old.note = info['note']
+                    updated.append(f"{info['name']}({code}) 恢复跟踪")
+                else:
+                    db.add(StockTracker(
+                        stock_code=code,
+                        stock_name=info['name'],
+                        entry_date=entry_date,
+                        entry_price=entry_price,
+                        note=info['note'],
+                    ))
+                    added.append(f"{info['name']}({code})")
+
+        # 3. 清理：BS 信号已转为 S 的旧共振跟踪股 → 软删除
+        # 注意：不再按「今日是否 ≥3 共振」清理，因为一旦入选就持续跟踪，直到 BS 转 S
+        removed = []
+        bs_removed = []
+        old_resonance = db.query(StockTracker).filter(
+            StockTracker.active == True,
+            StockTracker.note.like('%共振选股%'),
+        ).all()
+        for t in old_resonance:
+            bs = _get_current_bs_signal(db, t.stock_code)
+            if bs == -1:
+                t.active = False
+                old_note = t.note or ''
+                t.note = f'[BS转S] {old_note}'
+                bs_removed.append(f"{t.stock_name}({t.stock_code})")
+
+        db.commit()
+
+    result = {
+        'added': len(added),
+        'updated': len(updated),
+        'removed': len(removed),
+        'bs_filtered': len(bs_filtered),
+        'bs_removed': len(bs_removed),
+        'details': {
+            'added': added,
+            'updated': updated,
+            'removed': removed,
+            'bs_filtered': bs_filtered,
+            'bs_removed': bs_removed,
+        }
+    }
+    if added or updated or removed or bs_filtered or bs_removed:
+        logger.info(f'[strategy_runner] 共振跟踪自动同步: +{len(added)} ~{len(updated)} -{len(removed)} BS过滤:{len(bs_filtered)} BS转S:{len(bs_removed)}')
+    return result
 
 
 # ============================================================

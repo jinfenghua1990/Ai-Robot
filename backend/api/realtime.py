@@ -12,7 +12,6 @@ from pydantic import BaseModel
 from typing import List
 from sqlalchemy import func, desc
 from datetime import datetime, date
-from db.connection import get_db
 from db.session import get_db_session
 from db.models import RealtimeSectorFlow, RealtimeStockFlow, RealtimeConceptSectorFlow, RealtimeMoneyFlowSnapshot
 from collectors.realtime_collector import collect_realtime_snapshot

@@ -254,9 +254,9 @@ async def screen_stocks(strategy: str = Query("heat"), date: str = Query(None)):
                     'filters': [f for f in filters_used if f],
                 },
             }
-        elif strategy in ("baihu", "qinglong", "zhushenglang", "wave_band"):
+        elif strategy in ("baihu", "qinglong", "macd", "risk_exit", "rsi_bounce"):
             # 优先读预计算表（盘后定时扫描已落库），命中则跳过现场计算
-            _sk_map = {'baihu': 'baihu_v26', 'qinglong': 'qinglong', 'zhushenglang': 'zhushenglang', 'wave_band': 'wave_band'}
+            _sk_map = {'baihu': 'baihu_v30', 'qinglong': 'qinglong', 'macd': 'macd_golden_cross', 'risk_exit': 'risk_exit', 'rsi_bounce': 'rsi_bounce'}
             _sk = _sk_map.get(strategy)
             if _sk:
                 _precomputed = await build_signals_from_strategy_result(db, _sk, trade_date)
@@ -271,33 +271,18 @@ async def screen_stocks(strategy: str = Query("heat"), date: str = Query(None)):
                         'leaders': [],
                         'message': 'ok(预计算)',
                     }
-            # 白虎V2.6 / 青龙 选股
+            # 白虎V3 / 青龙 / MACD / 风险退出 选股
             # 1. 获取热门板块的股票作为候选池（Top10板块 + 主力净流入>0）
             top_sectors = db.query(SectorFlow).filter_by(
                 trade_date=trade_date
             ).order_by(SectorFlow.heat_score.desc()).limit(10).all()
             sector_names = [s.sector for s in top_sectors]
 
-            # zhushenglang 需要更大的候选池（MA多头排列较稀有），放宽主力限制
-            if strategy == "zhushenglang":
-                top_sectors_q = db.query(SectorFlow).filter_by(
-                    trade_date=trade_date
-                ).order_by(SectorFlow.heat_score.desc()).limit(15)
-                sector_names = [s.sector for s in top_sectors_q.all()]
-                top_sectors = db.query(SectorFlow).filter_by(
-                    trade_date=trade_date
-                ).order_by(SectorFlow.heat_score.desc()).limit(15).all()
-
-                candidates = db.query(StockFlow).filter(
-                    StockFlow.trade_date == trade_date,
-                    StockFlow.sector.in_(sector_names),
-                ).order_by(StockFlow.main_force_inflow.desc()).limit(150).all()
-            else:
-                candidates = db.query(StockFlow).filter(
-                    StockFlow.trade_date == trade_date,
-                    StockFlow.sector.in_(sector_names),
-                    StockFlow.main_force_inflow > 0,
-                ).order_by(StockFlow.main_force_inflow.desc()).limit(80).all()
+            candidates = db.query(StockFlow).filter(
+                StockFlow.trade_date == trade_date,
+                StockFlow.sector.in_(sector_names),
+                StockFlow.main_force_inflow > 0,
+            ).order_by(StockFlow.main_force_inflow.desc()).limit(80).all()
 
             stock_list = [c.ts_code for c in candidates]
             stock_name_map = {c.ts_code: c.name for c in candidates}
@@ -308,17 +293,20 @@ async def screen_stocks(strategy: str = Query("heat"), date: str = Query(None)):
 
             # 2. 执行策略选股
             if strategy == "baihu":
-                from strategies.baihu_v26 import run_baihu_screen
-                hits = run_baihu_screen(stock_list, trade_date)
+                from strategies.baihu_v30 import run_baihu_v30_screen
+                hits = run_baihu_v30_screen(stock_list, trade_date)
             elif strategy == "qinglong":
                 from strategies.qinglong import run_qinglong_screen
                 hits = run_qinglong_screen(stock_list, trade_date)
-            elif strategy == "wave_band":
-                from strategies.wave_band import run_wave_band_screen
-                hits = run_wave_band_screen(stock_list, trade_date)
-            else:
-                from strategies.zhushenglang import run_zhushenglang_screen
-                hits = run_zhushenglang_screen(stock_list, trade_date, db=db)
+            elif strategy == "macd":
+                from strategies.macd_golden_cross import run_macd_golden_cross_screen
+                hits = run_macd_golden_cross_screen(stock_list, trade_date)
+            elif strategy == "risk_exit":
+                from strategies.risk_exit import run_risk_exit_screen
+                hits = run_risk_exit_screen(stock_list, trade_date)
+            elif strategy == "rsi_bounce":
+                from strategies.rsi_bounce import run_rsi_bounce_screen
+                hits = run_rsi_bounce_screen(stock_list, trade_date)
 
             # 3. 格式化结果
             results = []
@@ -343,24 +331,12 @@ async def screen_stocks(strategy: str = Query("heat"), date: str = Query(None)):
                     'lower_shadow': float(h.get('lower_shadow', 0)),
                     'ma20': float(h.get('ma20', 0)),
                 }
-                # 主升浪策略特有字段
-                if strategy == "zhushenglang":
-                    r['ma5'] = float(h.get('ma5', 0))
-                    r['ma10'] = float(h.get('ma10', 0))
-                    r['ma60'] = float(h.get('ma60', 0))
-                    r['ma_spread'] = float(h.get('ma_spread', 0))
-                    r['bias_20'] = float(h.get('bias_20', 0))
-                    r['continuity_days'] = int(h.get('continuity_days', 0))
-                    r['has_main_force'] = h.get('has_main_force', False)
-                    r['exit_signal'] = h.get('exit_signal')
-                # 波段信号策略特有字段
-                if strategy == "wave_band":
-                    r['ma5'] = float(h.get('ma5', 0))
-                    r['ma10'] = float(h.get('ma10', 0))
-                    r['rsi6'] = float(h.get('rsi6') or 0)
-                    r['confidence'] = float(h.get('confidence', 0))
-                    r['reason'] = h.get('reason', '')
-                    r['signal'] = h.get('signal', 'buy')
+                # 风险退出策略特有字段
+                if strategy == "risk_exit":
+                    r['worst_severity'] = h.get('worst_severity', '')
+                    r['worst_label'] = h.get('worst_label', '')
+                    r['worst_reason'] = h.get('worst_reason', '')
+                    r['signals'] = h.get('signals', [])
                 results.append(r)
             results = sorted(results, key=lambda x: x['score'], reverse=True)
 
@@ -386,25 +362,12 @@ async def screen_stocks(strategy: str = Query("heat"), date: str = Query(None)):
                     s['rsi'] = meta.get('rsi', 0)
                     s['scores'] = meta.get('scores', {})
                     s['lowerShadow'] = meta.get('lower_shadow', 0)
-                    # 主升浪策略特有字段
-                    if strategy == "zhushenglang":
-                        s['ma5'] = meta.get('ma5', 0)
-                        s['ma10'] = meta.get('ma10', 0)
-                        s['ma20'] = meta.get('ma20', 0)
-                        s['ma60'] = meta.get('ma60', 0)
-                        s['maSpread'] = meta.get('ma_spread', 0)
-                        s['bias20'] = meta.get('bias_20', 0)
-                        s['continuityDays'] = meta.get('continuity_days', 0)
-                        s['hasMainForce'] = meta.get('has_main_force', False)
-                        s['exitSignal'] = meta.get('exit_signal')
-                    # 波段信号策略特有字段
-                    if strategy == "wave_band":
-                        s['ma5'] = meta.get('ma5', 0)
-                        s['ma10'] = meta.get('ma10', 0)
-                        s['rsi6'] = meta.get('rsi6', 0)
-                        s['confidence'] = meta.get('confidence', 0)
-                        s['waveReason'] = meta.get('reason', '')
-                        s['waveSignal'] = meta.get('signal', 'buy')
+                    # 风险退出策略特有字段
+                    if strategy == "risk_exit":
+                        s['worstSeverity'] = meta.get('worst_severity', '')
+                        s['worstLabel'] = meta.get('worst_label', '')
+                        s['worstReason'] = meta.get('worst_reason', '')
+                        s['riskSignals'] = meta.get('signals', [])
 
             return {
                 'strategy': strategy,

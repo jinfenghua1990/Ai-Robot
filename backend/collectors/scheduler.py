@@ -302,9 +302,10 @@ def start_scheduler():
     # === 盘后分析（15:30）===
     scheduler.add_job(jobs.scheduled_analyze, 'cron', hour='15', minute='30', id='analyze')
 
-    # === 龙虎榜采集（18:30 独立任务，19:00 补一次）===
-    scheduler.add_job(jobs.scheduled_dragon_tiger, 'cron', hour='18', minute='30', id='dragon_tiger_evening')
-    scheduler.add_job(jobs.scheduled_dragon_tiger, 'cron', hour='19', minute='0', id='dragon_tiger_fallback')
+    # === 龙虎榜采集（18:00 首次，18:30 兜底）===
+    # Tushare 实测：18:00 左右开始发布当日龙虎榜数据，比原定的 18:30 提前 30 分钟
+    scheduler.add_job(jobs.scheduled_dragon_tiger, 'cron', hour='18', minute='5', id='dragon_tiger_evening')
+    scheduler.add_job(jobs.scheduled_dragon_tiger, 'cron', hour='18', minute='30', id='dragon_tiger_fallback')
 
     # === 4档资金流采集（17:30）===
     scheduler.add_job(jobs.scheduled_moneyflow_detail, 'cron', hour='17', minute='30', id='moneyflow_detail')

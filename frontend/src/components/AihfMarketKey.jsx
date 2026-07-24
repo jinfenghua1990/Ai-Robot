@@ -24,7 +24,7 @@ export default function AihfMarketKey() {
 
   useEffect(() => {
     check();
-    timer.current = setInterval(check, 8000);
+    timer.current = setInterval(check, 60000);
     return () => clearInterval(timer.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

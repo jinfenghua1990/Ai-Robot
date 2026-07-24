@@ -151,7 +151,7 @@ def macd_golden_cross_strategy(kline, day_index=-1):
 
 
 def run_macd_golden_cross_screen(stock_list, trade_date=None):
-    from .baihu_v26 import get_kline_from_tdx
+    from .baihu_v30 import get_kline_from_tdx
     results = []
     for ts_code in stock_list:
         kline = get_kline_from_tdx(ts_code)

@@ -557,7 +557,6 @@ export default function CxmtIpoPage() {
           </div>
           )}
         </div>
-        )}
 
         {/* 行业研判 */}
         <div className="rounded-xl border p-2.5 space-y-1.5" style={{ borderColor: 'rgba(59,130,246,0.3)', background: 'var(--bg-card)' }}>

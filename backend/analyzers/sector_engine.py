@@ -18,7 +18,6 @@
 """
 from datetime import date, timedelta
 from sqlalchemy import desc, distinct
-from db.connection import get_db
 from db.session import get_db_session
 from db.models import SectorFlow, StockFlow
 

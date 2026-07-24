@@ -62,6 +62,9 @@ def _ensure_bs_strategy_columns():
     # 确保游资 20 天生命周期跟踪表存在
     from db.models import YuziLifecycleTracker
     Base.metadata.create_all(bind=engine, tables=[YuziLifecycleTracker.__table__])
+    # 确保龙头生命周期跟踪状态表存在（跨日记忆：主龙阶段演进/板块轮动/接棒）
+    from db.models import LeaderTrack
+    Base.metadata.create_all(bind=engine, tables=[LeaderTrack.__table__])
     # 兼容旧列: net_return_7d → net_return_20d
     with engine.connect() as conn:
         conn.execute(text("""
@@ -135,10 +138,19 @@ def _ensure_analysis_tables():
 
 def _ensure_stock_tracker_tables():
     """创建股票跟踪相关表"""
-    from db.connection import engine
+    from db.connection import engine, Base
     from db.models import StockTracker, StockTrackerDaily
     Base.metadata.create_all(bind=engine, tables=[
         StockTracker.__table__, StockTrackerDaily.__table__,
+    ])
+
+
+def _ensure_strategy_track_tables():
+    """创建策略共振股 20 天跟踪相关表"""
+    from db.connection import engine, Base
+    from db.models import StrategyTrack, StrategyTrackDaily
+    Base.metadata.create_all(bind=engine, tables=[
+        StrategyTrack.__table__, StrategyTrackDaily.__table__,
     ])
 
 
@@ -147,3 +159,4 @@ def run_migrations():
     _ensure_bs_strategy_columns()
     _ensure_analysis_tables()
     _ensure_stock_tracker_tables()
+    _ensure_strategy_track_tables()
