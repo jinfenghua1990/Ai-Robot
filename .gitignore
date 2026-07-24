@@ -19,3 +19,11 @@ dist/
 # 本地产物,不进版本库
 .trash/
 backups/
+
+# 构建/缓存垃圾（迁移收尾清理）
+backend/backend/
+backend/api/backend/
+frontend/vite.config.js.timestamp-*.mjs
+*.bak.*
+backend/reports/daily/
+.workbuddy/

@@ -1,6 +1,14 @@
-from .tdx_collector import (
-    get_best_server, connect_with_retry,
-    get_sector_list, get_sector_money_flow,
-    get_stock_money_flow, get_limit_up_stocks,
-    collect_daily_data, PYTDX_AVAILABLE, TUSHARE_AVAILABLE
-)
+"""collectors package — reimplemented fund-flow collector for market-review.
+
+Original Hermes collector pulled from robot-1; this version uses akshare's
+public fund-flow endpoints. Always returns a well-shaped payload (never raises)
+so market-review degrades gracefully when the provider is unreachable.
+"""
+from __future__ import annotations
+
+import logging
+
+from .fund_flow_collector import collect_fund_flow
+
+__all__ = ["collect_fund_flow"]
+logger = logging.getLogger("collectors")
