@@ -29,3 +29,13 @@ backend/reports/daily/
 backend/api/data/
 backend/api/hermes_native/reports/
 .workbuddy/
+
+# 外部子系统（独立上游仓库，不纳入 AIROBOT 跟踪，仅本地保留）
+.dsa/
+.vibe-research/
+backend/skills/a-stock-data/
+stock-tools/ai-hedge-fund/
+stock-tools/go-stock/
+stock-tools/trading-agents/
+# 运行时缓存
+backend/api/vibe/.cache/
