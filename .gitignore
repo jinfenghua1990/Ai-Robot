@@ -26,4 +26,6 @@ backend/api/backend/
 frontend/vite.config.js.timestamp-*.mjs
 *.bak.*
 backend/reports/daily/
+backend/api/data/
+backend/api/hermes_native/reports/
 .workbuddy/
