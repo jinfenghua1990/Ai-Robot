@@ -19,7 +19,6 @@ const ConceptFlowComparePage = lazy(() => import('./pages/ConceptFlowComparePage
 const IndexFlowPage = lazy(() => import('./pages/IndexFlowPage'));
 const GlobalMarketPage = lazy(() => import('./pages/GlobalMarketPage'));
 const HKMarketPage = lazy(() => import('./pages/HKMarketPage'));
-const HKStrategyPage = lazy(() => import('./pages/HKStrategyPage'));
 const USMarketPage = lazy(() => import('./pages/USMarketPage'));
 const FundWeatherPage = lazy(() => import('./pages/FundWeatherPage'));
 const PortfolioPage = lazy(() => import('./pages/portfolio/PortfolioPage'));
@@ -99,7 +98,7 @@ export default function App() {
           <Route path="/index-flow" element={<IndexFlowPage />} />
           <Route path="/global-market" element={<GlobalMarketPage />} />
           <Route path="/hk-market" element={<HKMarketPage />} />
-          <Route path="/hk-strategy" element={<HKStrategyPage />} />
+          <Route path="/hk-strategy" element={<Navigate to="/hk-market" replace />} />
           <Route path="/us-market" element={<USMarketPage />} />
           <Route path="/fund-weather" element={<FundWeatherPage />} />
           <Route path="/stock/:code" element={<StockCodeRedirect />} />

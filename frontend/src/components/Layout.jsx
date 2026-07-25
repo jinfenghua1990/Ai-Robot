@@ -115,7 +115,6 @@ const projectKeys = [
   { key: 'ai-agents', label: '智能体投资团', icon: '🤖' },
   { key: 'tracker', label: '跟踪', icon: '📈' },
   { key: 'hk', label: '港股', icon: '🇭🇰' },
-  { key: 'hk-strategy', label: '港策', icon: '🎯' },
   { key: 'us', label: '美股', icon: '🇺🇸' },
 ];
 
@@ -128,8 +127,7 @@ function detectProject(pathname) {
   if (pathname.startsWith('/openclaw/') || pathname === '/openclaw') return 'openclaw';
   if (pathname.startsWith('/ai-agents')) return 'ai-agents';
   if (pathname.startsWith('/stock-tracker')) return 'tracker';
-  if (pathname.startsWith('/hk-market')) return 'hk';
-  if (pathname.startsWith('/hk-strategy')) return 'hk-strategy';
+  if (pathname.startsWith('/hk-market') || pathname.startsWith('/hk-strategy')) return 'hk';
   if (pathname.startsWith('/us-market')) return 'us';
   return 'main';
 }
@@ -420,9 +418,9 @@ export default function Layout() {
                   </a>
                 );
               }
-              // hk/us/港策 直接走独立页面，不切换侧边栏项目
-              if (key === 'hk' || key === 'us' || key === 'hk-strategy') {
-                const targetPath = key === 'hk' ? '/hk-market' : key === 'hk-strategy' ? '/hk-strategy' : '/us-market';
+              // hk/us 直接走独立页面，不切换侧边栏项目
+              if (key === 'hk' || key === 'us') {
+                const targetPath = key === 'hk' ? '/hk-market' : '/us-market';
                 return (
                   <NavLink
                     key={key}
