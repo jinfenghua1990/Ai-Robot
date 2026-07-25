@@ -6,21 +6,8 @@ import SystemCheckBanner from './SystemCheckBanner';
 
 // AIROBOT 主菜单 — 底部子系统模块，共享数据入口统一放到顶部栏
 const mainSections = [
-  { section: '数据中心', items: [
-    { path: '/data-center/overview', label: '三市场总览', icon: '🗂️' },
-    { path: '/data-center/a-share', label: 'A股数据', icon: '🇨🇳' },
-    { path: '/data-center/hk', label: '港股数据', icon: '🇭🇰' },
-    { path: '/data-center/us', label: '美股数据', icon: '🇺🇸' },
-    { path: '/data-center/schedule', label: '定时采集', icon: '⏰' },
-  ]},
   { section: '市场分析', items: [
     { path: '/today', label: '盘中实时', icon: '⚡' },
-    { path: '/theme-review', label: '题材复盘', icon: '🔥' },
-    { path: '/consolidated', label: '综合数据', icon: '🧩' },
-    { path: '/stock-monitor', label: '选股持仓', icon: '🎯' },
-    { path: '/robot-strategies', label: '策略信号', icon: '🤖' },
-    { path: '/strategy-position', label: '波段信号', icon: '🌊' },
-    { path: '/mock-trading', label: '模拟交易', icon: '📈' },
     { path: '/panorama', label: '板块全景', icon: '🔥' },
     { path: '/concept-flow', label: '资金流向', icon: '💸' },
     { path: '/fund-weather', label: '资金气象', icon: '🌦️' },

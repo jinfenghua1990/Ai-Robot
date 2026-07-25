@@ -5,8 +5,8 @@
 # --access-log: 关闭访问日志提升性能
 cd "$(dirname "$0")"
 
-# 运行时：使用系统 Python 3.9（Hermes 后端代码已移除，不再需要 3.12 venv）
-VENV_PY="$(dirname "$0")/hermes_backend/.venv/bin/python"
+# 运行时：使用系统 Python 3（AIROBOT 后端依赖已装于系统 Python 环境）
+VENV_PY="$(dirname "$0")/../.venv/bin/python"
 if [ ! -x "$VENV_PY" ]; then
   VENV_PY="python3"
 fi

@@ -51,9 +51,8 @@ const DSAAlertsPage = lazy(() => import('./pages/dsa/DSAAlertsPage'));
 const DSATokenUsagePage = lazy(() => import('./pages/dsa/DSATokenUsagePage'));
 const DSASettingsPage = lazy(() => import('./pages/dsa/DSASettingsPage'));
 
-// 盘中实时 & 数据中心模块（已原生迁移）
+// 盘中实时模块（已原生迁移）
 const TodayPage = lazy(() => import('./pages/TodayPage'));
-const HermesModulePage = lazy(() => import('./pages/HermesModulePage'));
 
 // 股票分析套件
 const AIHFHomePage = lazy(() => import('./pages/aihf/AIHFHomePage'));
@@ -130,20 +129,6 @@ export default function App() {
           <Route path="/dsa/alerts" element={<DSAAlertsPage />} />
           <Route path="/dsa/usage" element={<DSATokenUsagePage />} />
           <Route path="/dsa/settings" element={<DSASettingsPage />} />
-
-          {/* 数据中心 & 市场分析模块（已原生迁移） */}
-          <Route path="/data-center/overview" element={<HermesModulePage module="dc_overview" />} />
-          <Route path="/data-center/a-share" element={<HermesModulePage module="dc_a_share" />} />
-          <Route path="/data-center/hk" element={<HermesModulePage module="dc_hk" />} />
-          <Route path="/data-center/us" element={<HermesModulePage module="dc_us" />} />
-          <Route path="/data-center/schedule" element={<HermesModulePage module="dc_schedule" />} />
-          <Route path="/data-center" element={<HermesModulePage module="dc_overview" />} />
-          <Route path="/theme-review" element={<HermesModulePage module="theme_review" />} />
-          <Route path="/consolidated" element={<HermesModulePage module="consolidated" />} />
-          <Route path="/stock-monitor" element={<HermesModulePage module="stock_monitor" />} />
-          <Route path="/robot-strategies" element={<HermesModulePage module="strategies" />} />
-          <Route path="/strategy-position" element={<HermesModulePage module="strategy_position" />} />
-          <Route path="/mock-trading" element={<HermesModulePage module="mock_trading" />} />
 
           {/* 股票分析套件二级页面 */}
           <Route path="/aihf" element={<AIHFHomePage />} />

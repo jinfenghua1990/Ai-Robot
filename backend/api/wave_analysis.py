@@ -12,7 +12,7 @@ router = APIRouter(prefix="/api/ops", tags=["wave_analysis"])
 
 RESULT_PATH = Path("/Users/gino/backtest_results/wave/result.json")
 SCRIPT_PATH = Path("/Users/gino/backtest_results/wave/run_wave_analysis.py")
-LOG_PATH = Path("/Users/gino/Projects/AIROBOT/backend/hermes_backend/strategy_runs/wave_analysis.log")
+LOG_PATH = Path(__file__).resolve().parent / "logs" / "wave_analysis.log"
 
 
 @router.get("/wave-analysis")

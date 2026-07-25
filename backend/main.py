@@ -7,11 +7,6 @@ import logging
 import uuid
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# 防御性：在 api/hermes_native/* 等模块把 /Users/gino/Projects/AIROBOT/backend/.hermes-legacy 注入 sys.path 之前，
-# 先把 backend/scripts 包缓存进 sys.modules，避免被 .hermes/robot-1/scripts 遮蔽
-# （Hermes 运行时目录仍残留在磁盘上，其 sys.path 注入会污染顶层包名解析）。
-import scripts  # noqa: F401
-
 from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse, Response, RedirectResponse
@@ -27,31 +22,16 @@ from api import hk_strategy
 from api import strategy_track
 from api import wave_analysis
 from api.rate_limit import RateLimitMiddleware
-from api import vibe, scheduler_api, shared, proxy, stock_dashboard, data_center
+from api import vibe, scheduler_api, shared, proxy, stock_dashboard
 from api.auth import verify_api_key
 from api import stock_info
 
-# ─── 原生 Hermes API 模块（已从独立进程迁移到主后端，不再需要代理） ───
-from api.hermes_native.ops import router as hermes_ops_router
-from api.hermes_native.main_hub import router as hermes_main_hub_router
-from api.hermes_native.market_review import router as hermes_market_review_router
-from api.hermes_native.mock_trading import router as hermes_mock_trading_router
-from api.hermes_native.global_market import router as hermes_global_market_router
-from api.hermes_native.screener import router as hermes_screener_router
-from api.hermes_native.themes import router as hermes_themes_router
-from api.hermes_native.market import router as hermes_market_router
-from api.hermes_native.fundflow import router as hermes_fundflow_router
-from api.hermes_native.emotion import router as hermes_emotion_router
-from api.hermes_native.cognition import router as hermes_cognition_router
-from api.hermes_native.rotation import router as hermes_rotation_router
-from api.hermes_native.summary import router as hermes_summary_router
 from collectors.scheduler import start_scheduler, scheduler
 from db.session import get_db_session
 from db.models import SectorFlow
 from sqlalchemy import func
 from config import CORS_ORIGINS
 
-# 重新确保 backend 目录在 sys.path 最前面（hermes_native 模块可能添加了旧路径遮蔽 scripts）
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from scripts.migrate import run_migrations
 
@@ -227,81 +207,12 @@ app.include_router(git_push.router)
 app.include_router(vibe.router)
 app.include_router(report.router)
 app.include_router(scheduler_api.router)
-app.include_router(data_center.router)  # 数据中心（从 Hermes 迁入）
-
-# ─── 原生 API 路由（从 Hermes 独立进程迁移到主后端，不再需要代理） ───
-app.include_router(hermes_ops_router)
-app.include_router(hermes_main_hub_router)
-app.include_router(hermes_market_review_router)
-app.include_router(hermes_mock_trading_router)
-app.include_router(hermes_global_market_router)
-app.include_router(hermes_screener_router)
-app.include_router(hermes_themes_router)
-app.include_router(hermes_market_router)
-app.include_router(hermes_fundflow_router)
-app.include_router(hermes_emotion_router)
-app.include_router(hermes_cognition_router)
-app.include_router(hermes_rotation_router)
-app.include_router(hermes_summary_router)
 
 # 共享数据层：自选股/持仓/重点关注（所有子系统共享）
 app.include_router(shared.router)
 
 # 反向代理：将 DSA / AIHF / OpenClaw 子系统 API 收敛到 9000 端口
-# （Hermes 子系统的 /api/* 已直接并入本进程，不再经代理转发到 8788）
 app.include_router(proxy.router)
-
-
-# ============================================================================
-# Hermes 子系统路由并入（统一运行时，8788 已废弃）
-# 原 /api/themes、/api/market、/api/fundflow、/api/emotion、/api/summary、
-# /api/main-hub、/api/ops、/api/mock-trading、/api/cognition、/api/dispatch、
-# /api/risk、/api/tomorrow-plan、/api/market-review、/api/global-market、
-# /api/rotation 等由 hermes_backend 提供，之前经 proxy 转发到 8788，
-# 现在直接并入本进程，8788 可停止。
-# 注：/api/global-market、/api/rotation 与 AIROBOT 自有路由同名，按注册顺序
-#     由 AIROBOT 自有版优先（与迁移前 proxy 被遮盖的行为一致）。
-# ============================================================================
-try:
-    from hermes_backend.main import (
-        market_review_router,
-        main_hub_router,
-        ops_router,
-        mock_trading_router,
-        global_market_router,
-        screener_router,
-        themes_router,
-        market_router,
-        fundflow_router,
-        emotion_router,
-        cognition_router,
-        rotation_router,
-        summary_router,
-    )
-    _hermes_routers = [
-        market_review_router,
-        main_hub_router,
-        ops_router,
-        mock_trading_router,
-        global_market_router,
-        screener_router,
-        themes_router,
-        market_router,
-        fundflow_router,
-        emotion_router,
-        cognition_router,
-        rotation_router,
-        summary_router,
-    ]
-    for _r in _hermes_routers:
-        app.include_router(_r)
-    logging.getLogger("airobot").info(
-        "Hermes 路由已并入本进程：%d 个子系统路由（8788 可停止）", len(_hermes_routers)
-    )
-except Exception as _hermes_err:  # noqa: BLE001
-    logging.getLogger("airobot").warning(
-        "Hermes 路由并入失败（相关 /api/* 将不可用）：%s", _hermes_err
-    )
 
 
 @app.get("/api/health")
@@ -883,7 +794,10 @@ async def services_status():
 
 
 # 前端静态资源（构建后存在）
-frontend_dist = os.path.join(os.path.dirname(__file__), '..', 'frontend', 'dist')
+# 前端构建产物：Hermes 清理后使用 dist.new（旧 dist 含遗留 Hermes 代码，待删除后改回 'dist'）
+frontend_dist = os.path.join(os.path.dirname(__file__), '..', 'frontend', 'dist.new')
+if not os.path.isdir(os.path.join(frontend_dist, 'assets')):
+    frontend_dist = os.path.join(os.path.dirname(__file__), '..', 'frontend', 'dist')
 # 仅当 assets 目录存在时才挂载静态资源（避免 StaticFiles 启动时因目录缺失报错）
 if os.path.exists(os.path.join(frontend_dist, 'assets')):
     app.mount("/assets", StaticFiles(directory=os.path.join(frontend_dist, 'assets')), name="assets")

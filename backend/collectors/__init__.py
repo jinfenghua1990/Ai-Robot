@@ -1,14 +1,9 @@
-"""collectors package — reimplemented fund-flow collector for market-review.
+"""collectors package — AIROBOT 数据采集层。
 
-Original Hermes collector pulled from robot-1; this version uses akshare's
-public fund-flow endpoints. Always returns a well-shaped payload (never raises)
-so market-review degrades gracefully when the provider is unreachable.
+包含实时行情、资金流、龙虎榜、生命周期、研报等采集器，供 API 与定时任务共用。
 """
 from __future__ import annotations
 
 import logging
 
-from .fund_flow_collector import collect_fund_flow
-
-__all__ = ["collect_fund_flow"]
 logger = logging.getLogger("collectors")
