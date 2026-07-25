@@ -1,5 +1,7 @@
 import { useParams, useNavigate } from 'react-router-dom';
 import TAgentsHomePage from './tagents/TAgentsHomePage';
+import AIHFHomePage from './aihf/AIHFHomePage';
+import OpenClawPage from './openclaw/OpenClawPage';
 
 const TABS = [
   { key: 'tagents', label: 'TradingAgents', icon: '🕸️' },
@@ -56,20 +58,14 @@ export default function AIAgentTeamPage() {
           </div>
         )}
         {activeTab === 'aihf' && (
-          <iframe
-            src="/_aihf/"
-            title="AI Hedge Fund"
-            className="w-full h-full"
-            style={{ border: 'none' }}
-          />
+          <div className="h-full overflow-y-auto" style={{ minHeight: 0 }}>
+            <AIHFHomePage />
+          </div>
         )}
         {activeTab === 'openclaw' && (
-          <iframe
-            src="/_openclaw/"
-            title="OpenClaw Control"
-            className="w-full h-full"
-            style={{ border: 'none' }}
-          />
+          <div className="h-full overflow-y-auto" style={{ minHeight: 0 }}>
+            <OpenClawPage />
+          </div>
         )}
       </div>
     </div>

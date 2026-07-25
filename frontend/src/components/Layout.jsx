@@ -11,12 +11,12 @@ const mainSections = [
     { path: '/panorama', label: '板块全景', icon: '🔥' },
     { path: '/concept-flow', label: '资金流向', icon: '💸' },
     { path: '/fund-weather', label: '资金气象', icon: '🌦️' },
-    { path: '/concept-flow-compare', label: '概念资金', icon: '📊' },
+    { path: '/concept-flow?view=compare', label: '概念资金', icon: '📊' },
     { path: '/index-flow', label: '指数资金', icon: '🇨🇳' },
     { path: '/strategy-center', label: '策略中心', icon: '🎯' },
     { path: '/wave-analysis', label: '波浪分析', icon: '🌊' },
     { path: '/yuzi-center', label: '游资中心', icon: '🐉' },
-    { path: '/yuzi-tracker-20d', label: '20天跟踪', icon: '🧬' },
+    { path: '/yuzi-center?tab=tracker', label: '20天跟踪', icon: '🧬' },
   ]},
 ];
 
@@ -67,28 +67,7 @@ const projectMenus = {
       { path: '/dsa/settings', label: 'DSA 设置', icon: '⚙️' },
     ],
   },
-  aihf: {
-    title: 'AI Hedge Fund',
-    icon: '🦅',
-    items: [
-      { path: '/aihf', label: '项目主页', icon: '🦅' },
-    ],
-  },
-  tagents: {
-    title: 'TradingAgents',
-    icon: '🕸️',
-    items: [
-      { path: '/tagents', label: '项目主页', icon: '🕸️' },
-    ],
-  },
   gostock: null,
-  openclaw: {
-    title: 'OpenClaw 控制面板',
-    icon: '🔧',
-    items: [
-      { path: '/openclaw', label: '控制面板', icon: '🔧' },
-    ],
-  },
   'ai-agents': {
     title: '智能体投资团',
     icon: '🤖',
@@ -121,10 +100,7 @@ const projectKeys = [
 function detectProject(pathname) {
   if (pathname.startsWith('/vibe/') || pathname === '/vibe') return 'vibe';
   if (pathname.startsWith('/dsa/') || pathname === '/dsa') return 'dsa';
-  if (pathname.startsWith('/aihf/') || pathname === '/aihf') return 'aihf';
-  if (pathname.startsWith('/tagents/') || pathname === '/tagents') return 'tagents';
   if (pathname.startsWith('/gostock/') || pathname === '/gostock') return 'gostock';
-  if (pathname.startsWith('/openclaw/') || pathname === '/openclaw') return 'openclaw';
   if (pathname.startsWith('/ai-agents')) return 'ai-agents';
   if (pathname.startsWith('/stock-tracker')) return 'tracker';
   if (pathname.startsWith('/hk-market') || pathname.startsWith('/hk-strategy')) return 'hk';

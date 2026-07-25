@@ -7,15 +7,11 @@ import { TradingProvider } from './context/TradingContext';
 const PanoramaPage = lazy(() => import('./pages/PanoramaPage'));
 const QualityPage = lazy(() => import('./pages/QualityPage'));
 const StrategyCenterPage = lazy(() => import('./pages/StrategyCenterPage'));
-const TradingSystemPage = lazy(() => import('./pages/TradingSystemPage'));
 const TradingPage = lazy(() => import('./pages/TradingPage'));
 const WatchlistPage = lazy(() => import('./pages/WatchlistPage'));
 const YuziCenterPage = lazy(() => import('./pages/YuziCenterPage'));
 const FocusStocksPage = lazy(() => import('./pages/FocusStocksPage'));
-const YuziBillboardPage = lazy(() => import('./pages/YuziBillboardPage'));
-const YuziLifecycleTrackerPage = lazy(() => import('./pages/YuziLifecycleTrackerPage'));
 const ConceptFlowPage = lazy(() => import('./pages/ConceptFlowPage'));
-const ConceptFlowComparePage = lazy(() => import('./pages/ConceptFlowComparePage'));
 const IndexFlowPage = lazy(() => import('./pages/IndexFlowPage'));
 const GlobalMarketPage = lazy(() => import('./pages/GlobalMarketPage'));
 const HKMarketPage = lazy(() => import('./pages/HKMarketPage'));
@@ -54,10 +50,6 @@ const DSASettingsPage = lazy(() => import('./pages/dsa/DSASettingsPage'));
 const TodayPage = lazy(() => import('./pages/TodayPage'));
 
 // 股票分析套件
-const AIHFHomePage = lazy(() => import('./pages/aihf/AIHFHomePage'));
-const OpenClawPage = lazy(() => import('./pages/openclaw/OpenClawPage'));
-const TAgentsHomePage = lazy(() => import('./pages/tagents/TAgentsHomePage'));
-
 const AIAgentTeamPage = lazy(() => import('./pages/AIAgentTeamPage'));
 const StockTrackerPage = lazy(() => import('./pages/StockTrackerPage'));
 const WaveAnalysisPage = lazy(() => import('./pages/WaveAnalysisPage'));
@@ -83,8 +75,8 @@ export default function App() {
           <Route path="/quality" element={<QualityPage />} />
           <Route path="/strategy-center" element={<StrategyCenterPage />} />
           <Route path="/yuzi-center" element={<YuziCenterPage />} />
-          <Route path="/yuzi-tracker-20d" element={<YuziLifecycleTrackerPage />} />
-          <Route path="/yuzi-tracker" element={<YuziLifecycleTrackerPage />} />
+          <Route path="/yuzi-tracker-20d" element={<Navigate to="/yuzi-center?tab=tracker" replace />} />
+          <Route path="/yuzi-tracker" element={<Navigate to="/yuzi-center?tab=tracker" replace />} />
           <Route path="/trading" element={<TradingPage />} />
           <Route path="/watchlist" element={<WatchlistPage />} />
           <Route path="/stock-analysis" element={<StockAnalysisPage />} />
@@ -94,7 +86,7 @@ export default function App() {
           <Route path="/research-center" element={<ResearchCenterPage />} />
           <Route path="/report/:reportId" element={<ReportDetailPage />} />
           <Route path="/concept-flow" element={<ConceptFlowPage />} />
-          <Route path="/concept-flow-compare" element={<ConceptFlowComparePage />} />
+          <Route path="/concept-flow-compare" element={<Navigate to="/concept-flow?view=compare" replace />} />
           <Route path="/index-flow" element={<IndexFlowPage />} />
           <Route path="/global-market" element={<GlobalMarketPage />} />
           <Route path="/hk-market" element={<HKMarketPage />} />
@@ -129,13 +121,13 @@ export default function App() {
           <Route path="/dsa/usage" element={<DSATokenUsagePage />} />
           <Route path="/dsa/settings" element={<DSASettingsPage />} />
 
-          {/* 股票分析套件二级页面 */}
-          <Route path="/aihf" element={<AIHFHomePage />} />
-          <Route path="/openclaw" element={<OpenClawPage />} />
-          <Route path="/openclaw/" element={<OpenClawPage />} />
-          <Route path="/aihf/" element={<AIHFHomePage />} />
-          <Route path="/tagents" element={<TAgentsHomePage />} />
-          <Route path="/tagents/" element={<TAgentsHomePage />} />
+          {/* 股票分析套件二级页面 —— /aihf /openclaw /tagents 已并入 /ai-agents 枢纽（重定向到对应 Tab） */}
+          <Route path="/aihf" element={<Navigate to="/ai-agents/aihf" replace />} />
+          <Route path="/openclaw" element={<Navigate to="/ai-agents/openclaw" replace />} />
+          <Route path="/openclaw/" element={<Navigate to="/ai-agents/openclaw" replace />} />
+          <Route path="/aihf/" element={<Navigate to="/ai-agents/aihf" replace />} />
+          <Route path="/tagents" element={<Navigate to="/ai-agents/tagents" replace />} />
+          <Route path="/tagents/" element={<Navigate to="/ai-agents/tagents" replace />} />
           <Route path="/gostock" element={<Navigate to="/panorama" replace />} />
           <Route path="/ai-agents" element={<AIAgentTeamPage />} />
           <Route path="/ai-agents/:tab" element={<AIAgentTeamPage />} />

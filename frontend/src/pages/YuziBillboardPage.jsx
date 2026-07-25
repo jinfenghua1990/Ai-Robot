@@ -431,7 +431,7 @@ export default function YuziBillboardPage() {
                   <button
                     className="text-[10px] px-1.5 py-0.5 rounded border"
                     style={{ borderColor: 'rgba(168,85,247,0.4)', color: '#a855f7', background: 'rgba(168,85,247,0.05)' }}
-                    onClick={() => navigate(`/yuzi-tracker?ts_code=${stripCode(s.ts_code)}&min_score=0`)}
+                    onClick={() => navigate(`/yuzi-center?tab=tracker`)}
                     title="跳转到20天跟踪页面查看该股生命周期"
                   >📊 20天跟踪</button>
                 </div>

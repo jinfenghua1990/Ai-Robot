@@ -7,19 +7,28 @@
  *  - 大佬持仓：BUY→SELL 配对,持有几天跑了,赚还是亏（BossHoldingsPage）
  */
 import { useState, lazy, Suspense } from 'react';
+import { useSearchParams } from 'react-router-dom';
 
 const YuziBillboardPage = lazy(() => import('./YuziBillboardPage'));
 const TradingSystemPage = lazy(() => import('./TradingSystemPage'));
 const BossHoldingsPage = lazy(() => import('./BossHoldingsPage'));
+const YuziLifecycleTrackerPage = lazy(() => import('./YuziLifecycleTrackerPage'));
 
 const TABS = [
   { key: 'billboard', label: '龙虎榜', icon: '📊', desc: '资金动向 + 共振信号 + 游资战绩' },
   { key: 'leader', label: '龙头系统', icon: '👑', desc: '主龙头 + 候选 + 板块状态 + 热度池' },
   { key: 'holdings', label: '大佬持仓', icon: '💼', desc: 'BUY→SELL 配对 · 持有几天跑了' },
+  { key: 'tracker', label: '20天跟踪', icon: '🧬', desc: '游资生命周期 20 日跟踪' },
 ];
 
 export default function YuziCenterPage() {
-  const [activeTab, setActiveTab] = useState('billboard');
+  const [params, setParams] = useSearchParams();
+  const initial = TABS.some(t => t.key === params.get('tab')) ? params.get('tab') : 'billboard';
+  const [activeTab, setActiveTab] = useState(initial);
+  const switchTab = (key) => {
+    setActiveTab(key);
+    setParams(key === 'billboard' ? {} : { tab: key });
+  };
 
   return (
     <div className="flex flex-col h-full">
@@ -31,7 +40,7 @@ export default function YuziCenterPage() {
         {TABS.map(tab => (
           <button
             key={tab.key}
-            onClick={() => setActiveTab(tab.key)}
+            onClick={() => switchTab(tab.key)}
             className="px-3 py-1.5 rounded-lg text-sm font-medium transition-colors flex items-center gap-1.5"
             style={{
               background: activeTab === tab.key ? 'rgba(168,85,247,0.15)' : 'transparent',
@@ -60,6 +69,7 @@ export default function YuziCenterPage() {
           {activeTab === 'billboard' && <YuziBillboardPage />}
           {activeTab === 'leader' && <TradingSystemPage />}
           {activeTab === 'holdings' && <BossHoldingsPage />}
+          {activeTab === 'tracker' && <YuziLifecycleTrackerPage />}
         </Suspense>
       </div>
     </div>

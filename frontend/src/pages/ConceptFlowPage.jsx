@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useDatePicker } from '../hooks/useDatePicker';
+import ConceptFlowComparePage from './ConceptFlowComparePage';
 import { apiFetch } from '../utils/request';
 import DateNavigator from '../components/DateNavigator';
 import ModuleGroup from '../components/sections/ModuleGroup';
@@ -15,6 +17,44 @@ import { POLL_INTERVAL, SLOW_POLL_INTERVAL } from '../utils/constants';
  * 复用 PanoramaPage 中的概念板块模块（盘后 vs 实时 + 筛选器 + 联动趋势）
  */
 export default function ConceptFlowPage() {
+  const [params, setParams] = useSearchParams();
+  const view = params.get('view') === 'compare' ? 'compare' : 'flow';
+  const setView = (v) => setParams(v === 'compare' ? { view: 'compare' } : {});
+
+  return (
+    <div className="flex flex-col h-full">
+      {/* Tab 栏：资金流向 / 概念资金（原 /concept-flow-compare 已并入） */}
+      <div
+        className="flex items-center gap-1 px-3 py-2 border-b flex-shrink-0"
+        style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}
+      >
+        {[
+          { v: 'flow', label: '💸 资金流向' },
+          { v: 'compare', label: '📊 概念资金' },
+        ].map(t => (
+          <button
+            key={t.v}
+            onClick={() => setView(t.v)}
+            className="px-3 py-1.5 rounded-lg text-sm font-medium transition-colors"
+            style={{
+              background: view === t.v ? 'rgba(59,130,246,0.15)' : 'transparent',
+              color: view === t.v ? 'var(--accent-blue)' : 'var(--text-secondary)',
+              border: `1px solid ${view === t.v ? 'rgba(59,130,246,0.4)' : 'var(--border-color)'}`,
+            }}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      <div className="flex-1 overflow-auto">
+        {view === 'compare' ? <ConceptFlowComparePage /> : <ConceptFlowMain />}
+      </div>
+    </div>
+  );
+}
+
+function ConceptFlowMain() {
   const { selectedDate, setSelectedDate, changeDate } = useDatePicker();
 
   const [selectedSector, setSelectedSector] = useState(null);
