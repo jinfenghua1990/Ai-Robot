@@ -869,8 +869,6 @@ async def services_status():
         and os.path.exists(os.path.join(TAGENTS_DIR, ".env"))
         and os.path.exists(os.path.join(TAGENTS_DIR, "run_analysis.py"))
     )
-    # go-stock：已构建且已装入 /Applications（go-stock 已废弃，永远为 False）
-    gostock_ready = os.path.exists("/Applications/go-stock.app")
 
     aihf_kv, _ = _read_aihf_env()
 

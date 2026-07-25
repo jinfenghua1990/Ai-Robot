@@ -39,3 +39,6 @@ stock-tools/go-stock/
 stock-tools/trading-agents/
 # 运行时缓存
 backend/api/vibe/.cache/
+
+# 外部工具(free-llm-gateway 等)在仓库根创建的 .hermes/ 日志目录，非 AIROBOT 代码
+/.hermes/
