@@ -8,7 +8,7 @@ import ModuleGroup from '../components/sections/ModuleGroup';
 import AfterConceptSectorFlowSection from '../components/sections/AfterConceptSectorFlowSection';
 import RealtimeConceptSectorSection from '../components/sections/RealtimeConceptSectorSection';
 import ConceptRealtimeTrendChart from '../components/charts/ConceptRealtimeTrendChart';
-import ConceptSectorFilter, { loadSelectedConcepts, saveSelectedConcepts } from '../components/sections/ConceptSectorFilter';
+import ConceptSectorFilter, { loadSelectedConcepts, saveSelectedConcepts, ALL_CONCEPTS } from '../components/sections/ConceptSectorFilter';
 import SharedTrendPanel from '../components/sections/SharedTrendPanel';
 import { POLL_INTERVAL, SLOW_POLL_INTERVAL } from '../utils/constants';
 
@@ -102,6 +102,13 @@ function ConceptFlowMain() {
     return [...hotConceptSectors, ...extra];
   }, [hotConceptSectors, rtConceptSectors]);
 
+  // 概念筛选默认「全部显示」：哨兵 __ALL__ 展开为实际全量概念名
+  useEffect(() => {
+    if (selectedConcepts.includes(ALL_CONCEPTS) && allConceptSectors.length > 0) {
+      setSelectedConcepts(allConceptSectors);
+    }
+  }, [selectedConcepts, allConceptSectors]);
+
   // 根据已选概念数量动态计算图表高度：每条约 34px，最小 380px，最大 1200px
   // 概念多时自动拉高避免 endLabel 重叠，概念少时自动缩小节省空间
   const chartHeight = useMemo(() => {
@@ -179,7 +186,7 @@ function ConceptFlowMain() {
       <div className="rounded-xl border p-2.5 flex items-center gap-2 flex-wrap" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
         <span className="text-xs font-bold whitespace-nowrap" style={{ color: 'var(--text-primary)' }}>🔍 统一筛选概念</span>
         <span className="text-[10px] px-1.5 py-0.5 rounded whitespace-nowrap" style={{ background: 'rgba(34,197,94,0.1)', color: '#22c55e' }}>
-          已选 {selectedConcepts.length} 个 · 下方全部模块联动
+          已选 {selectedConcepts.includes(ALL_CONCEPTS) ? '全部' : selectedConcepts.length} 个 · 下方全部模块联动
         </span>
         <div className="flex-1 min-w-0">
           <ConceptSectorFilter
@@ -214,7 +221,7 @@ function ConceptFlowMain() {
         <ModuleGroup.SubHeader
           left={
             <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
-              📊 concept_sector_flow 表（盘后归档）· 已选 {selectedConcepts.length} 个概念 · 20 日净流入趋势 · 点击折线联动
+              📊 concept_sector_flow 表（盘后归档）· 已选 {selectedConcepts.includes(ALL_CONCEPTS) ? '全部' : selectedConcepts.length} 个概念 · 20 日净流入趋势 · 点击折线联动
             </span>
           }
           right={
@@ -266,7 +273,7 @@ function ConceptFlowMain() {
         <ModuleGroup.SubHeader
           left={
             <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
-              📊 concept_sector_flow 表（盘后归档）· 已选 {selectedConcepts.length} 个概念 · 20 日净流入趋势
+              📊 concept_sector_flow 表（盘后归档）· 已选 {selectedConcepts.includes(ALL_CONCEPTS) ? '全部' : selectedConcepts.length} 个概念 · 20 日净流入趋势
             </span>
           }
           right={

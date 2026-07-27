@@ -22,6 +22,7 @@ const CxmtIpoPage = lazy(() => import('./pages/CxmtIpoPage'));
 const ResearchCenterPage = lazy(() => import('./pages/ResearchCenterPage'));
 const StockAnalysisPage = lazy(() => import('./pages/StockAnalysisPage'));
 const ReportDetailPage = lazy(() => import('./pages/ReportDetailPage'));
+const OverviewPage = lazy(() => import('./pages/OverviewPage'));
 
 // Vibe-Research 二级页面
 const VibeDailyReviewPage = lazy(() => import('./pages/vibe/VibeDailyReviewPage'));
@@ -133,7 +134,7 @@ export default function App() {
           <Route path="/ai-agents/:tab" element={<AIAgentTeamPage />} />
           <Route path="/stock-tracker" element={<StockTrackerPage />} />
 
-          <Route path="/" element={<Navigate to="/ai-agents" replace />} />
+          <Route path="/" element={<OverviewPage />} />
           <Route path="/mx-tools" element={<Navigate to="/watchlist" replace />} />
           <Route path="/yuzi-billboard" element={<Navigate to="/yuzi-center" replace />} />
           <Route path="/trading-system" element={<Navigate to="/yuzi-center" replace />} />

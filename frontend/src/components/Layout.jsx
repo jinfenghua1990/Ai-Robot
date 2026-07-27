@@ -4,19 +4,41 @@ import { apiFetch } from '../utils/request';
 import HealthStrip from './HealthStrip';
 import SystemCheckBanner from './SystemCheckBanner';
 
-// AIROBOT 主菜单 — 底部子系统模块，共享数据入口统一放到顶部栏
+// AIROBOT 主菜单 — 以「预测交易」为主线，行情展示降级为子分组
 const mainSections = [
-  { section: '市场分析', items: [
-    { path: '/today', label: '盘中实时', icon: '⚡' },
+  { section: '预测交易', items: [
+    { path: '/', label: '预测总览', icon: '📡' },
+    { path: '/ai-agents', label: 'AI 投资团', icon: '🤖' },
+    { path: '/strategy-center', label: '策略中心', icon: '🎯' },
+    { path: '/trading', label: '交易', icon: '💼' },
+    { path: '/portfolio', label: '持仓', icon: '📊' },
+    { path: '/focus', label: '焦点股', icon: '⭐' },
+    { path: '/stock-analysis', label: '个股分析', icon: '🔍' },
+    { path: '/watchlist', label: '自选监控', icon: '📋' },
+    { path: '/research-center', label: '研究', icon: '📚' },
+  ]},
+  { section: 'AI 决策 (DSA)', items: [
+    { path: '/dsa/decision-signals', label: '决策信号', icon: '🎯' },
+    { path: '/dsa/screening', label: '选股筛选', icon: '🔬' },
+    { path: '/dsa/backtest', label: '策略回测', icon: '📊' },
+    { path: '/dsa/alerts', label: '实时告警', icon: '🚨' },
+    { path: '/dsa/portfolio', label: '持仓管理', icon: '💼' },
+  ]},
+  { section: '行情全景', items: [
     { path: '/panorama', label: '板块全景', icon: '🔥' },
+    { path: '/today', label: '盘中实时', icon: '⚡' },
     { path: '/concept-flow', label: '资金流向', icon: '💸' },
     { path: '/fund-weather', label: '资金气象', icon: '🌦️' },
-    { path: '/concept-flow?view=compare', label: '概念资金', icon: '📊' },
     { path: '/index-flow', label: '指数资金', icon: '🇨🇳' },
-    { path: '/strategy-center', label: '策略中心', icon: '🎯' },
+    { path: '/concept-flow?view=compare', label: '概念资金', icon: '📊' },
     { path: '/wave-analysis', label: '波浪分析', icon: '🌊' },
+  ]},
+  { section: '游资主题', items: [
     { path: '/yuzi-center', label: '游资中心', icon: '🐉' },
     { path: '/yuzi-center?tab=tracker', label: '20天跟踪', icon: '🧬' },
+  ]},
+  { section: '全球市场', items: [
+    { path: '/global-market', label: '全球', icon: '🌐' },
   ]},
 ];
 
@@ -101,6 +123,12 @@ function detectProject(pathname) {
   if (pathname.startsWith('/vibe/') || pathname === '/vibe') return 'vibe';
   if (pathname.startsWith('/dsa/') || pathname === '/dsa') return 'dsa';
   if (pathname.startsWith('/gostock/') || pathname === '/gostock') return 'gostock';
+  // DSA：预测核心功能打破子系统边界，并入主侧边栏（detectProject 判 main，保留主菜单）
+  if (pathname === '/dsa') return 'dsa';
+  if (pathname.startsWith('/dsa/')) {
+    const dsaInMain = ['/dsa/decision-signals', '/dsa/screening', '/dsa/backtest', '/dsa/alerts', '/dsa/portfolio'];
+    return dsaInMain.includes(pathname) ? 'main' : 'dsa';
+  }
   if (pathname.startsWith('/ai-agents')) return 'ai-agents';
   if (pathname.startsWith('/stock-tracker')) return 'tracker';
   if (pathname.startsWith('/hk-market') || pathname.startsWith('/hk-strategy')) return 'hk';

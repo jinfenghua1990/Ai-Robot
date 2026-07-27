@@ -16,7 +16,7 @@ import SharedTrendPanel from '../components/sections/SharedTrendPanel';
 import StockCompareSection from '../components/sections/StockCompareSection';
 import AfterConceptSectorFlowSection from '../components/sections/AfterConceptSectorFlowSection';
 import RealtimeConceptSectorSection from '../components/sections/RealtimeConceptSectorSection';
-import ConceptSectorFilter, { loadSelectedConcepts, saveSelectedConcepts } from '../components/sections/ConceptSectorFilter';
+import ConceptSectorFilter, { loadSelectedConcepts, saveSelectedConcepts, ALL_CONCEPTS } from '../components/sections/ConceptSectorFilter';
 import MarketStageBar from '../components/MarketStageBar';
 import { POLL_INTERVAL } from '../utils/constants';
 
@@ -91,6 +91,13 @@ export default function PanoramaPage() {
     for (const s of (rtConceptSectors?.sectors || [])) map.set(s.sector, true);
     return [...map.keys()];
   }, [conceptRankSectors, rtConceptSectors]);
+
+  // 概念筛选默认「全部显示」：哨兵 __ALL__ 展开为实际全量概念名
+  useEffect(() => {
+    if (selectedConcepts.includes(ALL_CONCEPTS) && allConceptSectors.length > 0) {
+      setSelectedConcepts(allConceptSectors);
+    }
+  }, [selectedConcepts, allConceptSectors]);
 
   // 单一实时轮询（消除原三处重复请求）
   const fetchRealtime = useCallback(async () => {
@@ -218,7 +225,7 @@ export default function PanoramaPage() {
         <ModuleGroup.SubHeader
           left={
             <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
-              📖 已选 {selectedConcepts.length} 个概念 · 20 日净流入趋势 · 点击折线联动
+              📖 已选 {selectedConcepts.includes(ALL_CONCEPTS) ? '全部' : selectedConcepts.length} 个概念 · 20 日净流入趋势 · 点击折线联动
             </span>
           }
           right={
