@@ -31,14 +31,14 @@ export default function QuantVNextPage() {
   }, []);
 
   return (
-    <div className="p-4 md:p-6 space-y-5">
+    <div className="p-4 md:p-6 space-y-5" style={{ color: 'var(--text-primary)' }}>
       <div>
-        <div className="text-xs uppercase tracking-[0.25em] text-slate-400">全新量化引擎</div>
+        <div className="text-xs tracking-[0.18em]" style={{ color: 'var(--text-muted)' }}>全新量化引擎</div>
         <h1 className="text-2xl font-semibold mt-2">右侧多因子选股系统</h1>
-        <p className="text-sm text-slate-400 mt-2">独立因子、独立证据共振、生命周期与交易状态分离。</p>
+        <p className="text-sm mt-2" style={{ color: 'var(--text-secondary)' }}>独立因子、独立证据共振、生命周期与交易状态分离。</p>
       </div>
       {error && <div className="rounded-lg border border-red-500/40 bg-red-500/10 p-4 text-red-300">{error}</div>}
-      {!data && !error && <div className="text-slate-400">正在读取新系统快照…</div>}
+      {!data && !error && <div style={{ color: 'var(--text-secondary)' }}>正在读取新系统快照…</div>}
       {data && <>
         <div className="flex flex-wrap gap-2">
           {[['overview', '总览'], ['factors', '因子注册'], ['research', '研究验证'], ['outcomes', '信号结果']].map(([key, label]) => <Link key={key} to={key === 'overview' ? '/quant-vnext' : `/quant-vnext?tab=${key}`} className={`rounded-md px-3 py-1.5 text-xs border ${activeTab === key ? 'font-semibold' : ''}`} style={{ borderColor: activeTab === key ? 'var(--accent-blue)' : 'var(--border-color)', color: activeTab === key ? 'var(--accent-blue)' : 'var(--text-secondary)' }}>{label}</Link>)}
@@ -49,33 +49,33 @@ export default function QuantVNextPage() {
           <Metric label="市场宽度" value={`${((data.market?.breadth || 0) * 100).toFixed(1)}%`} />
           <Metric label="快照数" value={data.snapshots?.length ?? 0} />
         </div>
-        {activeTab === 'factors' && registry && <div className="rounded-xl border border-slate-700 overflow-auto"><table className="w-full text-sm"><thead className="bg-slate-800/70"><tr><th className="text-left p-3">因子</th><th className="text-left p-3">分类</th><th className="text-left p-3">公式</th><th className="text-left p-3">方向</th><th className="text-left p-3">生产</th></tr></thead><tbody>{registry.factors.map((factor) => <tr key={factor.name} className="border-t border-slate-800"><td className="p-3">{FACTOR_NAMES[factor.name] || factor.name}</td><td className="p-3">{CATEGORY_NAMES[factor.category] || factor.category}</td><td className="p-3 text-xs text-slate-400">{factor.formula}</td><td className="p-3">{factor.direction > 0 ? '正向' : '反向'}</td><td className="p-3">{factor.production ? '是' : '否'}</td></tr>)}</tbody></table></div>}
-        <div className="rounded-xl border border-slate-700 overflow-auto">
+        {activeTab === 'factors' && registry && <div className="rounded-xl border overflow-auto" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}><table className="w-full text-sm"><thead style={{ background: 'var(--bg-hover)', color: 'var(--text-primary)' }}><tr><th className="text-left p-3">因子</th><th className="text-left p-3">分类</th><th className="text-left p-3">公式</th><th className="text-left p-3">方向</th><th className="text-left p-3">生产</th></tr></thead><tbody>{registry.factors.map((factor) => <tr key={factor.name} className="border-t" style={{ borderColor: 'var(--border-color)' }}><td className="p-3">{FACTOR_NAMES[factor.name] || factor.name}</td><td className="p-3">{CATEGORY_NAMES[factor.category] || factor.category}</td><td className="p-3 text-xs" style={{ color: 'var(--text-secondary)' }}>{factor.formula}</td><td className="p-3">{factor.direction > 0 ? '正向' : '反向'}</td><td className="p-3">{factor.production ? '是' : '否'}</td></tr>)}</tbody></table></div>}
+        <div className="rounded-xl border overflow-auto" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
           <table className="w-full text-sm">
-            <thead className="bg-slate-800/70 text-slate-300"><tr>
+            <thead style={{ background: 'var(--bg-hover)', color: 'var(--text-primary)' }}><tr>
               <th className="text-left p-3">股票</th><th className="text-left p-3">综合因子分</th>
               <th className="text-left p-3">共振</th><th className="text-left p-3">生命周期</th>
               <th className="text-left p-3">交易状态</th><th className="text-left p-3">维度</th>
             </tr></thead>
-            <tbody>{(data.snapshots || []).map((item) => <tr key={item.ts_code} className="border-t border-slate-800">
-              <td className="p-3 font-medium">{item.name || '未命名'}<div className="text-xs text-slate-500">{item.ts_code} {item.sector ? `· ${item.sector}` : ''}</div></td>
+            <tbody>{(data.snapshots || []).map((item) => <tr key={item.ts_code} className="border-t" style={{ borderColor: 'var(--border-color)' }}>
+              <td className="p-3 font-medium">{item.name || '未命名'}<div className="text-xs" style={{ color: 'var(--text-secondary)' }}>{item.ts_code} {item.sector ? `· ${item.sector}` : ''}</div></td>
               <td className="p-3">{item.factor_score == null ? '-' : item.factor_score.toFixed(2)}</td>
               <td className="p-3">{item.resonance?.count ?? 0} 个维度 / {item.resonance?.eligible ? '通过' : '未通过'}</td>
               <td className="p-3">{item.lifecycle}</td>
-              <td className="p-3"><span className="rounded px-2 py-1 bg-slate-800">{STATE_NAMES[item.trading_state] || item.trading_state}</span></td>
+              <td className="p-3"><span className="rounded px-2 py-1 text-xs" style={{ background: 'var(--bg-hover)', color: 'var(--text-primary)' }}>{STATE_NAMES[item.trading_state] || item.trading_state}</span></td>
               <td className="p-3 min-w-[330px]"><div className="flex flex-wrap gap-1">{DIMENSIONS.map((name) => {
                 const score = item.dimensions?.[name]?.score;
-                return <span key={name} className="text-xs rounded bg-slate-800 px-2 py-1">{DIMENSION_NAMES[name]}：{score == null ? '无数据' : score.toFixed(0)}</span>;
+                return <span key={name} className="text-xs rounded px-2 py-1" style={{ background: 'var(--bg-hover)', color: 'var(--text-primary)' }}>{DIMENSION_NAMES[name]}：{score == null ? '无数据' : score.toFixed(0)}</span>;
               })}</div></td>
             </tr>)}</tbody>
           </table>
         </div>
-        {research && <div className="rounded-xl border border-slate-700 p-4">
+        {research && <div className="rounded-xl border p-4" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
           <h2 className="font-semibold">研究验证（严格日期截断）</h2>
           <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mt-3">
             {[1, 3, 5, 10, 20].map((horizon) => {
               const item = research.horizons?.[String(horizon)] || {};
-              return <div key={horizon} className="rounded-lg bg-slate-900/50 p-3"><div className="text-xs text-slate-400">T+{horizon}</div><div className="mt-1">收益 {item.mean == null ? '-' : `${(item.mean * 100).toFixed(2)}%`}</div><div className="text-xs text-slate-400 mt-1">胜率 {item.win_rate == null ? '-' : `${(item.win_rate * 100).toFixed(1)}%`}</div></div>;
+              return <div key={horizon} className="rounded-lg p-3" style={{ background: 'var(--bg-hover)' }}><div className="text-xs" style={{ color: 'var(--text-secondary)' }}>未来第 {horizon} 个交易日</div><div className="mt-1">收益 {item.mean == null ? '-' : `${(item.mean * 100).toFixed(2)}%`}</div><div className="text-xs mt-1" style={{ color: 'var(--text-secondary)' }}>胜率 {item.win_rate == null ? '-' : `${(item.win_rate * 100).toFixed(1)}%`}</div></div>;
             })}
           </div>
         </div>}
@@ -85,5 +85,5 @@ export default function QuantVNextPage() {
 }
 
 function Metric({ label, value }) {
-  return <div className="rounded-xl border border-slate-700 bg-slate-900/40 p-4"><div className="text-xs text-slate-400">{label}</div><div className="text-lg font-semibold mt-2">{value}</div></div>;
+  return <div className="rounded-xl border p-4" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}><div className="text-xs" style={{ color: 'var(--text-secondary)' }}>{label}</div><div className="text-lg font-semibold mt-2">{value}</div></div>;
 }
