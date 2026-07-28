@@ -229,6 +229,15 @@ def _sync_wrapper_scheduled_daily_report():
     asyncio.run(jobs.scheduled_daily_report())
 
 
+def _cleanup_realtime_after_close():
+    """清理实时明细；保守保留 60 天，失败不影响其他调度任务。"""
+    try:
+        from collectors.realtime_aggregator import cleanup_realtime_after_close
+        cleanup_realtime_after_close(retention_days=60)
+    except Exception as e:
+        logger.error('[realtime_cleanup] failed: %s', e, exc_info=True)
+
+
 # ============================================================
 # 实时聚合器（5 秒轮询，跨模块通用）
 # ============================================================
@@ -356,6 +365,9 @@ def start_scheduler():
 
     # === 数据维护（每日凌晨清理 730 天前数据）===
     scheduler.add_job(jobs.cleanup_old_data, 'cron', hour='6', minute='0', id='cleanup')
+    scheduler.add_job(_cleanup_realtime_after_close, 'cron', hour='15', minute='40',
+                      id='cleanup_realtime_details', misfire_grace_time=3600,
+                      max_instances=1)
 
     # === 每日新鲜度自检（早 7:30）===
     scheduler.add_job(jobs.scheduled_freshness_check, 'cron', hour='7', minute='30', id='freshness_check')

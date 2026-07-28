@@ -285,13 +285,17 @@ def collect_realtime_stock_flow(trade_date):
     # 5. 国信证券资金流向（Top10，有额度限制，减少使用）
     guosen_flows = {}
     if GUOSEN_AVAILABLE and top10_for_guosen:
-        for s in top10_for_guosen:
+        def _fetch_guosen(s):
             try:
-                r = guosen_single_fund_flow(s['ts_code'], period=1)
-                if r:
-                    guosen_flows[s['ts_code']] = r
+                return s['ts_code'], guosen_single_fund_flow(s['ts_code'], period=1)
             except Exception:
-                logger.debug('handled exception', exc_info=True)
+                logger.debug('[realtime] guosen flow failed for %s', s['ts_code'], exc_info=True)
+                return s['ts_code'], None
+
+        with ThreadPoolExecutor(max_workers=min(5, len(top10_for_guosen))) as executor:
+            for ts_code, result in executor.map(_fetch_guosen, top10_for_guosen):
+                if result:
+                    guosen_flows[ts_code] = result
         print(f'[realtime] Guosen flows: {len(guosen_flows)} stocks (Top10 only)')
 
     # 6. 同花顺资金流向排名（Top20，批量，降级容错）
@@ -310,14 +314,19 @@ def collect_realtime_stock_flow(trade_date):
     # 7. 聚宽资金流向（Top20，高质量大单统计）
     jqdata_flows = {}
     if top20_for_flow:
-        for s in top20_for_flow:
+        from collectors.extended_collectors import jqdata_fund_flow
+
+        def _fetch_jqdata(s):
             try:
-                from collectors.extended_collectors import jqdata_fund_flow
-                r = jqdata_fund_flow(s['ts_code'])
-                if r:
-                    jqdata_flows[s['ts_code']] = r
+                return s['ts_code'], jqdata_fund_flow(s['ts_code'])
             except Exception:
-                logger.debug('handled exception', exc_info=True)
+                logger.debug('[realtime] jqdata flow failed for %s', s['ts_code'], exc_info=True)
+                return s['ts_code'], None
+
+        with ThreadPoolExecutor(max_workers=min(8, len(top20_for_flow))) as executor:
+            for ts_code, result in executor.map(_fetch_jqdata, top20_for_flow):
+                if result:
+                    jqdata_flows[ts_code] = result
         print(f'[realtime] jqdata flows: {len(jqdata_flows)} stocks')
 
     # === 写入数据库（带交叉验证） ===

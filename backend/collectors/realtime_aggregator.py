@@ -256,14 +256,19 @@ def collect_realtime_snapshot():
 # ============================================================
 # 收盘清理
 # ============================================================
-def cleanup_realtime_after_close():
-    """收盘 15:30 后清理实时数据(tick/盘口/1分钟资金流向快照均保留 30 天)"""
+def cleanup_realtime_after_close(retention_days: int = 60):
+    """收盘后清理实时明细，默认保留 60 个自然日。
+
+    这里只处理三个明确的实时明细表，不触碰日线、资金汇总、策略结果
+    或分析报告；60 天也比原注释中的 30 天更保守，避免误删近期复盘数据。
+    """
     from db.connection import engine
     from sqlalchemy import text
-    cutoff = datetime.now().date() - timedelta(days=30)
+    cutoff = datetime.now().date() - timedelta(days=retention_days)
     with engine.connect() as conn:
-        conn.execute(text("DELETE FROM stock_realtime_orderbook WHERE trade_date < :cutoff"), {"cutoff": cutoff})
-        conn.execute(text("DELETE FROM stock_realtime_tick WHERE trade_date < :cutoff"), {"cutoff": cutoff})
-        conn.execute(text("DELETE FROM realtime_stock_flow WHERE trade_date < :cutoff"), {"cutoff": cutoff})
+        counts = {}
+        for table in ('stock_realtime_orderbook', 'stock_realtime_tick', 'realtime_stock_flow'):
+            result = conn.execute(text(f"DELETE FROM {table} WHERE trade_date < :cutoff"), {"cutoff": cutoff})
+            counts[table] = result.rowcount
         conn.commit()
-    logger.info(f'[realtime_aggregator] cleanup done (keep tick/orderbook/realtime_stock_flow since {cutoff}')
+    logger.info('[realtime_aggregator] cleanup done (cutoff=%s, deleted=%s)', cutoff, counts)

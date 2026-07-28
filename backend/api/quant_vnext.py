@@ -7,7 +7,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Query
 from fastapi.encoders import jsonable_encoder
-from sqlalchemy import func
+from sqlalchemy import func, or_
 
 from db.models import StockDailyKline, StockFlow
 from db.session import get_db_session
@@ -27,6 +27,13 @@ router = APIRouter(prefix="/api/vnext", tags=["quant_vnext"])
 def _load_history(db, codes: list[str], trade_date: date, lookback: int = 120) -> dict[str, list[DailyBar]]:
     history: dict[str, list[DailyBar]] = {}
     for code in codes:
+        meta_row = db.query(StockFlow.name, StockFlow.sector).filter(
+            StockFlow.ts_code == code, StockFlow.trade_date <= trade_date
+        ).order_by(StockFlow.trade_date.desc()).first()
+        stock_name = (meta_row[0] or "") if meta_row else ""
+        stock_sector = (meta_row[1] or "") if meta_row else ""
+        normalized_name = stock_name.upper().replace(" ", "")
+        is_st = normalized_name.startswith("ST") or normalized_name.startswith("*ST")
         rows = (
             db.query(StockDailyKline)
             .filter(StockDailyKline.ts_code == code, StockDailyKline.trade_date <= trade_date)
@@ -45,7 +52,8 @@ def _load_history(db, codes: list[str], trade_date: date, lookback: int = 120) -
             volume=float(row.volume or 0),
             amount=float(row.amount or 0),
             pct_chg=float(row.pct_chg or 0),
-            sector=row.sector or "",
+            sector=row.sector or stock_sector,
+            is_st=is_st,
         ) for row in rows]
     return history
 
@@ -53,7 +61,10 @@ def _load_history(db, codes: list[str], trade_date: date, lookback: int = 120) -
 def _latest_codes(db, trade_date: date, limit: int) -> list[str]:
     rows = (
         db.query(StockDailyKline.ts_code)
+        .outerjoin(StockFlow, (StockFlow.ts_code == StockDailyKline.ts_code) & (StockFlow.trade_date == trade_date))
         .filter(StockDailyKline.trade_date == trade_date)
+        .filter(or_(StockFlow.name.is_(None), ~func.replace(func.upper(StockFlow.name), " ", "").like("ST%")))
+        .filter(or_(StockFlow.name.is_(None), ~func.replace(func.upper(StockFlow.name), " ", "").like("*ST%")))
         .order_by(StockDailyKline.ts_code)
         .limit(limit)
         .all()

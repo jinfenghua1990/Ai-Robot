@@ -144,6 +144,18 @@ export default function GlobalMarketPage({ market: marketProp }) {
   const stats = overview?.stats || {};
   const items = watchlist?.items || [];
 
+  // 港股技术信号概览（基于全量 items，供 HK 视图展示）
+  const signalSummary = useMemo(() => {
+    const acc = { overbought: 0, oversold: 0, bull: 0, pullback: 0, strong: 0, weak: 0 };
+    for (const it of items) {
+      if (it.rsi != null) { if (it.rsi >= 70) acc.overbought++; else if (it.rsi <= 30) acc.oversold++; }
+      if (it.price && it.ma5 && it.ma20 && it.price > it.ma5 && it.ma5 > it.ma20) acc.bull++;
+      if (it.ma20 && it.price && it.price <= it.ma20 * 1.02 && it.price >= it.ma20 * 0.98) acc.pullback++;
+      if (it.change_pct != null) { if (it.change_pct >= 2) acc.strong++; else if (it.change_pct <= -2) acc.weak++; }
+    }
+    return acc;
+  }, [items]);
+
   // 筛选 + 排序（使用防抖后的搜索词）
   const filtered = useMemo(() => {
     let list = [...items];
@@ -257,6 +269,25 @@ export default function GlobalMarketPage({ market: marketProp }) {
       {stats.total > 0 && (
         <div className="grid grid-cols-3 gap-2 mb-3">
           {[{ label: '上涨', v: stats.up, c: UP_COLOR }, { label: '平盘', v: stats.flat, c: '#6b7280' }, { label: '下跌', v: stats.down, c: DOWN_COLOR }].map(s => (
+            <div key={s.label} className="p-1.5 rounded text-center" style={{ background: `${s.c}10`, border: `1px solid ${s.c}30` }}>
+              <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{s.label}</div>
+              <div className="text-base font-bold" style={{ color: s.c }}>{s.v}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* 港股技术信号概览 */}
+      {market === 'HK' && items.length > 0 && (
+        <div className="grid grid-cols-3 gap-2 mb-3 sm:grid-cols-6">
+          {[
+            { label: 'RSI超买', v: signalSummary.overbought, c: DOWN_COLOR },
+            { label: 'RSI超卖', v: signalSummary.oversold, c: UP_COLOR },
+            { label: '多头排列', v: signalSummary.bull, c: UP_COLOR },
+            { label: '回踩MA20', v: signalSummary.pullback, c: '#f59e0b' },
+            { label: '强势≥2%', v: signalSummary.strong, c: UP_COLOR },
+            { label: '弱势≤-2%', v: signalSummary.weak, c: DOWN_COLOR },
+          ].map(s => (
             <div key={s.label} className="p-1.5 rounded text-center" style={{ background: `${s.c}10`, border: `1px solid ${s.c}30` }}>
               <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{s.label}</div>
               <div className="text-base font-bold" style={{ color: s.c }}>{s.v}</div>

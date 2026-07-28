@@ -9,6 +9,8 @@ import sys
 import os
 import json
 import logging
+import hashlib
+import re
 
 logger = logging.getLogger(__name__)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -27,12 +29,37 @@ _GapThreshold = {
 
 def record_alert(level: str, category: str, message: str,
                  trade_date: Optional[date] = None,
-                 details: Optional[Dict[str, Any]] = None) -> None:
-    """记录一条采集告警到数据库。"""
+                 details: Optional[Dict[str, Any]] = None,
+                 cooldown_seconds: int = 600) -> None:
+    """记录一条采集告警到数据库，并对重复告警做冷却去重。
+
+    采集任务通常每分钟运行一次，若数据源持续异常，原实现会每次
+    插入一条完全相同的问题告警，既放大数据库写入，也淹没真正的新问题。
+    这里按 level/category/trade_date/消息指纹做短时间冷却；不同错误内容
+    仍会正常记录。
+    """
     if trade_date is None:
         trade_date = date.today()
     try:
         with get_db_session() as db:
+            normalized_message = re.sub(r'\d+(?:\.\d+)?', '#', message)
+            fingerprint = hashlib.sha1(
+                f'{level}|{category}|{trade_date}|{normalized_message}'.encode('utf-8')
+            ).hexdigest()
+            recent_since = datetime.now() - timedelta(seconds=cooldown_seconds)
+            recent_alerts = db.query(DataCollectionAlert.message).filter(
+                DataCollectionAlert.level == level,
+                DataCollectionAlert.category == category,
+                DataCollectionAlert.trade_date == trade_date,
+                DataCollectionAlert.created_at >= recent_since,
+            ).limit(50).all()
+            duplicate = any(
+                re.sub(r'\d+(?:\.\d+)?', '#', row[0] or '') == normalized_message
+                for row in recent_alerts
+            )
+            if duplicate:
+                logger.debug('[alert_service] suppressed duplicate alert %s', fingerprint[:10])
+                return
             alert = DataCollectionAlert(
                 level=level,
                 category=category,
