@@ -390,6 +390,26 @@ function SignalCardTuned({
                   ))}
                 </div>
               )}
+              {isWatchlistStyle && signal.holdingState && (
+                <div className="flex items-center gap-1 flex-wrap">
+                  <span className="px-1.5 py-0.5 rounded text-[10px] font-bold" style={{
+                    background: `${signal.holdingState.statusColor}18`,
+                    color: signal.holdingState.statusColor,
+                    border: `1px solid ${signal.holdingState.statusColor}45`,
+                  }}>
+                    持仓状态：{signal.holdingState.statusLabel}
+                  </span>
+                  <span className="text-[10px]" style={{ color: 'var(--text-secondary)' }}>
+                    {signal.holdingState.action}
+                  </span>
+                  <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                    因子 {signal.holdingState.factorScore}
+                  </span>
+                  {signal.holdingState.warnings?.slice(0, 2).map((warning) => (
+                    <span key={warning} className="text-[10px]" style={{ color: '#dc2626' }}>⚠ {warning}</span>
+                  ))}
+                </div>
+              )}
               {/* 行2：策略命中 + 6大命中雷达（合并到同一 flex-wrap 容器，避免换行分裂） */}
               {(signal.trackerNote?.includes('共振') || (strategyTags && strategyTags.length > 0) || signal.strategyMode || (isWatchlistStyle && signal.hitTags && signal.hitTags.length > 0)) && (
                 <div className="flex items-center gap-1 flex-wrap">

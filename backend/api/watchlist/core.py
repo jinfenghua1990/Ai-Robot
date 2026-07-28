@@ -24,6 +24,7 @@ from analyzers.strategy_engine import _find_sector_for_stock, _get_sector_trend
 from analyzers.buy_power import is_junk_stock, calc_buy_power_for_signal
 from analyzers.market_state import get_latest_state, compute_quality_from_features
 from analyzers.stock_scores import calc_sentiment, calc_risk, calc_momentum, calc_main_force, calc_technical, calc_sector_resonance
+from analyzers.holding_state import evaluate_holding_state
 
 from ._shared import (
     _watchlist_cache, _watchlist_refreshing, WATCHLIST_CACHE_TTL,
@@ -652,6 +653,19 @@ async def build_watchlist() -> dict:
             logger.warning(f'[build_watchlist] batch_get_quotes failed, fallback to per-stock: {e}')
             _quotes_map = {}
 
+        # 持仓是状态判断的第一事实来源。行情接口失败时，使用持仓快照中的
+        # 成本、数量、现价和浮盈亏；接口失败则按未持仓处理，不伪造持仓结论。
+        _positions_map = {}
+        try:
+            from api.trading import get_positions
+            position_data = await get_positions(force=False)
+            for position in (position_data or {}).get('positions', []):
+                position_code = str(position.get('secCode') or '').split('.')[0]
+                if position_code:
+                    _positions_map[position_code] = position
+        except Exception as e:
+            logger.warning(f'[build_watchlist] fetch positions failed: {e}')
+
         results = []
         BATCH = 20
         for i in range(0, len(items), BATCH):
@@ -708,6 +722,17 @@ async def build_watchlist() -> dict:
             sector_trend = r['sector_trend']
             item = r['item']
             stock_name = r['stock_name']
+            holding = _positions_map.get(item.stock_code) or {}
+
+            # 持仓快照是行情接口失败时的受控回退，只补充持仓判断所需字段。
+            if quote is None and holding.get('price'):
+                quote = {
+                    'name': holding.get('secName') or stock_name,
+                    'price': float(holding.get('price') or 0),
+                    'changePct': float(holding.get('dayProfitPct') or 0),
+                    'change': float(holding.get('dayProfitPct') or 0),
+                    'source': 'position_snapshot',
+                }
 
             # 解析当前股的资金流(批量预拉的)
             ts_code_cur = f"{item.stock_code}.SH" if item.stock_code and item.stock_code[0] in ('6', '9') else f"{item.stock_code}.SZ"
@@ -811,15 +836,15 @@ async def build_watchlist() -> dict:
                 'actionHint': _hit_tags_map.get(ts_code_cur, {}).get('action_hint', ''),
                 'strategyName': _hit_tags_map.get(ts_code_cur, {}).get('strategy_name'),  # 具体策略名（如 BS-全市场）
                 'position': {
-                    'profitPct': 0,
-                    'posPct': 0,
-                    'dayProfit': 0,
-                    'dayProfitPct': change_pct,
-                    'count': 0,
-                    'price': price,
-                    'costPrice': 0,
-                    'value': 0,
-                    'profit': 0,
+                    'profitPct': float(holding.get('profitPct') or 0) if holding else None,
+                    'posPct': float(holding.get('posPct') or 0) if holding else 0,
+                    'dayProfit': float(holding.get('dayProfit') or 0) if holding else 0,
+                    'dayProfitPct': float(holding.get('dayProfitPct') or 0) if holding else (change_pct if quote else None),
+                    'count': int(holding.get('count') or 0) if holding else 0,
+                    'price': float(holding.get('price') or price) if holding else price,
+                    'costPrice': float(holding.get('costPrice') or 0) if holding else 0,
+                    'value': float(holding.get('value') or 0) if holding else 0,
+                    'profit': float(holding.get('profit') or 0) if holding else 0,
                 },
                 'note': item.note,
                 'trackerNote': _tracker_note_map.get(item.stock_code, ''),
@@ -893,24 +918,25 @@ async def build_watchlist() -> dict:
                 last_signal['actionLabel'] = None
                 last_signal['actionColor'] = None
 
-            # 根据 technical stage 覆写信号标签：让卖出信号更犀利、基于技术指标
-            if bs_signal == 'S' and technical_result:
-                tech_stage = technical_result.get('stage', '')
-                main_net_val = last_signal.get('moneyFlow', {}).get('main_net', 0) or 0
-                is_main_inflow = main_net_val >= 5000 or (last_signal.get('hitTags') or []).count('capital') > 0
-                if tech_stage == '破位':
-                    if is_main_inflow:
-                        last_signal['signalLabel'] = '破位：抛 / 减仓'
-                        last_signal['signalColor'] = '#FF4D4F'
-                    else:
-                        last_signal['signalLabel'] = '破位：果断清仓'
-                        last_signal['signalColor'] = '#FF4D4F'
-                elif tech_stage == '弱势':
-                    last_signal['signalLabel'] = '弱势：果断减仓'
-                    last_signal['signalColor'] = '#f97316'
-                elif tech_stage == '震荡':
-                    last_signal['signalLabel'] = '震荡：暂避不加'
-                    last_signal['signalColor'] = '#eab308'
+            # 持仓状态覆盖旧的“B/S 直接决定标签”逻辑。B/S 保留在 bsSignal 中，
+            # 只作为持仓因子之一，不再把它直接显示成买入/卖出结论。
+            holding_state = evaluate_holding_state(
+                code=item.stock_code,
+                name=stock_name,
+                position=last_signal.get('position'),
+                quote=quote,
+                market_state=last_signal.get('marketState'),
+                score_dimensions=last_signal.get('scoreDimensions'),
+                overall_score=last_signal.get('overallScore'),
+                technical=technical_result,
+                bs_signal=bs_signal,
+            )
+            last_signal['holdingState'] = holding_state
+            last_signal['originalSignalLabel'] = last_signal.get('signalLabel')
+            last_signal['signalLabel'] = holding_state['statusLabel']
+            last_signal['signalColor'] = holding_state['statusColor']
+            last_signal['actionLabel'] = holding_state['action']
+            last_signal['actionColor'] = holding_state['statusColor']
 
         result = {
             'signals': signals,
@@ -1349,6 +1375,3 @@ async def get_realtime_fund_flow_batch(codes: str = Query(..., description="逗�
                     result[code] = {"available": False, "name": code}
 
     return {"success": True, "data": result}
-
-
-
