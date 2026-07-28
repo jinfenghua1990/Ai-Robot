@@ -10,10 +10,7 @@ const mainSections = [
     { path: '/', label: '预测总览', icon: '📡' },
     { path: '/strategy-center', label: '策略中心', icon: '🎯' },
     { path: '/trading', label: '交易', icon: '💼' },
-    { path: '/portfolio', label: '持仓', icon: '📊' },
-    { path: '/focus', label: '焦点股', icon: '⭐' },
     { path: '/stock-analysis', label: '个股分析', icon: '🔍' },
-    { path: '/watchlist', label: '自选监控', icon: '📋' },
     { path: '/research-center', label: '研究', icon: '📚' },
   ]},
 ];
@@ -187,7 +184,8 @@ export default function Layout() {
   const location = useLocation();
   const [activeProject, setActiveProject] = useState(() => detectProject(location.pathname));
   // 个股分析页为独立工具页，左侧不再继承「市场分析」项目菜单栏（自身已有内部 tab 导航）
-  const isStockAnalysis = location.pathname.startsWith('/stock-analysis');
+  // 共享入口页(个股分析/持仓/自选/关注)为顶部栏直达的纯页面，不挂左侧菜单（避免与顶部一级重复）
+  const isStandalonePage = ['/stock-analysis', '/portfolio', '/watchlist', '/focus'].some(p => location.pathname.startsWith(p));
 
   useEffect(() => {
     const saved = localStorage.getItem('airobot-theme') || 'light';
@@ -395,7 +393,7 @@ export default function Layout() {
 
   return (
     <div className="h-screen flex flex-col md:flex-row overflow-hidden" style={{ background: 'var(--bg-primary)' }}>
-      {!isStockAnalysis && (<>
+      {!isStandalonePage && (<>
       {/* 移动端顶栏 hamburger */}
       <button
         onClick={() => setNavOpen(!navOpen)}
@@ -428,7 +426,7 @@ export default function Layout() {
       {/* 右侧内容区 */}
       <div className="flex-1 flex flex-col w-full min-w-0 h-full overflow-hidden">
         {/* 顶栏 */}
-        <header className={`shrink-0 z-30 h-10 border-b flex items-center justify-between ${isStockAnalysis ? 'pl-4' : 'pl-12'} md:pl-4 pr-2 md:pr-4`}
+        <header className={`shrink-0 z-30 h-10 border-b flex items-center justify-between ${isStandalonePage ? 'pl-4' : 'pl-12'} md:pl-4 pr-2 md:pr-4`}
           style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
           <div className="flex items-center gap-1 overflow-x-auto no-scrollbar max-w-[62%]">
             {projectKeys.map(({ key, label, icon }) => {

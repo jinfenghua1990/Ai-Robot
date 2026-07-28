@@ -410,6 +410,21 @@ function SignalCardTuned({
                   ))}
                 </div>
               )}
+              {isWatchlistStyle && signal.poolSources?.length > 0 && (
+                <div className="flex items-center gap-1 flex-wrap">
+                  <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>来源</span>
+                  {signal.poolSources.map((source) => (
+                    <span key={source} className="px-1.5 py-0.5 rounded text-[10px]" style={{
+                      background: source === '重点关注' ? 'rgba(168,85,247,0.12)' : 'rgba(34,197,94,0.12)',
+                      color: source === '重点关注' ? '#a855f7' : '#16a34a',
+                      border: `1px solid ${source === '重点关注' ? 'rgba(168,85,247,0.30)' : 'rgba(34,197,94,0.30)'}`,
+                    }}>
+                      {source}
+                    </span>
+                  ))}
+                  {signal.focusSector && <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>· {signal.focusSector}</span>}
+                </div>
+              )}
               {/* 行2：策略命中 + 6大命中雷达（合并到同一 flex-wrap 容器，避免换行分裂） */}
               {(signal.trackerNote?.includes('共振') || (strategyTags && strategyTags.length > 0) || signal.strategyMode || (isWatchlistStyle && signal.hitTags && signal.hitTags.length > 0)) && (
                 <div className="flex items-center gap-1 flex-wrap">

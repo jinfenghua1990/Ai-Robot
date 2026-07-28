@@ -796,10 +796,10 @@ async def services_status():
 
 
 # 前端静态资源（构建后存在）
-# 前端构建产物：Hermes 清理后使用 dist.new（旧 dist 含遗留 Hermes 代码，待删除后改回 'dist'）
-frontend_dist = os.path.join(os.path.dirname(__file__), '..', 'frontend', 'dist.new')
+# 前端构建产物：优先使用最新 dist，保留 dist.new 作为旧环境回退。
+frontend_dist = os.path.join(os.path.dirname(__file__), '..', 'frontend', 'dist')
 if not os.path.isdir(os.path.join(frontend_dist, 'assets')):
-    frontend_dist = os.path.join(os.path.dirname(__file__), '..', 'frontend', 'dist')
+    frontend_dist = os.path.join(os.path.dirname(__file__), '..', 'frontend', 'dist.new')
 # 仅当 assets 目录存在时才挂载静态资源（避免 StaticFiles 启动时因目录缺失报错）
 if os.path.exists(os.path.join(frontend_dist, 'assets')):
     app.mount("/assets", StaticFiles(directory=os.path.join(frontend_dist, 'assets')), name="assets")

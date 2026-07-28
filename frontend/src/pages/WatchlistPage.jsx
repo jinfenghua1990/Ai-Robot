@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useTrading } from '../context/TradingContext';
 import TradeModal from '../components/trading/TradeModal';
 import WatchlistItem from '../components/trading/WatchlistItem';
@@ -44,6 +44,7 @@ export default function WatchlistPage() {
   const { executeTrade, tradeResult, clearTradeResult } = useTrading();
   const [sellModal, setSellModal] = useState(null);
   const [signals, setSignals] = useState(null);
+  const [focusSignals, setFocusSignals] = useState([]);
   const [syncStatus, setSyncStatus] = useState(null);
   const [busy, setBusy] = useState('');
   const [log, setLog] = useState([]);
@@ -55,6 +56,8 @@ export default function WatchlistPage() {
   const syncRef = useRef(null);
   const initialSelectedRef = useRef(false);
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const [poolView, setPoolView] = useState(() => searchParams.get('pool') || 'all');
   const openAnalysis = useCallback((c) => navigate(`/stock-analysis?code=${c}`), [navigate]);
 
   // === 分组/排序/批量/筛选状态（分组=归类，筛选=过滤，排序=排序，三者独立）===
@@ -105,6 +108,20 @@ export default function WatchlistPage() {
       const first = sigs.find(x => x.quote);
       if (first) setSelectedCode(first.secCode);
     }
+  }, []);
+
+  const loadFocusStocks = useCallback(async () => {
+    const { ok, data } = await apiFetch('/api/focus-stocks');
+    if (!ok || !data?.sectors) return;
+    const flattened = data.sectors.flatMap((sector) =>
+      (sector.stocks || []).map((stock) => ({
+        ...stock,
+        poolSources: ['重点关注'],
+        group: stock.group || '重点关注',
+        focusSector: sector.sector || '',
+      }))
+    );
+    setFocusSignals(flattened);
   }, []);
 
   const loadData = useCallback(async () => {
@@ -199,7 +216,7 @@ export default function WatchlistPage() {
     return () => { active = false; };
   }, [selectedCode, toTsCode]);
 
-  useEffect(() => { Promise.all([loadWatchlist(), loadData()]).catch(() => {}); }, [loadWatchlist, loadData]);
+  useEffect(() => { Promise.all([loadWatchlist(), loadFocusStocks(), loadData()]).catch(() => {}); }, [loadWatchlist, loadFocusStocks, loadData]);
   useEffect(() => { if (tradeResult) { const t = setTimeout(clearTradeResult, TOAST_DURATION); return () => clearTimeout(t); } }, [tradeResult, clearTradeResult]);
 
   // 点击外部关闭云端同步下拉
@@ -257,14 +274,43 @@ export default function WatchlistPage() {
   const ths = syncStatus?.platforms?.ths || {};
   const mx = syncStatus?.platforms?.mx || {};
   const local = syncStatus?.platforms?.local || {};
-  const totalCount = signals?.signals?.length || 0;
+  // 合并股票池：自选数据优先，重点关注只补充自选中没有的标的。
+  // 重叠标的只保留一张卡，并保留两个来源标签。
+  const poolSignals = useMemo(() => {
+    const merged = new Map();
+    for (const signal of (signals?.signals || [])) {
+      merged.set(signal.secCode, { ...signal, poolSources: ['自选'] });
+    }
+    for (const focus of focusSignals) {
+      const current = merged.get(focus.secCode);
+      if (current) {
+        merged.set(focus.secCode, {
+          ...current,
+          poolSources: ['自选', '重点关注'],
+          focusSector: focus.focusSector || '',
+        });
+      } else {
+        merged.set(focus.secCode, focus);
+      }
+    }
+    return Array.from(merged.values());
+  }, [signals, focusSignals]);
+
+  const totalCount = poolSignals.length;
+  const sourceCounts = useMemo(() => ({
+    all: poolSignals.length,
+    watchlist: poolSignals.filter(s => s.poolSources?.includes('自选')).length,
+    focus: poolSignals.filter(s => s.poolSources?.includes('重点关注')).length,
+    both: poolSignals.filter(s => s.poolSources?.length === 2).length,
+  }), [poolSignals]);
 
   // === 分组（归类）→ 筛选（过滤）→ 排序（排序）三步独立处理 ===
   const displaySignals = useMemo(() => {
     // 1. 分组：按 activeGroup 归类（"全部"= 不分组过滤，显示所有 80 只）
-    let arr = activeGroup === '全部'
-      ? (signals?.signals || [])
-      : (signals?.signals || []).filter(s => (s.group || '默认') === activeGroup);
+    let arr = poolView === 'all'
+      ? poolSignals
+      : poolSignals.filter(s => s.poolSources?.includes(poolView === 'watchlist' ? '自选' : '重点关注') && (poolView !== 'both' || s.poolSources?.length === 2));
+    if (activeGroup !== '全部') arr = arr.filter(s => (s.group || '默认') === activeGroup);
     // 2. 筛选：按 filters 过滤（独立于分组）
     if (filters.junk) arr = arr.filter(s => s.marketState?.market_state !== 'CHOPPY');
     if (filters.buyOnly) arr = arr.filter(s => s.bsSignal === 'B');
@@ -306,7 +352,7 @@ export default function WatchlistPage() {
       return 0;
     });
     return arr;
-  }, [signals, activeGroup, filters, sortKey, sortDir]);
+  }, [poolSignals, poolView, activeGroup, filters, sortKey, sortDir]);
 
   // 按板块分组（同重点关注排版）
   const groupedSectors = useMemo(() => {
@@ -446,7 +492,7 @@ export default function WatchlistPage() {
           {/* 左侧：标题 + 数量 + 策略命中 */}
           <div className="flex items-center gap-2 flex-wrap">
             <h2 className="text-base font-bold flex items-center gap-1.5" style={{ color: 'var(--text-primary)' }}>
-              <span>自选股 <span className="text-xs px-1.5 py-0.5 rounded" style={{ background: 'rgba(34,197,94,0.1)', color: 'var(--accent-green)' }}>{totalCount}只</span></span>
+              <span>自选与重点关注 <span className="text-xs px-1.5 py-0.5 rounded" style={{ background: 'rgba(34,197,94,0.1)', color: 'var(--accent-green)' }}>{totalCount}只</span></span>
             </h2>
             {/* 保留策略命中数（科创V7 + 创业V9） */}
             {Object.keys(strategyPicks).length > 0 && (
@@ -460,6 +506,28 @@ export default function WatchlistPage() {
                 {picksDate && <span className="text-[10px]">({picksDate})</span>}
               </span>
             )}
+          </div>
+
+          <div className="flex items-center gap-1 rounded-lg p-0.5" style={{ background: 'var(--bg-surface)' }}>
+            {[
+              ['all', '全部', sourceCounts.all],
+              ['watchlist', '自选', sourceCounts.watchlist],
+              ['focus', '重点关注', sourceCounts.focus],
+              ['both', '交集', sourceCounts.both],
+            ].map(([key, label, count]) => (
+              <button
+                key={key}
+                onClick={() => { setPoolView(key); setSelectedIds([]); }}
+                className="px-2 py-1 rounded-md text-[11px] whitespace-nowrap"
+                style={{
+                  background: poolView === key ? 'var(--bg-card)' : 'transparent',
+                  color: poolView === key ? 'var(--text-primary)' : 'var(--text-muted)',
+                  boxShadow: poolView === key ? '0 1px 3px rgba(0,0,0,0.12)' : 'none',
+                }}
+              >
+                {label} {count}
+              </button>
+            ))}
           </div>
 
           {/* 右侧：搜索 + 筛选 + 操作按钮，填满不留大片空白 */}
@@ -619,7 +687,7 @@ export default function WatchlistPage() {
             >
               ⚡ 采集
             </button>
-            <button onClick={() => { loadWatchlist(); loadData(); }} className="px-2 py-1 rounded-lg border text-[11px]" style={{ borderColor: 'var(--border-color)', color: 'var(--text-secondary)' }}>🔄 刷新</button>
+            <button onClick={() => { loadWatchlist(); loadFocusStocks(); loadData(); }} className="px-2 py-1 rounded-lg border text-[11px]" style={{ borderColor: 'var(--border-color)', color: 'var(--text-secondary)' }}>🔄 刷新</button>
 
             {/* 计数 */}
             <span className="text-[10px] whitespace-nowrap" style={{ color: 'var(--text-muted)' }}>
@@ -799,7 +867,7 @@ export default function WatchlistPage() {
                           isSelected={selectedCode === sig.secCode}
                           realtimeFlow={realtimeMap[sig.secCode] || null}
                           onSelect={setSelectedCode}
-                          onRemove={handleRemove}
+                          onRemove={sig.poolSources?.includes('自选') ? handleRemove : undefined}
                           onSell={setSellModal}
                           onRefresh={loadWatchlist}
                           batchMode={batchMode}

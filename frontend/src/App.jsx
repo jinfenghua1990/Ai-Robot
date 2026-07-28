@@ -83,7 +83,8 @@ export default function App() {
           <Route path="/trading" element={<TradingPage />} />
           <Route path="/watchlist" element={<WatchlistPage />} />
           <Route path="/stock-analysis" element={<StockAnalysisPage />} />
-          <Route path="/focus" element={<FocusStocksPage />} />
+          {/* 重点关注已并入自选监控，保留旧地址兼容跳转 */}
+          <Route path="/focus" element={<Navigate to="/watchlist?pool=focus" replace />} />
           <Route path="/portfolio" element={<PortfolioPage />} />
           <Route path="/cxmt-ipo" element={<CxmtIpoPage />} />
           <Route path="/research-center" element={<ResearchCenterPage />} />
