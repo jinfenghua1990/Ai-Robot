@@ -10,6 +10,7 @@ const mainSections = [
     { path: '/', label: '预测总览', icon: '📡' },
     { path: '/ai-agents', label: 'AI 投资团', icon: '🤖' },
     { path: '/strategy-center', label: '策略中心', icon: '🎯' },
+    { path: '/quant-vnext', label: '新量化引擎', icon: '🧬' },
     { path: '/trading', label: '交易', icon: '💼' },
     { path: '/portfolio', label: '持仓', icon: '📊' },
     { path: '/focus', label: '焦点股', icon: '⭐' },
@@ -44,6 +45,18 @@ const mainSections = [
 
 // 各项目子菜单（仅在 AIROBOT 布局内切换用）
 const projectMenus = {
+  'quant-vnext': {
+    title: '量化 VNext',
+    icon: '🧬',
+    sections: [
+      { section: '新系统', items: [
+        { path: '/quant-vnext', label: '量化总览', icon: '🧬' },
+        { path: '/quant-vnext?tab=factors', label: '因子注册', icon: '🧮' },
+        { path: '/quant-vnext?tab=research', label: '研究验证', icon: '🔬' },
+        { path: '/quant-vnext?tab=outcomes', label: '信号结果', icon: '📈' },
+      ]},
+    ],
+  },
   vibe: {
     title: 'Vibe-Research',
     icon: '📡',
@@ -111,6 +124,7 @@ const projectMenus = {
 
 const projectKeys = [
   { key: 'main', label: 'AIROBOT', icon: '🔷' },
+  { key: 'quant-vnext', label: '量化 VNext', icon: '🧬' },
   { key: 'vibe', label: 'Vibe', icon: '📡' },
   { key: 'dsa', label: 'DSA', icon: '🤖' },
   { key: 'ai-agents', label: '智能体投资团', icon: '🤖' },
@@ -120,6 +134,7 @@ const projectKeys = [
 ];
 
 function detectProject(pathname) {
+  if (pathname.startsWith('/quant-vnext')) return 'quant-vnext';
   if (pathname.startsWith('/vibe/') || pathname === '/vibe') return 'vibe';
   if (pathname.startsWith('/dsa/') || pathname === '/dsa') return 'dsa';
   if (pathname.startsWith('/gostock/') || pathname === '/gostock') return 'gostock';

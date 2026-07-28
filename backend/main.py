@@ -21,6 +21,7 @@ from api import heatmap, rotation, lifecycle, lifecycle_v2, lifecycle_v3, money_
 from api import hk_strategy
 from api import strategy_track
 from api import wave_analysis
+from api import quant_vnext
 from api.rate_limit import RateLimitMiddleware
 from api import vibe, scheduler_api, shared, proxy, stock_dashboard
 from api.auth import verify_api_key
@@ -157,6 +158,7 @@ async def cache_static_assets(request: Request, call_next):
 
 # API路由
 app.include_router(alerts.router)
+app.include_router(quant_vnext.router)
 app.include_router(heatmap.router)
 app.include_router(rotation.router)
 app.include_router(lifecycle.router)

@@ -23,6 +23,7 @@ const ResearchCenterPage = lazy(() => import('./pages/ResearchCenterPage'));
 const StockAnalysisPage = lazy(() => import('./pages/StockAnalysisPage'));
 const ReportDetailPage = lazy(() => import('./pages/ReportDetailPage'));
 const OverviewPage = lazy(() => import('./pages/OverviewPage'));
+const QuantVNextPage = lazy(() => import('./pages/QuantVNextPage'));
 
 // Vibe-Research 二级页面
 const VibeDailyReviewPage = lazy(() => import('./pages/vibe/VibeDailyReviewPage'));
@@ -74,6 +75,7 @@ export default function App() {
           <Route path="/today" element={<TodayPage />} />
           <Route path="/panorama" element={<PanoramaPage />} />
           <Route path="/quality" element={<QualityPage />} />
+          <Route path="/quant-vnext" element={<QuantVNextPage />} />
           <Route path="/strategy-center" element={<StrategyCenterPage />} />
           <Route path="/yuzi-center" element={<YuziCenterPage />} />
           <Route path="/yuzi-tracker-20d" element={<Navigate to="/yuzi-center?tab=tracker" replace />} />
