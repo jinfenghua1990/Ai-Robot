@@ -189,3 +189,12 @@ table td, table th {
 .scrollbar-thin::-webkit-scrollbar-track {
   background: transparent;
 }
+
+/* 顶部一级菜单横向滚动时隐藏滚动条 */
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}

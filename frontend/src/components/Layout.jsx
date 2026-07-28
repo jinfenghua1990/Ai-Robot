@@ -4,42 +4,17 @@ import { apiFetch } from '../utils/request';
 import HealthStrip from './HealthStrip';
 import SystemCheckBanner from './SystemCheckBanner';
 
-// AIROBOT 主菜单 — 以「预测交易」为主线，行情展示降级为子分组
+// AIROBOT 主菜单 — 以「预测交易」为核心交易主线，其余子系统（量化/Vibe/DSA/智能体/行情/游资/全球/跟踪）已独立为顶部一级
 const mainSections = [
   { section: '预测交易', items: [
     { path: '/', label: '预测总览', icon: '📡' },
-    { path: '/ai-agents', label: 'AI 投资团', icon: '🤖' },
     { path: '/strategy-center', label: '策略中心', icon: '🎯' },
-    { path: '/quant-vnext', label: '新量化引擎', icon: '🧬' },
     { path: '/trading', label: '交易', icon: '💼' },
     { path: '/portfolio', label: '持仓', icon: '📊' },
     { path: '/focus', label: '焦点股', icon: '⭐' },
     { path: '/stock-analysis', label: '个股分析', icon: '🔍' },
     { path: '/watchlist', label: '自选监控', icon: '📋' },
     { path: '/research-center', label: '研究', icon: '📚' },
-  ]},
-  { section: 'AI 决策 (DSA)', items: [
-    { path: '/dsa/decision-signals', label: '决策信号', icon: '🎯' },
-    { path: '/dsa/screening', label: '选股筛选', icon: '🔬' },
-    { path: '/dsa/backtest', label: '策略回测', icon: '📊' },
-    { path: '/dsa/alerts', label: '实时告警', icon: '🚨' },
-    { path: '/dsa/portfolio', label: '持仓管理', icon: '💼' },
-  ]},
-  { section: '行情全景', items: [
-    { path: '/panorama', label: '板块全景', icon: '🔥' },
-    { path: '/today', label: '盘中实时', icon: '⚡' },
-    { path: '/concept-flow', label: '资金流向', icon: '💸' },
-    { path: '/fund-weather', label: '资金气象', icon: '🌦️' },
-    { path: '/index-flow', label: '指数资金', icon: '🇨🇳' },
-    { path: '/concept-flow?view=compare', label: '概念资金', icon: '📊' },
-    { path: '/wave-analysis', label: '波浪分析', icon: '🌊' },
-  ]},
-  { section: '游资主题', items: [
-    { path: '/yuzi-center', label: '游资中心', icon: '🐉' },
-    { path: '/yuzi-center?tab=tracker', label: '20天跟踪', icon: '🧬' },
-  ]},
-  { section: '全球市场', items: [
-    { path: '/global-market', label: '全球', icon: '🌐' },
   ]},
 ];
 
@@ -120,6 +95,34 @@ const projectMenus = {
       { path: '/stock-tracker', label: '跟踪列表', icon: '📈' },
     ],
   },
+  'market-overview': {
+    title: '行情全景',
+    icon: '🔥',
+    items: [
+      { path: '/panorama', label: '板块全景', icon: '🔥' },
+      { path: '/today', label: '盘中实时', icon: '⚡' },
+      { path: '/concept-flow', label: '资金流向', icon: '💸' },
+      { path: '/fund-weather', label: '资金气象', icon: '🌦️' },
+      { path: '/index-flow', label: '指数资金', icon: '🇨🇳' },
+      { path: '/concept-flow?view=compare', label: '概念资金', icon: '📊' },
+      { path: '/wave-analysis', label: '波浪分析', icon: '🌊' },
+    ],
+  },
+  yuzi: {
+    title: '游资主题',
+    icon: '🐉',
+    items: [
+      { path: '/yuzi-center', label: '游资中心', icon: '🐉' },
+      { path: '/yuzi-center?tab=tracker', label: '20天跟踪', icon: '🧬' },
+    ],
+  },
+  global: {
+    title: '全球市场',
+    icon: '🌐',
+    items: [
+      { path: '/global-market', label: '全球', icon: '🌐' },
+    ],
+  },
 };
 
 const projectKeys = [
@@ -128,6 +131,9 @@ const projectKeys = [
   { key: 'vibe', label: 'Vibe', icon: '📡' },
   { key: 'dsa', label: 'DSA', icon: '🤖' },
   { key: 'ai-agents', label: '智能体投资团', icon: '🤖' },
+  { key: 'market-overview', label: '行情全景', icon: '🔥' },
+  { key: 'yuzi', label: '游资', icon: '🐉' },
+  { key: 'global', label: '全球', icon: '🌐' },
   { key: 'tracker', label: '跟踪', icon: '📈' },
   { key: 'hk', label: '港股', icon: '🇭🇰' },
   { key: 'us', label: '美股', icon: '🇺🇸' },
@@ -135,6 +141,12 @@ const projectKeys = [
 
 function detectProject(pathname) {
   if (pathname.startsWith('/quant-vnext')) return 'quant-vnext';
+  // 行情全景一级：板块全景/盘中实时/资金流向/资金气象/指数资金/波浪分析
+  if (pathname.startsWith('/panorama') || pathname.startsWith('/today') || pathname.startsWith('/concept-flow') || pathname.startsWith('/fund-weather') || pathname.startsWith('/index-flow') || pathname.startsWith('/wave-analysis')) return 'market-overview';
+  // 游资一级
+  if (pathname.startsWith('/yuzi-center')) return 'yuzi';
+  // 全球一级
+  if (pathname.startsWith('/global-market')) return 'global';
   if (pathname.startsWith('/vibe/') || pathname === '/vibe') return 'vibe';
   if (pathname.startsWith('/dsa/') || pathname === '/dsa') return 'dsa';
   if (pathname.startsWith('/gostock/') || pathname === '/gostock') return 'gostock';
@@ -418,7 +430,7 @@ export default function Layout() {
         {/* 顶栏 */}
         <header className={`shrink-0 z-30 h-10 border-b flex items-center justify-between ${isStockAnalysis ? 'pl-4' : 'pl-12'} md:pl-4 pr-2 md:pr-4`}
           style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
-          <div className="flex items-center gap-1">
+          <div className="flex items-center gap-1 overflow-x-auto no-scrollbar max-w-[62%]">
             {projectKeys.map(({ key, label, icon }) => {
               const active = activeProject === key;
               const extUrl = projectExternalUrl(key);
@@ -460,7 +472,7 @@ export default function Layout() {
               return (
                 <NavLink
                   key={key}
-                  to={key === 'main' ? '/panorama' : key === 'ai-agents' ? '/ai-agents' : projectMenus[key]?.items?.[0]?.path || projectMenus[key]?.sections?.[0]?.items?.[0]?.path || '/'}
+                  to={key === 'main' ? '/' : key === 'ai-agents' ? '/ai-agents' : projectMenus[key]?.items?.[0]?.path || projectMenus[key]?.sections?.[0]?.items?.[0]?.path || '/'}
                   onClick={() => key === 'ai-agents' ? setNavOpen(false) : switchProject(key)}
                   className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-xs transition-colors whitespace-nowrap ${active ? 'font-medium' : ''}`}
                   style={{
