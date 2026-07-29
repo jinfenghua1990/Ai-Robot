@@ -88,107 +88,115 @@ def _get_yahoo_proxies() -> dict[str, str] | None:
     return None
 
 
-# ─── Yahoo Finance 会话（复用 cookie/crumb，规避 429 限流） ──────────────────────
-_yahoo_session = requests.Session()
-_yahoo_session.headers.update(_YAHOO_HEADERS)
-_yahoo_crumb = {"value": None, "ts": 0}
-_CRUMB_TTL = 3600
-
-
-def _refresh_yahoo_crumb() -> None:
-    """访问 fc.yahoo.com 拿到 A1 cookie，再取 crumb（Yahoo 现在常要求，可解大部分 429）"""
-    try:
-        _yahoo_session.get("https://fc.yahoo.com", timeout=15)  # 仅用于写入 Set-Cookie
-    except Exception as e:
-        logger.warning(f"Yahoo cookie prefetch failed: {e}")
-    try:
-        r = _yahoo_session.get("https://query2.finance.yahoo.com/v1/test/getcrumb", timeout=15)
-        if r.status_code == 200 and r.text.strip():
-            _yahoo_crumb["value"] = r.text.strip()
-            _yahoo_crumb["ts"] = time.time()
-    except Exception as e:
-        logger.warning(f"Yahoo crumb fetch failed: {e}")
-
-
 def _yahoo_fetch(symbol: str, range_str: str = "5d") -> list[dict] | None:
-    """通过 Yahoo Finance API 获取 K 线（cookie/crumb 流程规避 429；港股失败时回退新浪）
+    """通过 Yahoo Finance API 获取 K 线；港股失败时回退新浪。
 
-    symbol: Yahoo 代码 (港股 0700.HK / 美股 AAPL / 指数 ^HSI)
-    range_str: 1d/5d/1mo/3mo/6mo/1y/2y/5y/10y/ytd/max
+    每次请求独立 Session（避免多线程共享会话死锁）；不做 crumb 刷新
+    （实测 Yahoo 对本机 IP  blanket 429，crumb 无效且 fc.yahoo.com 易挂起拖慢页面）。
+    Yahoo 不可用时快速失败（429/异常/空结果）→ 港股回退新浪，其余返回 None。
     """
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
     params = {"range": range_str, "interval": "1d"}
-    if not _yahoo_crumb["value"] or (time.time() - _yahoo_crumb["ts"]) > _CRUMB_TTL:
-        _refresh_yahoo_crumb()
-    if _yahoo_crumb["value"]:
-        params["crumb"] = _yahoo_crumb["value"]
-    # Yahoo 直连更稳（代理易触发风控），强制不走代理
-    for attempt in range(2):
+    s = requests.Session()
+    s.headers.update(_YAHOO_HEADERS)
+    try:
         try:
-            resp = _yahoo_session.get(url, params=params, timeout=15)
+            resp = s.get(url, params=params, timeout=10)
             if resp.status_code == 429:
-                logger.warning(f"Yahoo 429 for {symbol}, refreshing crumb (attempt {attempt})")
-                _refresh_yahoo_crumb()
-                if _yahoo_crumb["value"]:
-                    params["crumb"] = _yahoo_crumb["value"]
-                continue
-            resp.raise_for_status()
-            data = resp.json()
-            result = data["chart"]["result"][0]
-            ts_list = result.get("timestamp", [])
-            quote = result.get("indicators", {}).get("quote", [{}])[0]
-            opens = quote.get("open", [])
-            highs = quote.get("high", [])
-            lows = quote.get("low", [])
-            closes = quote.get("close", [])
-            volumes = quote.get("volume", [])
-            items = []
-            prev_close = None
-            for i in range(len(ts_list)):
-                c = closes[i] if i < len(closes) else None
-                if c is None:
-                    continue
-                import datetime as _dt
-                dt = _dt.datetime.fromtimestamp(ts_list[i])
-                o = opens[i] if i < len(opens) else None
-                h = highs[i] if i < len(highs) else None
-                l = lows[i] if i < len(lows) else None
-                v = volumes[i] if i < len(volumes) else None
-                change_pct = None
-                change_amount = None
-                if prev_close and prev_close > 0:
-                    change_amount = round(c - prev_close, 4)
-                    change_pct = round((c - prev_close) / prev_close * 100, 4)
-                items.append({
-                    "date": dt.strftime("%Y-%m-%d"),
-                    "open": round(o, 4) if o else None,
-                    "high": round(h, 4) if h else None,
-                    "low": round(l, 4) if l else None,
-                    "close": round(c, 4),
-                    "volume": int(v) if v else 0,
-                    "change_pct": change_pct,
-                    "change_amount": change_amount,
-                    "prev_close": round(prev_close, 4) if prev_close else None,
-                })
-                prev_close = c
-            if items:
-                return items
-            # 空结果（无数据）→ 港股回退新浪
-            if symbol.endswith(".HK"):
-                return _sina_hk_kline(symbol, range_str)
+                logger.warning(f"Yahoo 429 for {symbol}")
+            else:
+                resp.raise_for_status()
+                data = resp.json()
+                result = data["chart"]["result"][0]
+                ts_list = result.get("timestamp", [])
+                quote = result.get("indicators", {}).get("quote", [{}])[0]
+                opens = quote.get("open", [])
+                highs = quote.get("high", [])
+                lows = quote.get("low", [])
+                closes = quote.get("close", [])
+                volumes = quote.get("volume", [])
+                items = []
+                prev_close = None
+                for i in range(len(ts_list)):
+                    close = closes[i] if i < len(closes) else None
+                    if close is None:
+                        continue
+                    import datetime as _dt
+                    dt = _dt.datetime.fromtimestamp(ts_list[i])
+                    open_price = opens[i] if i < len(opens) else None
+                    high = highs[i] if i < len(highs) else None
+                    low = lows[i] if i < len(lows) else None
+                    volume = volumes[i] if i < len(volumes) else None
+                    change_amount = round(close - prev_close, 4) if prev_close and prev_close > 0 else None
+                    change_pct = round((close - prev_close) / prev_close * 100, 4) if prev_close and prev_close > 0 else None
+                    items.append({
+                        "date": dt.strftime("%Y-%m-%d"),
+                        "open": round(open_price, 4) if open_price else None,
+                        "high": round(high, 4) if high else None,
+                        "low": round(low, 4) if low else None,
+                        "close": round(close, 4),
+                        "volume": int(volume) if volume else 0,
+                        "change_pct": change_pct,
+                        "change_amount": change_amount,
+                        "prev_close": round(prev_close, 4) if prev_close else None,
+                    })
+                    prev_close = close
+                if items:
+                    return items
+        except Exception as exc:
+            logger.warning(f"Yahoo Finance fetch failed for {symbol}: {exc}")
+        # Yahoo 不可用（429/异常/空结果）→ 港股回退新浪，其余快速返回 None
+        if symbol.endswith(".HK"):
+            return _sina_hk_kline(symbol, range_str)
+        return None
+    finally:
+        s.close()
+
+
+def _yfinance_fetch(symbol: str, range_str: str = "5d") -> list[dict] | None:
+    """使用本地 yfinance 包作为 Yahoo chart API 的备用实现。"""
+    try:
+        import yfinance as yf
+
+        frame = yf.download(
+            symbol,
+            period=range_str,
+            interval="1d",
+            auto_adjust=False,
+            progress=False,
+            threads=False,
+        )
+        if frame is None or frame.empty:
             return None
-        except Exception as e:
-            logger.warning(f"Yahoo Finance fetch failed for {symbol}: {e}")
-            if attempt == 0:
-                _refresh_yahoo_crumb()
-                if _yahoo_crumb["value"]:
-                    params["crumb"] = _yahoo_crumb["value"]
-                continue
-            # 末次失败 → 港股回退新浪
-            if symbol.endswith(".HK"):
-                return _sina_hk_kline(symbol, range_str)
+        if hasattr(frame.columns, "levels"):
+            frame.columns = frame.columns.get_level_values(0)
+        required = {"Open", "High", "Low", "Close", "Volume"}
+        if not required.issubset(set(frame.columns)):
             return None
-    return None
+        items = []
+        previous = None
+        for index, row in frame.iterrows():
+            close = _safe_float(row.get("Close"))
+            if close is None:
+                continue
+            change_amount = round(close - previous, 4) if previous else None
+            change_pct = round((close - previous) / previous * 100, 4) if previous else None
+            items.append({
+                "date": index.strftime("%Y-%m-%d"),
+                "open": _safe_float(row.get("Open")),
+                "high": _safe_float(row.get("High")),
+                "low": _safe_float(row.get("Low")),
+                "close": round(close, 4),
+                "volume": int(_safe_float(row.get("Volume")) or 0),
+                "change_pct": change_pct,
+                "change_amount": change_amount,
+                "prev_close": round(previous, 4) if previous else None,
+            })
+            previous = close
+        return items or None
+    except Exception as exc:
+        logger.warning("local yfinance fallback failed for %s: %s", symbol, exc)
+        return None
 
 
 def _sina_hk_kline(yahoo_symbol: str, range_str: str = "5d") -> list[dict] | None:
@@ -203,7 +211,7 @@ def _sina_hk_kline(yahoo_symbol: str, range_str: str = "5d") -> list[dict] | Non
         resp = requests.get(
             url, params=params,
             headers={"User-Agent": _YAHOO_HEADERS["User-Agent"], "Referer": "https://finance.sina.com.cn"},
-            timeout=15,
+            timeout=8,
         )
         resp.encoding = "gbk"
         arr = resp.json()
@@ -263,8 +271,11 @@ def _to_yahoo_symbol(market: str, code: str) -> str:
     US: AAPL → AAPL (不变)
     """
     if market == "HK":
-        stripped = code.lstrip("0")
-        return f"{stripped}.HK" if stripped else code
+        stripped = code.upper().replace(".HK", "").strip()
+        try:
+            return f"{int(stripped):04d}.HK"
+        except ValueError:
+            return f"{stripped.zfill(4)}.HK"
     return code
 
 
