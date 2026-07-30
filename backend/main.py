@@ -6,6 +6,9 @@ import sys, os
 import logging
 import uuid
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# 允许 9000 后端渐进式导入项目根目录下的 V2 候选因子模块；
+# 不依赖 9001 进程，只复用同一仓库中的研究定义与数据库表。
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.staticfiles import StaticFiles
@@ -22,6 +25,7 @@ from api import hk_strategy
 from api import strategy_track
 from api import wave_analysis
 from api import quant_vnext
+from api import v2_research
 from api.rate_limit import RateLimitMiddleware
 from api import vibe, scheduler_api, shared, proxy, stock_dashboard
 from api.auth import verify_api_key
@@ -159,6 +163,7 @@ async def cache_static_assets(request: Request, call_next):
 # API路由
 app.include_router(alerts.router)
 app.include_router(quant_vnext.router)
+app.include_router(v2_research.router)
 app.include_router(heatmap.router)
 app.include_router(rotation.router)
 app.include_router(lifecycle.router)
@@ -436,6 +441,53 @@ async def dsa_api_proxy(full_path: str, request: Request):
 @app.api_route("/stocks.index.json", methods=["GET", "HEAD"], include_in_schema=False)
 async def dsa_stock_index_proxy(request: Request):
     return await _dsa_proxy(request, "stocks.index.json")
+
+
+# ---------------------------------------------------------------------------
+# V2 多因子决策子系统集成（9001）
+# 反向代理 /api/v2/* 到 v2_app（127.0.0.1:9001），同源、零跨域
+# ---------------------------------------------------------------------------
+V2_BACKEND_URL = os.environ.get("V2_BACKEND_URL", "http://127.0.0.1:9001")
+
+async def _v2_proxy(request: Request, path: str):
+    """反向代理到 V2 后端 9001。后端未启动时返回 503。"""
+    target = f"{V2_BACKEND_URL}/{path}"
+    if request.url.query:
+        target = f"{target}?{request.url.query}"
+    method = request.method
+    skip_req = {'host', 'content-length', 'transfer-encoding', 'connection'}
+    headers = {}
+    for k, v in request.headers.items():
+        if k.lower() not in skip_req:
+            headers[k] = v
+    body = await request.body()
+    client: _httpx.AsyncClient = app.state.http_client
+    try:
+        upstream = await client.request(
+            method, target, headers=headers, content=body or None, timeout=60,
+        )
+        skip_resp = {'content-encoding', 'transfer-encoding', 'connection', 'content-length'}
+        resp_headers = {}
+        for k, v in upstream.headers.items():
+            if k.lower() not in skip_resp:
+                resp_headers[k] = v
+        return Response(
+            content=upstream.content,
+            status_code=upstream.status_code,
+            headers=resp_headers,
+            media_type=upstream.headers.get('content-type'),
+        )
+    except Exception as e:
+        return JSONResponse(
+            {"error": "V2 backend unavailable", "detail": str(e), "hint": "请启动 V2 后端：uvicorn v2_app.main:app --host 0.0.0.0 --port 9001"},
+            status_code=503,
+        )
+
+
+@app.api_route("/api/v2/{full_path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"])
+async def v2_api_proxy(full_path: str, request: Request):
+    return await _v2_proxy(request, f"api/v2/{full_path}")
+
 
 # DSA 前端静态资源
 dsa_static = os.path.join(os.path.dirname(__file__), 'static', 'dsa')

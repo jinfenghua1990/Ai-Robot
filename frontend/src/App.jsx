@@ -24,6 +24,13 @@ const StockAnalysisPage = lazy(() => import('./pages/StockAnalysisPage'));
 const ReportDetailPage = lazy(() => import('./pages/ReportDetailPage'));
 const OverviewPage = lazy(() => import('./pages/OverviewPage'));
 const QuantVNextPage = lazy(() => import('./pages/QuantVNextPage'));
+const V2EmbeddedPage = lazy(() => import('./pages/V2EmbeddedPage'));
+
+// 右侧多因子 V2（9001 原汁原味迁移）
+const V2Shell = lazy(() => import('./pages/v2/V2Shell'));
+const V2OverviewPage = lazy(() => import('./pages/v2/V2OverviewPage'));
+const V2SectorsPage = lazy(() => import('./pages/v2/V2SectorsPage'));
+const V2PlaceholderPage = lazy(() => import('./pages/v2/V2PlaceholderPage'));
 
 // Vibe-Research 二级页面
 const VibeDailyReviewPage = lazy(() => import('./pages/vibe/VibeDailyReviewPage'));
@@ -76,6 +83,7 @@ export default function App() {
           <Route path="/panorama" element={<PanoramaPage />} />
           <Route path="/quality" element={<QualityPage />} />
           <Route path="/quant-vnext" element={<QuantVNextPage />} />
+          <Route path="/a-stock/v2" element={<V2EmbeddedPage />} />
           <Route path="/strategy-center" element={<StrategyCenterPage />} />
           <Route path="/yuzi-center" element={<YuziCenterPage />} />
           <Route path="/yuzi-tracker-20d" element={<Navigate to="/yuzi-center?tab=tracker" replace />} />
@@ -83,7 +91,7 @@ export default function App() {
           <Route path="/trading" element={<TradingPage />} />
           <Route path="/watchlist" element={<WatchlistPage />} />
           <Route path="/stock-analysis" element={<StockAnalysisPage />} />
-          {/* 重点关注已并入自选监控，保留旧地址兼容跳转 */}
+          {/* 保留原有重点关注入口 */}
           <Route path="/focus" element={<Navigate to="/watchlist?pool=focus" replace />} />
           <Route path="/portfolio" element={<PortfolioPage />} />
           <Route path="/cxmt-ipo" element={<CxmtIpoPage />} />
@@ -136,6 +144,22 @@ export default function App() {
           <Route path="/ai-agents" element={<AIAgentTeamPage />} />
           <Route path="/ai-agents/:tab" element={<AIAgentTeamPage />} />
           <Route path="/stock-tracker" element={<StockTrackerPage />} />
+
+          {/* 右侧多因子 V2（9001 原汁原味迁移） */}
+          <Route path="/v2" element={<V2Shell />}>
+            <Route index element={<Navigate to="/v2/overview" replace />} />
+            <Route path="overview" element={<V2OverviewPage />} />
+            <Route path="sectors" element={<V2SectorsPage />} />
+            <Route path="candidates" element={<V2PlaceholderPage />} />
+            <Route path="actions" element={<V2PlaceholderPage />} />
+            <Route path="yuzi" element={<V2PlaceholderPage />} />
+            <Route path="watchlist" element={<V2PlaceholderPage />} />
+            <Route path="holdings" element={<V2PlaceholderPage />} />
+            <Route path="analysis" element={<V2PlaceholderPage />} />
+            <Route path="validation" element={<V2PlaceholderPage />} />
+            <Route path="system" element={<V2PlaceholderPage />} />
+            <Route path="collection" element={<V2PlaceholderPage />} />
+          </Route>
 
           <Route path="/" element={<OverviewPage />} />
           <Route path="/mx-tools" element={<Navigate to="/watchlist" replace />} />

@@ -1,0 +1,1259 @@
+/* Auto-generated from v2_app/static/styles.css, scoped to .v2-scope */
+.v2-scope {
+  --page: #fbfbfc;
+  --surface: #ffffff;
+  --surface-soft: #f6f8fa;
+  --surface-blue: #f3f7ff;
+  --line: #e3e6eb;
+  --line-strong: #ccd2db;
+  --text: #202936;
+  --muted: #6f7885;
+  --blue: #2454bd;
+  --blue-soft: #edf3ff;
+  --green: #3d9b72;
+  --green-soft: #eef9f3;
+  --red: #d14b52;
+  --red-soft: #fff1f1;
+  --amber: #bd7a18;
+  --amber-soft: #fff8e9;
+  --shadow: 0 1px 3px rgba(28, 39, 54, .06);
+  --shadow-hover: 0 4px 14px rgba(28, 39, 54, .10);
+  color: var(--text);
+  background: var(--page);
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  text-align: left;
+  --surface: #ffffff;
+  --surface-soft: #f6f8fa;
+  --surface-blue: #f3f7ff;
+  --line: #e3e6eb;
+  --line-strong: #ccd2db;
+  --text: #202936;
+  --muted: #6f7885;
+  --blue: #2454bd;
+  --blue-soft: #edf3ff;
+  --green: #3d9b72;
+  --green-soft: #eef9f3;
+  --red: #d14b52;
+  --red-soft: #fff1f1;
+  --amber: #bd7a18;
+  --amber-soft: #fff8e9;
+  --shadow: 0 1px 3px rgba(28, 39, 54, .06);
+  --shadow-hover: 0 4px 14px rgba(28, 39, 54, .10);
+
+}
+
+.v2-scope * {
+ box-sizing: border-box; 
+}
+
+.v2-scope button, .v2-scope input, .v2-scope select {
+ font: inherit; 
+}
+
+.v2-scope button {
+ cursor: pointer; 
+}
+
+.v2-scope button:disabled {
+ cursor: wait; opacity: .55; 
+}
+
+.v2-scope .app-shell {
+ max-width: 1680px; margin: 0 auto; padding: 0 16px 44px; 
+}
+
+/* 9000 指挥舱式顶部工具栏：紧凑、可定位、信息不抢正文空间。 */
+
+.v2-scope .topbar {
+
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: grid;
+  grid-template-columns: 168px minmax(0, 1fr) auto;
+  align-items: stretch;
+  gap: 12px;
+  min-height: 48px;
+  margin: 0 -16px;
+  padding: 0 16px;
+  background: rgba(255, 255, 255, .97);
+  border-bottom: 1px solid var(--line);
+  box-shadow: 0 1px 7px rgba(30, 42, 58, .04);
+  backdrop-filter: blur(10px);
+
+}
+
+.v2-scope .brand-block {
+
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--text);
+
+}
+
+.v2-scope .brand-mark {
+
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid #c9d7f3;
+  border-radius: 7px;
+  background: var(--blue-soft);
+  color: var(--blue);
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: -.06em;
+
+}
+
+.v2-scope .brand-copy {
+ min-width: 0; line-height: 1.15; 
+}
+
+.v2-scope .brand-copy .eyebrow {
+
+  margin-bottom: 3px;
+  color: var(--blue);
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: .08em;
+
+}
+
+.v2-scope .brand-copy strong {
+ display: block; font-size: 14px; white-space: nowrap; 
+}
+
+.v2-scope .nav-tabs {
+
+  display: flex;
+  align-items: stretch;
+  min-width: 0;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+
+}
+
+.v2-scope .nav-tab {
+
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-width: 72px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: #586373;
+  padding: 0 8px;
+  font-size: 13px;
+  font-weight: 700;
+  white-space: nowrap;
+  transition: background .15s ease, border-color .15s ease, color .15s ease;
+
+}
+
+.v2-scope .nav-tab:hover {
+ background: #f4f6f9; color: var(--text); 
+}
+
+.v2-scope .nav-tab:focus, .v2-scope .nav-tab:focus-visible {
+ outline: none !important; box-shadow: none; 
+}
+
+.v2-scope .nav-tab.active {
+
+  border-color: #9eb5e9;
+  background: #f3f7ff;
+  color: var(--blue);
+  box-shadow: inset 0 0 0 1px rgba(36, 84, 189, .04);
+
+}
+
+.v2-scope .nav-icon {
+ font-size: 13px; line-height: 1; 
+}
+
+.v2-scope .top-actions {
+
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 7px;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 12px;
+
+}
+
+.v2-scope .status-chip, .v2-scope .port-chip, .v2-scope .top-date {
+
+  display: inline-flex;
+  align-items: center;
+  min-height: 26px;
+  padding: 3px 7px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fff;
+
+}
+
+.v2-scope .status-chip.live {
+ color: var(--green); border-color: #ccebdc; background: var(--green-soft); 
+}
+
+.v2-scope .status-chip i, .v2-scope .status-dot {
+
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 5px;
+  border-radius: 50%;
+  background: #43a977;
+  box-shadow: 0 0 0 3px #e2f5ea;
+
+}
+
+.v2-scope .port-chip {
+ color: var(--blue); font-weight: 800; background: var(--blue-soft); border-color: #d1def8; 
+}
+
+.v2-scope .top-date {
+ color: var(--muted); 
+}
+
+.v2-scope .status-strip {
+
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 30px;
+  padding: 5px 2px 4px;
+  color: var(--muted);
+  font-size: 12px;
+
+}
+
+.v2-scope .status-strip .status-dot {
+ width: 6px; height: 6px; margin-right: 0; box-shadow: none; 
+}
+
+.v2-scope .status-strip b {
+ color: var(--green); font-weight: 700; 
+}
+
+.v2-scope .strip-divider {
+ width: 1px; height: 13px; background: var(--line-strong); 
+}
+
+.v2-scope .strip-spacer {
+ flex: 1; 
+}
+
+.v2-scope .strip-hint {
+ color: #8a929e; 
+}
+
+.v2-scope .danger-text {
+ color: var(--red); 
+}
+
+.v2-scope .content {
+ min-height: 620px; padding-top: 10px; 
+}
+
+.v2-scope h1, .v2-scope h2, .v2-scope h3 {
+ color: var(--text); 
+}
+
+.v2-scope h1 {
+ margin: 0; font-size: 28px; letter-spacing: -.03em; 
+}
+
+.v2-scope h2 {
+ margin: 0; font-size: 21px; letter-spacing: -.02em; 
+}
+
+.v2-scope h3 {
+ margin: 0; font-size: 16px; 
+}
+
+.v2-scope .subtitle, .v2-scope .muted {
+ color: var(--muted); 
+}
+
+.v2-scope .page-head {
+
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  margin: 0 0 11px;
+  padding: 0 1px 8px;
+  border-bottom: 1px solid var(--line);
+
+}
+
+.v2-scope .page-head p {
+ margin: 3px 0 0; color: var(--muted); font-size: 13px; 
+}
+
+.v2-scope .actions {
+ display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 7px; 
+}
+
+.v2-scope .button {
+
+  min-height: 34px;
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--text);
+  padding: 6px 11px;
+  font-weight: 700;
+  transition: border-color .15s ease, box-shadow .15s ease, background .15s ease;
+
+}
+
+.v2-scope .button:hover {
+ border-color: #99acd0; background: #fbfcff; box-shadow: var(--shadow-hover); 
+}
+
+.v2-scope .button.primary {
+ border-color: var(--blue); background: var(--blue); color: #fff; 
+}
+
+.v2-scope .button.primary:hover {
+ background: #1d48ad; 
+}
+
+.v2-scope .button.small {
+ min-height: 28px; padding: 4px 8px; font-size: 12px; 
+}
+
+.v2-scope .card {
+
+  padding: 13px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+
+}
+
+.v2-scope .grid {
+ display: grid; gap: 10px; 
+}
+
+.v2-scope .grid-4 {
+ grid-template-columns: repeat(4, minmax(0, 1fr)); 
+}
+
+.v2-scope .grid-5 {
+ grid-template-columns: repeat(5, minmax(0, 1fr)); 
+}
+
+.v2-scope .grid-3 {
+ grid-template-columns: repeat(3, minmax(0, 1fr)); 
+}
+
+.v2-scope .grid-2 {
+ grid-template-columns: repeat(2, minmax(0, 1fr)); 
+}
+
+.v2-scope .grid-3 > .card {
+ align-self: start; 
+}
+
+.v2-scope .section {
+ margin-top: 11px; 
+}
+
+.v2-scope .section-title {
+
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+
+}
+
+.v2-scope .section-title span {
+ color: var(--muted); font-size: 12px; 
+}
+
+.v2-scope .metric-label {
+ color: var(--muted); font-size: 12px; 
+}
+
+.v2-scope .metric-value {
+
+  margin-top: 4px;
+  color: var(--text);
+  font-size: 26px;
+  line-height: 1.15;
+  font-weight: 850;
+  letter-spacing: -.02em;
+
+}
+
+.v2-scope .metric-note {
+ margin-top: 4px; color: var(--muted); font-size: 12px; line-height: 1.45; 
+}
+
+.v2-scope .metric-blue .metric-value {
+ color: var(--blue); 
+}
+
+.v2-scope .metric-green .metric-value {
+ color: var(--green); 
+}
+
+.v2-scope .metric-amber .metric-value {
+ color: var(--amber); 
+}
+
+.v2-scope .metric-red .metric-value {
+ color: var(--red); 
+}
+
+.v2-scope .market-banner {
+
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 11px 13px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: linear-gradient(105deg, #fff, #fafcff);
+  box-shadow: var(--shadow);
+
+}
+
+.v2-scope .market-state {
+ margin-top: 1px; color: var(--red); font-size: 20px; font-weight: 850; 
+}
+
+.v2-scope .market-state.STRONG {
+ color: var(--red); 
+}
+
+.v2-scope .market-state.RANGE {
+ color: var(--amber); 
+}
+
+.v2-scope .market-state.WEAK {
+ color: var(--red); 
+}
+
+.v2-scope .market-facts {
+ display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 13px; color: var(--muted); font-size: 12px; 
+}
+
+.v2-scope .market-facts b {
+ margin-left: 3px; color: var(--text); font-size: 15px; 
+}
+
+.v2-scope .notice {
+
+  padding: 10px 12px;
+  border: 1px solid #cbdaf5;
+  border-radius: 8px;
+  background: var(--surface-blue);
+  color: #31517e;
+
+}
+
+.v2-scope .notice.warn {
+ border-color: #f1d8a6; background: var(--amber-soft); color: #76500e; 
+}
+
+.v2-scope .notice.danger {
+ border-color: #f1c2c3; background: var(--red-soft); color: #8e3036; 
+}
+
+.v2-scope .notice strong {
+ display: block; margin-bottom: 2px; 
+}
+
+.v2-scope .state-grid {
+ display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 6px; 
+}
+
+.v2-scope .state-box {
+
+  min-height: 62px;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-soft);
+
+}
+
+.v2-scope .state-box strong {
+ display: block; font-size: 19px; line-height: 1.1; 
+}
+
+.v2-scope .state-box span {
+ color: var(--muted); font-size: 12px; 
+}
+
+.v2-scope .state-TRIGGERED {
+ color: var(--red); background: var(--red-soft); 
+}
+
+.v2-scope .state-READY {
+ color: var(--amber); background: var(--amber-soft); 
+}
+
+.v2-scope .state-HOLD {
+ color: var(--green); background: var(--green-soft); 
+}
+
+.v2-scope .state-NO_CHASE, .v2-scope .state-INVALID {
+ color: #687383; 
+}
+
+.v2-scope .table-wrap {
+ overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; 
+}
+
+.v2-scope table {
+ width: 100%; min-width: 850px; border-collapse: collapse; 
+}
+
+.v2-scope th, .v2-scope td {
+
+  padding: 8px 9px;
+  border-bottom: 1px solid #edf0f3;
+  text-align: left;
+  vertical-align: middle;
+  white-space: nowrap;
+
+}
+
+.v2-scope th {
+ background: #f7f8fa; color: #687280; font-size: 12px; font-weight: 800; 
+}
+
+.v2-scope tr:last-child td {
+ border-bottom: 0; 
+}
+
+.v2-scope tr.clickable {
+ cursor: pointer; 
+}
+
+.v2-scope tr.clickable:hover td {
+ background: #f5f8ff; 
+}
+
+.v2-scope .stock-name {
+ font-weight: 800; 
+}
+
+.v2-scope .stock-code {
+ margin-top: 1px; color: #87909c; font-size: 11px; 
+}
+
+.v2-scope .score {
+ color: var(--blue); font-size: 16px; font-weight: 850; 
+}
+
+.v2-scope .tag {
+
+  display: inline-flex;
+  align-items: center;
+  min-height: 21px;
+  margin: 1px 3px 1px 0;
+  padding: 2px 6px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: #f8f9fb;
+  color: #697382;
+  font-size: 11px;
+  font-weight: 800;
+
+}
+
+.v2-scope .tag.red {
+ border-color: #f2c9c9; background: var(--red-soft); color: var(--red); 
+}
+
+.v2-scope .tag.green {
+ border-color: #c8e9d8; background: var(--green-soft); color: var(--green); 
+}
+
+.v2-scope .tag.amber {
+ border-color: #f1d8a6; background: var(--amber-soft); color: var(--amber); 
+}
+
+.v2-scope .tag.blue {
+ border-color: #cad9f4; background: var(--blue-soft); color: var(--blue); 
+}
+
+.v2-scope .filters {
+ display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 10px; 
+}
+
+.v2-scope input, .v2-scope select {
+
+  min-height: 34px;
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  background: #fff;
+  color: var(--text);
+  padding: 6px 9px;
+
+}
+
+.v2-scope input {
+ min-width: 250px; 
+}
+
+.v2-scope input:focus, .v2-scope select:focus {
+ outline: 2px solid rgba(36, 84, 189, .16); border-color: #8da9dc; 
+}
+
+.v2-scope input::placeholder {
+ color: #9aa3ae; 
+}
+
+.v2-scope .dimension-list {
+ display: grid; gap: 8px; 
+}
+
+.v2-scope .dimension-row {
+ display: grid; grid-template-columns: 105px minmax(80px, 1fr) 45px; gap: 8px; align-items: center; font-size: 13px; 
+}
+
+.v2-scope .dimension-row .label {
+ color: var(--muted); 
+}
+
+.v2-scope .bar {
+ height: 8px; overflow: hidden; border-radius: 8px; background: #edf0f4; 
+}
+
+.v2-scope .bar i {
+ display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #9bb9ee, var(--blue)); 
+}
+
+.v2-scope .bar i.invalid {
+ width: 5% !important; background: #cbd2dc; 
+}
+
+.v2-scope .dimension-row strong {
+ text-align: right; 
+}
+
+.v2-scope .detail {
+ padding: 11px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-soft); 
+}
+
+.v2-scope .detail h3 {
+ margin-bottom: 7px; 
+}
+
+.v2-scope .detail-grid {
+ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; 
+}
+
+.v2-scope .empty {
+ padding: 38px 18px; color: var(--muted); text-align: center; 
+}
+
+.v2-scope .loading {
+ padding: 72px 18px; color: var(--muted); text-align: center; 
+}
+
+.v2-scope .loading-card {
+
+  display: flex;
+  min-height: 300px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 32px 20px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface);
+  color: var(--muted);
+  text-align: center;
+  box-shadow: var(--shadow);
+
+}
+
+.v2-scope .loading-card strong {
+ color: var(--text); font-size: 15px; 
+}
+
+.v2-scope .loading-card span {
+ max-width: 520px; font-size: 12px; 
+}
+
+.v2-scope .loading-spinner {
+
+  width: 24px;
+  height: 24px;
+  border: 3px solid #dbe5f7;
+  border-top-color: var(--blue);
+  border-radius: 50%;
+  animation: spin .9s linear infinite;
+
+}
+
+.v2-scope .loading-skeleton {
+ display: flex; gap: 6px; margin-top: 8px; 
+}
+
+.v2-scope .loading-skeleton i {
+
+  display: block;
+  width: 42px;
+  height: 5px;
+  border-radius: 4px;
+  background: #dfe7f5;
+  animation: pulse 1.2s ease-in-out infinite;
+
+}
+
+.v2-scope .loading-skeleton i:nth-child(2) {
+ animation-delay: .12s; 
+}
+
+.v2-scope .loading-skeleton i:nth-child(3) {
+ animation-delay: .24s; 
+}
+
+.v2-scope .loading-skeleton i:nth-child(4) {
+ animation-delay: .36s; 
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+@keyframes pulse { 0%, 100% { opacity: .45; } 50% { opacity: 1; } }
+
+.v2-scope .muted-box {
+ padding: 12px; border: 1px dashed var(--line-strong); border-radius: 8px; background: var(--surface-soft); color: var(--muted); 
+}
+
+.v2-scope .positive {
+ color: var(--red); 
+}
+
+.v2-scope .negative {
+ color: var(--green); 
+}
+
+.v2-scope .footer-note {
+ margin-top: 13px; color: var(--muted); font-size: 11px; 
+}
+
+@media (max-width: 1180px) {
+  .v2-scope .topbar {
+ grid-template-columns: 156px minmax(0, 1fr); 
+  }
+  .v2-scope .top-actions {
+ display: none; 
+  }
+  .v2-scope .nav-tab {
+ min-width: 64px; padding: 0 6px; font-size: 12px; 
+  }
+  .v2-scope .nav-icon {
+ font-size: 12px; 
+  }
+}
+
+@media (max-width: 980px) {
+  .v2-scope .topbar {
+ position: relative; display: flex; flex-wrap: wrap; align-items: center; padding-top: 7px; padding-bottom: 7px; 
+  }
+  .v2-scope .brand-block {
+ min-width: 150px; 
+  }
+  .v2-scope .nav-tabs {
+ flex: 1 1 600px; min-height: 34px; overflow-x: auto; 
+  }
+  .v2-scope .nav-tab {
+ min-height: 31px; padding: 0 8px; 
+  }
+  .v2-scope .status-strip {
+ flex-wrap: wrap; 
+  }
+  .v2-scope .strip-spacer, .v2-scope .strip-hint {
+ display: none; 
+  }
+  .v2-scope .grid-4 {
+ grid-template-columns: repeat(2, minmax(0, 1fr)); 
+  }
+  .v2-scope .grid-5 {
+ grid-template-columns: repeat(3, minmax(0, 1fr)); 
+  }
+  .v2-scope .state-grid {
+ grid-template-columns: repeat(3, minmax(0, 1fr)); 
+  }
+}
+
+@media (max-width: 680px) {
+  .v2-scope .app-shell {
+ padding: 0 10px 34px; 
+  }
+  .v2-scope .topbar {
+ margin: 0 -10px; padding-left: 10px; padding-right: 10px; 
+  }
+  .v2-scope .brand-block {
+ flex: 1 0 100%; 
+  }
+  .v2-scope .nav-tabs {
+ flex-basis: 100%; order: 2; 
+  }
+  .v2-scope .nav-tab {
+ min-width: 88px; 
+  }
+  .v2-scope .top-actions {
+ display: flex; order: 1; position: absolute; top: 11px; right: 10px; 
+  }
+  .v2-scope .port-chip, .v2-scope .top-date {
+ display: none; 
+  }
+  .v2-scope .grid-5, .v2-scope .grid-4, .v2-scope .grid-3, .v2-scope .grid-2, .v2-scope .detail-grid {
+ grid-template-columns: 1fr; 
+  }
+  .v2-scope .state-grid {
+ grid-template-columns: repeat(2, minmax(0, 1fr)); 
+  }
+  .v2-scope .page-head, .v2-scope .market-banner {
+ align-items: flex-start; flex-direction: column; 
+  }
+  .v2-scope .page-head .actions {
+ width: 100%; justify-content: flex-start; 
+  }
+  .v2-scope .market-facts {
+ justify-content: flex-start; 
+  }
+  .v2-scope input {
+ min-width: 0; width: 100%; 
+  }
+}
+
+/* 与 9000“黑夜”保持同一组深色指挥舱语义。 */
+
+.v2-scope .theme-toggle {
+
+  min-height: 26px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--muted);
+  padding: 3px 8px;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+
+}
+
+.v2-scope .theme-toggle:hover {
+ border-color: #9eb5e9; color: var(--text); 
+}
+
+/* V2 信息架构：顶部放全局市场/系统，左侧放业务功能。 */
+
+.v2-scope .market-switch {
+ display: flex; align-items: center; gap: 5px; min-width: 0; 
+}
+
+.v2-scope .market-tab {
+ border: 1px solid var(--line); border-radius: 7px; background: var(--surface); color: var(--muted); padding: 5px 10px; font-size: 12px; font-weight: 800; 
+}
+
+.v2-scope .market-tab.active {
+ border-color: #9eb5e9; background: var(--blue-soft); color: var(--blue); 
+}
+
+.v2-scope .market-tab:disabled {
+ cursor: not-allowed; opacity: .55; 
+}
+
+.v2-scope .market-tab span {
+ display: block; font-size: 9px; font-weight: 500; 
+}
+
+.v2-scope .top-system {
+ border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--muted); padding: 5px 7px; font-size: 11px; 
+}
+
+.v2-scope .top-system:hover {
+ border-color: #9eb5e9; color: var(--blue); 
+}
+
+.v2-scope .top-system.active {
+ border-color: #9eb5e9; background: var(--blue-soft); color: var(--blue); box-shadow: inset 0 0 0 1px rgba(36, 84, 189, .06); 
+}
+
+.v2-scope .app-shell.global-page .nav-tabs {
+ display: none; 
+}
+
+.v2-scope .app-shell.global-page .status-strip, .v2-scope .app-shell.global-page .content {
+ margin-left: 0; 
+}
+
+.v2-scope .app-shell.global-page .content {
+ padding-left: 0; 
+}
+
+.v2-scope .nav-tabs {
+ position: fixed; z-index: 30; top: 88px; bottom: 0; left: max(0px, calc((100vw - 1680px) / 2)); width: 202px; display: flex; flex-direction: column; align-items: stretch; gap: 3px; padding: 14px 10px 24px; overflow-y: auto; background: var(--surface); border-right: 1px solid var(--line); 
+}
+
+.v2-scope .nav-group-label {
+ margin: 8px 8px 3px; color: var(--muted); font-size: 10px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; 
+}
+
+.v2-scope .nav-tab {
+ display: inline-flex !important; visibility: visible !important; opacity: 1 !important; width: 100%; justify-content: flex-start; min-height: 38px; flex: 0 0 38px; padding: 0 12px; gap: 9px; color: var(--muted); 
+}
+
+.v2-scope .nav-tab .nav-icon {
+ display: inline-block !important; visibility: visible !important; flex: 0 0 18px; 
+}
+
+.v2-scope .nav-tab.active {
+ color: var(--blue); 
+}
+
+.v2-scope .status-strip, .v2-scope .content {
+ margin-left: 202px; 
+}
+
+.v2-scope .content {
+ padding-left: 14px; 
+}
+
+@media (max-width: 980px) {
+  .v2-scope .topbar {
+ grid-template-columns: 145px minmax(0, 1fr) auto; 
+  }
+  .v2-scope .nav-tabs {
+ position: static; width: auto; flex-direction: row; padding: 5px 0 7px; border-right: 0; border-top: 1px solid var(--line); overflow-x: auto; overflow-y: hidden; 
+  }
+  .v2-scope .nav-group-label {
+ display: none; 
+  }
+  .v2-scope .nav-tab {
+ min-height: 32px; justify-content: center; padding: 0 9px; 
+  }
+  .v2-scope .status-strip, .v2-scope .content {
+ margin-left: 0; 
+  }
+  .v2-scope .content {
+ padding-left: 0; 
+  }
+}
+
+@media (max-width: 680px) {
+  .v2-scope .market-switch {
+ overflow-x: auto; 
+  }
+  .v2-scope .market-tab {
+ padding: 4px 7px; 
+  }
+  .v2-scope .top-system {
+ display: inline-flex; 
+  }
+  .v2-scope .top-actions .status-chip, .v2-scope .top-actions .port-chip, .v2-scope .top-actions .top-date {
+ display: none; 
+  }
+  .v2-scope .topbar {
+ grid-template-columns: 130px minmax(0, 1fr) auto; 
+  }
+}
+
+/* 窄桌面窗口也必须保留系统入口；只隐藏装饰性状态标签。 */
+
+@media (min-width: 681px) and (max-width: 1180px) {
+  .v2-scope .topbar {
+ grid-template-columns: 150px minmax(0, 1fr) auto; gap: 7px; 
+  }
+  .v2-scope .top-actions {
+ display: flex; gap: 4px; 
+  }
+  .v2-scope .top-actions .status-chip, .v2-scope .top-actions .port-chip, .v2-scope .top-actions .top-date {
+ display: none; 
+  }
+  .v2-scope .top-system {
+ padding: 5px 5px; font-size: 10px; 
+  }
+}
+
+/* 紧凑工作台密度：与 9000 的“小而美”信息布局保持一致。 */
+
+.v2-scope .app-shell {
+ max-width: none; padding: 0 8px 20px; 
+}
+
+.v2-scope .topbar {
+ min-height: 42px; margin: 0 -8px; padding: 0 8px; gap: 8px; 
+}
+
+.v2-scope .brand-mark {
+ width: 24px; height: 24px; border-radius: 5px; 
+}
+
+.v2-scope .brand-copy .eyebrow {
+ margin-bottom: 1px; font-size: 8px; 
+}
+
+.v2-scope .brand-copy strong {
+ font-size: 12px; 
+}
+
+.v2-scope .market-tab {
+ padding: 4px 8px; font-size: 11px; border-radius: 5px; 
+}
+
+.v2-scope .market-tab span {
+ font-size: 8px; 
+}
+
+.v2-scope .top-system, .v2-scope .theme-toggle {
+ padding: 4px 6px; font-size: 10px; border-radius: 5px; 
+}
+
+.v2-scope .status-chip, .v2-scope .port-chip, .v2-scope .top-date {
+ min-height: 22px; padding: 2px 6px; font-size: 10px; 
+}
+
+.v2-scope .status-strip {
+ min-height: 25px; padding: 3px 2px; font-size: 10px; 
+}
+
+/* 9000 同款：业务功能为顶部横向导航，而非左侧大侧栏。 */
+
+.v2-scope .nav-tabs {
+ position: static; z-index: auto; width: auto; height: auto; min-height: 32px; flex-direction: row; align-items: center; gap: 2px; padding: 3px 0; overflow-x: auto; overflow-y: hidden; background: transparent; border-right: 0; border-bottom: 1px solid var(--line); 
+}
+
+.v2-scope .nav-tab {
+ width: auto; min-width: auto; min-height: 26px; flex: 0 0 auto; padding: 0 8px; justify-content: center; font-size: 11px; gap: 4px; border-radius: 4px; 
+}
+
+.v2-scope .nav-tab .nav-icon {
+ font-size: 11px; flex: 0 0 auto; 
+}
+
+.v2-scope .nav-group-label {
+ display: none; 
+}
+
+.v2-scope .status-strip, .v2-scope .content {
+ margin-left: 0; 
+}
+
+.v2-scope .content {
+ padding: 6px 0 0; min-height: 520px; 
+}
+
+.v2-scope .page-head {
+ gap: 8px; margin-bottom: 7px; padding-bottom: 5px; 
+}
+
+.v2-scope h1 {
+ font-size: 22px; 
+}
+
+.v2-scope h2 {
+ font-size: 17px; 
+}
+
+.v2-scope h3 {
+ font-size: 13px; 
+}
+
+.v2-scope .page-head p {
+ margin-top: 2px; font-size: 11px; 
+}
+
+.v2-scope .card {
+ padding: 8px; border-radius: 5px; 
+}
+
+.v2-scope .section {
+ margin-top: 7px; 
+}
+
+.v2-scope .grid {
+ gap: 6px; 
+}
+
+.v2-scope .metric-label {
+ font-size: 10px; 
+}
+
+.v2-scope .metric-value {
+ font-size: 21px; line-height: 1.05; 
+}
+
+.v2-scope .metric-note {
+ font-size: 10px; 
+}
+
+.v2-scope .market-banner {
+ padding: 8px 10px; border-radius: 5px; 
+}
+
+.v2-scope .market-state {
+ font-size: 17px; 
+}
+
+.v2-scope .market-facts {
+ gap: 9px; font-size: 10px; 
+}
+
+.v2-scope .section-title {
+ margin-bottom: 6px; 
+}
+
+.v2-scope .section-title span {
+ font-size: 10px; 
+}
+
+.v2-scope .notice {
+ padding: 7px 9px; border-radius: 5px; 
+}
+
+.v2-scope .state-grid {
+ gap: 5px; 
+}
+
+.v2-scope .state-box {
+ padding: 7px 8px; border-radius: 5px; 
+}
+
+.v2-scope .state-box strong {
+ font-size: 18px; 
+}
+
+.v2-scope .state-box span {
+ font-size: 10px; 
+}
+
+.v2-scope th, .v2-scope td {
+ padding: 5px 7px; font-size: 11px; 
+}
+
+.v2-scope th {
+ font-size: 10px; 
+}
+
+.v2-scope .button {
+ min-height: 28px; padding: 4px 8px; border-radius: 5px; font-size: 11px; 
+}
+
+.v2-scope .button.small {
+ min-height: 24px; padding: 3px 6px; font-size: 10px; 
+}
+
+.v2-scope .tag {
+ padding: 1px 4px; font-size: 10px; border-radius: 3px; 
+}
+
+.v2-scope .loading-card {
+ min-height: 360px; 
+}
+
+.v2-scope .footer-note {
+ margin-top: 8px; font-size: 10px; 
+}
+
+@media (max-width: 980px) {
+  .v2-scope .nav-tabs {
+ padding: 4px 0 5px; 
+  }
+  .v2-scope .status-strip, .v2-scope .content {
+ margin-left: 0; 
+  }
+  .v2-scope .content {
+ padding-left: 0; 
+  }
+}
+
+/* 顶部决定上下文，左侧显示当前上下文的紧凑菜单。 */
+
+.v2-scope .nav-tabs {
+ position: fixed; z-index: 30; top: 67px; bottom: 0; left: 0; width: 184px; min-height: 0; flex-direction: column; align-items: stretch; gap: 1px; padding: 8px 7px 16px; overflow-y: auto; overflow-x: hidden; background: var(--surface); border-right: 1px solid var(--line); border-bottom: 0; 
+}
+
+.v2-scope .nav-tab {
+ width: 100%; min-width: 0; min-height: 32px; flex: 0 0 32px; padding: 0 9px; justify-content: flex-start; font-size: 11px; gap: 7px; border-radius: 4px; 
+}
+
+.v2-scope .nav-tab .nav-icon {
+ font-size: 11px; flex: 0 0 16px; 
+}
+
+.v2-scope .nav-group-label {
+ display: block; margin: 5px 6px 2px; font-size: 9px; 
+}
+
+.v2-scope [data-nav-scope="global"] {
+ display: none !important; 
+}
+
+.v2-scope .app-shell.global-page .nav-tabs {
+ display: flex !important; 
+}
+
+.v2-scope .app-shell.global-page [data-nav-scope="market"] {
+ display: none !important; 
+}
+
+.v2-scope .app-shell.global-page [data-nav-scope="global"] {
+ display: inline-flex !important; 
+}
+
+.v2-scope .app-shell.global-page .nav-group-label[data-nav-scope="global"] {
+ display: block !important; 
+}
+
+.v2-scope .status-strip, .v2-scope .content {
+ margin-left: 184px; 
+}
+
+.v2-scope .content {
+ padding: 6px 0 0 10px; 
+}
+
+.v2-scope .app-shell.global-page .status-strip, .v2-scope .app-shell.global-page .content {
+ margin-left: 184px; 
+}
+
+.v2-scope .app-shell.global-page .content {
+ padding-left: 10px; 
+}
+
+@media (max-width: 980px) {
+  .v2-scope .nav-tabs {
+ position: static; width: auto; flex-direction: row; padding: 4px 0 5px; overflow-x: auto; overflow-y: hidden; border-right: 0; border-bottom: 1px solid var(--line); 
+  }
+  .v2-scope .nav-tab {
+ width: auto; min-height: 26px; flex-basis: auto; justify-content: center; 
+  }
+  .v2-scope .nav-group-label {
+ display: none !important; 
+  }
+}
+

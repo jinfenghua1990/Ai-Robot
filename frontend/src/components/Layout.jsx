@@ -4,19 +4,57 @@ import { apiFetch } from '../utils/request';
 import HealthStrip from './HealthStrip';
 import SystemCheckBanner from './SystemCheckBanner';
 
-// AIROBOT 主菜单 — 以「预测交易」为核心交易主线，其余子系统（量化/Vibe/DSA/智能体/行情/游资/全球/跟踪）已独立为顶部一级
+// 顶部只负责切换全局上下文；业务功能进入对应上下文的左侧菜单。
+const coreNav = [
+  { path: '/v2', label: '右侧多因子 V2', icon: '🧠' },
+  { path: '/panorama', label: '板块流动', icon: '🔥' },
+  { path: '/strategy-center', label: '选股策略中心', icon: '🎯' },
+  { path: '/yuzi-center', label: '游资', icon: '🐉' },
+  { path: '/quant-vnext', label: '量化动作', icon: '🧬' },
+  { path: '/watchlist', label: '自选', icon: '⭐' },
+  { path: '/portfolio', label: '持仓', icon: '💼' },
+  { path: '/stock-analysis', label: '个股分析', icon: '🔍' },
+  { path: '/quality', label: '系统状态', icon: '🛡️' },
+];
+
+const topNav = [
+  { key: 'a-stock', path: '/panorama', label: 'A股', icon: '🇨🇳' },
+  { key: 'hk', path: '/hk-market', label: '港股', icon: '🇭🇰' },
+  { key: 'us', path: '/us-market', label: '美股', icon: '🇺🇸' },
+  { key: 'system', path: '/quality', label: '系统', icon: '🛡️' },
+];
+
 const mainSections = [
-  { section: '预测交易', items: [
+  { section: '核心工作台', items: coreNav },
+  { section: '原有功能', items: [
     { path: '/', label: '预测总览', icon: '📡' },
-    { path: '/strategy-center', label: '策略中心', icon: '🎯' },
     { path: '/trading', label: '交易', icon: '💼' },
-    { path: '/stock-analysis', label: '个股分析', icon: '🔍' },
-    { path: '/research-center', label: '研究', icon: '📚' },
+    { path: '/research-center', label: '研究中心', icon: '📚' },
+    { path: '/focus', label: '重点关注', icon: '🎯' },
+    { path: '/cxmt-ipo', label: '长鑫 IPO', icon: '🔬' },
+    { path: '/stock-tracker', label: '股票跟踪', icon: '📈' },
+  ]},
+  { section: '行情与研究', items: [
+    { path: '/today', label: '盘中实时', icon: '⚡' },
+    { path: '/concept-flow', label: '资金流向', icon: '💸' },
+    { path: '/fund-weather', label: '资金气象', icon: '🌦️' },
+    { path: '/index-flow', label: '指数资金', icon: '🇨🇳' },
+    { path: '/wave-analysis', label: '波浪分析', icon: '🌊' },
+  ]},
+];
+
+const systemSections = [
+  { section: '系统管理', items: [
+    { path: '/quality', label: '系统状态', icon: '🛡️' },
+    { path: '/quality', label: '数据质量', icon: '🧪' },
+    { path: '/today', label: '数据采集', icon: '📡' },
   ]},
 ];
 
 // 各项目子菜单（仅在 AIROBOT 布局内切换用）
 const projectMenus = {
+  'a-stock': { title: 'A股', icon: '🇨🇳', sections: mainSections },
+  system: { title: '系统', icon: '🛡️', sections: systemSections },
   'quant-vnext': {
     title: '量化 VNext',
     icon: '🧬',
@@ -120,23 +158,23 @@ const projectMenus = {
       { path: '/global-market', label: '全球', icon: '🌐' },
     ],
   },
+  hk: {
+    title: '港股', icon: '🇭🇰', items: [
+      { path: '/hk-market', label: '港股总览', icon: '🇭🇰' },
+    ],
+  },
+  us: {
+    title: '美股', icon: '🇺🇸', items: [
+      { path: '/us-market', label: '美股总览', icon: '🇺🇸' },
+    ],
+  },
 };
 
-const projectKeys = [
-  { key: 'main', label: 'AIROBOT', icon: '🔷' },
-  { key: 'quant-vnext', label: '量化 VNext', icon: '🧬' },
-  { key: 'vibe', label: 'Vibe', icon: '📡' },
-  { key: 'dsa', label: 'DSA', icon: '🤖' },
-  { key: 'ai-agents', label: '智能体投资团', icon: '🤖' },
-  { key: 'market-overview', label: '行情全景', icon: '🔥' },
-  { key: 'yuzi', label: '游资', icon: '🐉' },
-  { key: 'global', label: '全球', icon: '🌐' },
-  { key: 'tracker', label: '跟踪', icon: '📈' },
-  { key: 'hk', label: '港股', icon: '🇭🇰' },
-  { key: 'us', label: '美股', icon: '🇺🇸' },
-];
-
 function detectProject(pathname) {
+  if (pathname.startsWith('/quality')) return 'system';
+  if (pathname.startsWith('/hk-market') || pathname.startsWith('/hk-strategy')) return 'hk';
+  if (pathname.startsWith('/us-market')) return 'us';
+  if (pathname.startsWith('/v2') || pathname.startsWith('/a-stock/v2') || pathname.startsWith('/panorama') || pathname.startsWith('/strategy-center') || pathname.startsWith('/yuzi-center') || pathname.startsWith('/quant-vnext') || pathname.startsWith('/watchlist') || pathname.startsWith('/portfolio') || pathname.startsWith('/stock-analysis')) return 'a-stock';
   if (pathname.startsWith('/quant-vnext')) return 'quant-vnext';
   // 行情全景一级：板块全景/盘中实时/资金流向/资金气象/指数资金/波浪分析
   if (pathname.startsWith('/panorama') || pathname.startsWith('/today') || pathname.startsWith('/concept-flow') || pathname.startsWith('/fund-weather') || pathname.startsWith('/index-flow') || pathname.startsWith('/wave-analysis')) return 'market-overview';
@@ -155,8 +193,6 @@ function detectProject(pathname) {
   }
   if (pathname.startsWith('/ai-agents')) return 'ai-agents';
   if (pathname.startsWith('/stock-tracker')) return 'tracker';
-  if (pathname.startsWith('/hk-market') || pathname.startsWith('/hk-strategy')) return 'hk';
-  if (pathname.startsWith('/us-market')) return 'us';
   return 'main';
 }
 
@@ -180,12 +216,10 @@ export default function Layout() {
   const [navOpen, setNavOpen] = useState(false);
   const [pushing, setPushing] = useState(false);
   const [pushMsg, setPushMsg] = useState('');
-  const [sharedData, setSharedData] = useState({ watchlist: [], portfolio: null, focus: null });
   const location = useLocation();
   const [activeProject, setActiveProject] = useState(() => detectProject(location.pathname));
-  // 个股分析页为独立工具页，左侧不再继承「市场分析」项目菜单栏（自身已有内部 tab 导航）
-  // 共享入口页(个股分析/持仓/自选/关注)为顶部栏直达的纯页面，不挂左侧菜单（避免与顶部一级重复）
-  const isStandalonePage = ['/stock-analysis', '/portfolio', '/watchlist', '/focus'].some(p => location.pathname.startsWith(p));
+  // 所有顶层上下文都保留左侧菜单；页面内容只随菜单切换，不再隐藏导航。
+  const isStandalonePage = false;
 
   useEffect(() => {
     const saved = localStorage.getItem('airobot-theme') || 'light';
@@ -206,29 +240,6 @@ export default function Layout() {
     check();
     const t = setInterval(check, 30000);
     return () => clearInterval(t);
-  }, []);
-
-  // 加载共享数据（自选股/持仓/重点关注）
-  useEffect(() => {
-    const loadShared = async () => {
-      try {
-        const [wl, pf, fc] = await Promise.all([
-          apiFetch('/api/shared/watchlist').then(r => r.ok ? r.data : null),
-          apiFetch('/api/shared/portfolio').then(r => r.ok ? r.data : null),
-          apiFetch('/api/shared/focus-stocks').then(r => r.ok ? r.data : null),
-        ]);
-        setSharedData({
-          watchlist: wl?.stocks ?? [],
-          portfolio: pf ?? null,
-          focus: fc ?? null,
-        });
-      } catch (e) {
-        // 静默失败
-      }
-    };
-    loadShared();
-    const interval = setInterval(loadShared, 30000); // 每30秒刷新
-    return () => clearInterval(interval);
   }, []);
 
   useEffect(() => {
@@ -428,89 +439,25 @@ export default function Layout() {
         {/* 顶栏 */}
         <header className={`shrink-0 z-30 h-10 border-b flex items-center justify-between ${isStandalonePage ? 'pl-4' : 'pl-12'} md:pl-4 pr-2 md:pr-4`}
           style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
-          <div className="flex items-center gap-1 overflow-x-auto no-scrollbar max-w-[62%]">
-            {projectKeys.map(({ key, label, icon }) => {
-              const active = activeProject === key;
-              const extUrl = projectExternalUrl(key);
-              if (extUrl) {
-                return (
-                  <a key={key} href={extUrl} target="_blank" rel="noopener noreferrer"
-                    className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-xs transition-colors whitespace-nowrap ${active ? 'font-medium' : ''}`}
-                    style={{
-                      background: active ? 'var(--bg-hover)' : 'transparent',
-                      color: active ? 'var(--accent-blue)' : 'var(--text-secondary)',
-                      border: active ? '1px solid var(--accent-blue)' : '1px solid transparent',
-                    }}>
-                    <span>{icon}</span>
-                    {label}
-                    <span className="text-[9px]" style={{ color: 'var(--text-muted)' }}>↗</span>
-                  </a>
-                );
-              }
-              // hk/us 直接走独立页面，不切换侧边栏项目
-              if (key === 'hk' || key === 'us') {
-                const targetPath = key === 'hk' ? '/hk-market' : '/us-market';
-                return (
-                  <NavLink
-                    key={key}
-                    to={targetPath}
-                    onClick={() => setNavOpen(false)}
-                    className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-xs transition-colors whitespace-nowrap ${active ? 'font-medium' : ''}`}
-                    style={{
-                      background: active ? 'var(--bg-hover)' : 'transparent',
-                      color: active ? 'var(--accent-blue)' : 'var(--text-secondary)',
-                      border: active ? '1px solid var(--accent-blue)' : '1px solid transparent',
-                    }}
-                  >
-                    <span>{icon}</span>
-                    {label}
-                  </NavLink>
-                );
-              }
-              return (
-                <NavLink
-                  key={key}
-                  to={key === 'main' ? '/' : key === 'ai-agents' ? '/ai-agents' : projectMenus[key]?.items?.[0]?.path || projectMenus[key]?.sections?.[0]?.items?.[0]?.path || '/'}
-                  onClick={() => key === 'ai-agents' ? setNavOpen(false) : switchProject(key)}
-                  className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-xs transition-colors whitespace-nowrap ${active ? 'font-medium' : ''}`}
-                  style={{
-                    background: active ? 'var(--bg-hover)' : 'transparent',
-                    color: active ? 'var(--accent-blue)' : 'var(--text-secondary)',
-                    border: active ? '1px solid var(--accent-blue)' : '1px solid transparent',
-                  }}
-                >
-                  <span>{icon}</span>
-                  {label}
-                </NavLink>
-              );
-            })}
+          <div className="flex items-center gap-1 overflow-x-auto no-scrollbar flex-1 min-w-0">
+            {topNav.map(({ key, path, label, icon }) => (
+              <NavLink
+                key={key}
+                to={path}
+                onClick={() => setNavOpen(false)}
+                className={({ isActive }) => `flex items-center gap-1 px-2.5 py-1.5 rounded-md text-xs transition-colors whitespace-nowrap ${isActive ? 'font-semibold' : ''}`}
+                style={({ isActive }) => ({
+                  background: isActive ? 'var(--bg-hover)' : 'transparent',
+                  color: isActive ? 'var(--accent-blue)' : 'var(--text-secondary)',
+                  border: isActive ? '1px solid var(--accent-blue)' : '1px solid transparent',
+                })}
+              >
+                <span>{icon}</span>
+                {label}
+              </NavLink>
+            ))}
           </div>
-          {/* 共享数据入口：直接跳转二级页面（带名称） */}
-          <div className="flex items-center gap-2 ml-3 text-xs border-l pl-3" style={{ borderColor: 'var(--border-color)', color: 'var(--text-secondary)' }}>
-            <NavLink to="/watchlist" className="flex items-center gap-1 hover:opacity-80 no-underline" style={{ color: 'var(--text-secondary)' }}>
-              <span>⭐</span><span>自选股</span><span className="font-medium">{sharedData.watchlist.length}</span>
-            </NavLink>
-            <NavLink to="/portfolio" className="flex items-center gap-1 hover:opacity-80 no-underline" style={{ color: 'var(--text-secondary)' }}>
-              <span>💼</span><span>持仓</span>
-              <span className="font-medium">
-                {(sharedData.portfolio?.total_market_value ?? 0) >= 10000
-                  ? `${((sharedData.portfolio?.total_market_value ?? 0) / 10000).toFixed(0)}w`
-                  : (sharedData.portfolio?.total_market_value ?? 0).toFixed(0)}
-              </span>
-            </NavLink>
-            <NavLink to="/focus" className="flex items-center gap-1 hover:opacity-80 no-underline" style={{ color: 'var(--text-secondary)' }}>
-              <span>🎯</span><span>重点关注</span><span className="font-medium">{sharedData.focus?.count ?? 0}</span>
-            </NavLink>
-            <NavLink to="/cxmt-ipo" className="flex items-center gap-1 hover:opacity-80 no-underline" style={{ color: 'var(--text-secondary)' }}>
-              <span>🔬</span><span>长鑫IPO</span>
-            </NavLink>
-            <NavLink to="/research-center" className="flex items-center gap-1 hover:opacity-80 no-underline" style={{ color: 'var(--text-secondary)' }}>
-              <span>📋</span><span>研报中心</span>
-            </NavLink>
-            <NavLink to="/stock-analysis" className="flex items-center gap-1 hover:opacity-80 no-underline" style={{ color: 'var(--text-secondary)' }}>
-              <span>📊</span><span>个股分析</span>
-            </NavLink>
-            </div>
+          {/* 共享数据只保留状态提示，避免与核心导航重复 */}
           <div className="flex items-center gap-1 ml-2">
             <NavLink to="/research-center" className="relative flex items-center gap-1 px-1.5 py-1 rounded-md text-xs hover:opacity-80 no-underline"
               style={{ color: reportNotifCount > 0 ? '#ef4444' : 'var(--text-secondary)' }}>
