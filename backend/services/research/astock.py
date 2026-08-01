@@ -16,12 +16,16 @@ import math
 import os
 import random
 import re
+import subprocess
+import sys
 import time
 import urllib.request
 from datetime import datetime, timedelta
 from pathlib import Path
 
 UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+
+logger = logging.getLogger(__name__)
 
 
 def get_prefix(code: str) -> str:
@@ -43,9 +47,17 @@ class DependencyMissing(RuntimeError):
 
 def _fetch_gtimg(prefixed_codes: list[str]) -> str:
     url = "https://qt.gtimg.cn/q=" + ",".join(prefixed_codes)
-    req = urllib.request.Request(url, headers={"User-Agent": UA})
-    with urllib.request.urlopen(req, timeout=10) as resp:
-        return resp.read().decode("gbk")
+    last_exc = None
+    for attempt in range(3):           # 腾讯行情偶发连接重置，加重试兜底
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": UA})
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                return resp.read().decode("gbk")
+        except Exception as e:
+            last_exc = e
+            if attempt < 2:
+                time.sleep(0.4 * (attempt + 1) + random.uniform(0, 0.3))
+    raise last_exc or RuntimeError("_fetch_gtimg failed")
 
 
 def _parse_gtimg(data: str) -> dict[str, dict]:
@@ -226,10 +238,11 @@ def disclosure(code: str) -> list[dict]:
 
 
 def announcements(code: str, limit: int = 15) -> list[dict]:
-    """个股近期公告（东财公开接口，仅 requests，稳定）。返回 日期/标题/类型/详情链接。"""
-    import requests
+    """个股近期公告（东财公开接口）。返回 日期/标题/类型/详情链接。
 
-    r = requests.get(
+    走 em_get 统一入口，自动获得限流/重试/缓存兜底，避免公告接口间歇空白。
+    """
+    r = em_get(
         "https://np-anotice-stock.eastmoney.com/api/security/ann",
         params={"sr": -1, "page_size": limit, "page_index": 1, "ann_type": "A",
                 "client_source": "web", "stock_list": code, "f_node": 0, "s_node": 0},
@@ -428,6 +441,69 @@ _DATACENTER_URL = "https://datacenter-web.eastmoney.com/api/data/v1/get"
 _EM_MIN_INTERVAL = 1.0          # 两次东财请求最小间隔（秒），内置防封节流
 _em_last_call = [0.0]
 _EM_SESSIONS: dict = {}         # {direct(bool): requests.Session}
+_EM_CACHE: dict = {}            # {(url, frozenset(params)): (timestamp, payload)} 最近成功响应兜底
+_EM_CACHE_TTL = 300             # 缓存兜底有效期（秒）
+
+# 代理探测：后端由 launchd 启动，环境里没有 HTTP_PROXY，且 Clash 通常未注册进 macOS
+# 系统代理（scutil 读不到），导致「代理兜底」长期空转。这里显式探测 Clash 常用端口，
+# 让 em_get 的 proxy 路真正能走代理（直连被封时兜得住）。
+_EM_PROXY_URL: str | None = None
+_EM_PROXY_PROBED = False
+_KNOWN_PROXY_PORTS = ("7897", "7890", "7891", "7898")
+
+
+def _em_detect_proxy() -> str | None:
+    """代理地址：优先环境变量，其次 macOS 系统代理(scutil)，最后探测本机 Clash 常用端口。"""
+    for key in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"):
+        v = os.environ.get(key)
+        if v:
+            return v
+    if sys.platform == "darwin":
+        try:
+            out = subprocess.run(["/usr/sbin/scutil", "--proxy"],
+                                 capture_output=True, text=True, timeout=5).stdout
+            he = hp = ho = hs = hsp = None
+            for line in out.splitlines():
+                s = line.strip()
+                if s.startswith("HTTPEnable") and ": 1" in s:
+                    he = True
+                elif s.startswith("HTTPProxy :"):
+                    hp = s.split(":", 1)[1].strip()
+                elif s.startswith("HTTPPort :"):
+                    ho = s.split(":", 1)[1].strip()
+                elif s.startswith("HTTPSEnable") and ": 1" in s:
+                    hs = True
+                elif s.startswith("HTTPSProxy :"):
+                    hsp = s.split(":", 1)[1].strip()
+                elif s.startswith("HTTPSPort :"):
+                    hsp_port = s.split(":", 1)[1].strip()
+            if hs and hsp and hsp_port:
+                return f"http://{hsp}:{hsp_port}"
+            if he and hp and ho:
+                return f"http://{hp}:{ho}"
+        except Exception:
+            pass
+    # 探测本机 Clash / V2Ray 常用端口（仅探测 TCP 可达，不发送业务请求）
+    import socket
+    for port in _KNOWN_PROXY_PORTS:
+        try:
+            with socket.create_connection(("127.0.0.1", int(port)), timeout=0.4):
+                return f"http://127.0.0.1:{port}"
+        except OSError:
+            continue
+    return None
+
+
+def _em_proxies() -> dict | None:
+    global _EM_PROXY_URL, _EM_PROXY_PROBED
+    if not _EM_PROXY_PROBED:
+        _EM_PROXY_URL = _em_detect_proxy()
+        _EM_PROXY_PROBED = True
+        if _EM_PROXY_URL:
+            logger.info("[astock] 使用代理出网: %s", _EM_PROXY_URL)
+    if not _EM_PROXY_URL:
+        return None
+    return {"http": _EM_PROXY_URL, "https": _EM_PROXY_URL}
 
 # 数据层连接模式：国内财经站（东财/腾讯/新浪）本应「直连」——很多用户开着 Clash/V2Ray
 # 科学上网，系统代理会把东财这类国内站路由挂掉（典型：push2.eastmoney.com 的 CONNECT 被掐）。
@@ -449,13 +525,17 @@ def _em_session(direct: bool):
     s = requests.Session()
     s.headers.update({"User-Agent": UA})
     s.trust_env = not direct     # 直连会话不读环境里的代理配置
+    if not direct:
+        # proxy 路：显式挂探测到的代理（Clash 等），不依赖环境变量
+        s.proxies = _em_proxies() or {}
     try:
         from requests.adapters import HTTPAdapter
         from urllib3.util.retry import Retry
 
-        retry = Retry(total=0) if direct else Retry(
-            total=3, connect=3, backoff_factor=0.6,
-            status_forcelist=[429, 500, 502, 503, 504], allowed_methods=["GET"])
+        # 直连也加瞬态错误重试：eastmoney 常主动掐 keep-alive（RemoteDisconnected/
+        # ConnectionReset），属网络抖动而非限流，重试即可恢复。探测失败由 em_get 层跨路切换。
+        retry = Retry(total=2, connect=2, backoff_factor=0.5,
+                      status_forcelist=[429, 500, 502, 503, 504], allowed_methods=["GET"])
         adapter = HTTPAdapter(max_retries=retry)
         s.mount("https://", adapter)
         s.mount("http://", adapter)
@@ -465,28 +545,90 @@ def _em_session(direct: bool):
     return s
 
 
-def em_get(url: str, params: dict | None = None, headers: dict | None = None, timeout: int = 15):
-    """东财统一请求入口：串行限流 + **直连优先、失败降级系统代理**（避免科学上网代理挂掉国内站）。
+def _em_cache_key(url: str, params) -> tuple:
+    p = tuple(sorted((params or {}).items())) if isinstance(params, dict) else params
+    return (url, p)
 
-    第一次请求探测：先直连（短超时、不重试），成功即固定走直连；失败则降级走系统代理并固定。
-    探测结果整个进程复用，避免每次重试。`VR_DATA_PROXY=1` 可跳过探测、强制走代理。
+
+def _is_empty_payload(d) -> bool:
+    """东财限流特征：HTTP 200 但业务 data 为 null/空。
+
+    命中即视为「请求失败」，触发退避重试与跨路切换，避免把空白返回给 UI。
+    """
+    if not isinstance(d, dict):
+        return False
+    if "result" in d:                      # 数据中心接口（龙虎榜/融资融券/解禁/分红…）
+        return not (d.get("result") and d["result"].get("data"))
+    data = d.get("data")
+    if data is None:
+        return True
+    if isinstance(data, dict):
+        for k in ("diff", "klines"):       # clist / fflow(资金流) 接口
+            if k in data:
+                return not data.get(k)
+        return not data                    # 空 dict
+    return False
+
+
+class _CachedResponse:
+    """把缓存 payload 包装成带 .json() 的响应对象，供 em_get 调用方无感使用。"""
+
+    def __init__(self, payload):
+        self._payload = payload
+
+    def json(self):
+        return self._payload
+
+
+def em_get(url: str, params: dict | None = None, headers: dict | None = None, timeout: int = 15, use_cache: bool = True):
+    """东财统一请求入口：限流 + 直连优先 + **空 payload 识别 + 跨路重试 + 缓存兜底**。
+
+    稳定性加固（修复间歇返回空）：
+      1. 直连/代理任一会话失败或返回「200 但空 payload」→ 退避后重试并在两路间切换；
+      2. 两路都拿不到有效数据 → 回退最近 _EM_CACHE_TTL 秒内的成功响应，避免 UI 空白；
+      3. 仅当缓存也过期才抛出，由调用方 except 兜底返回 []。
     """
     wait = _EM_MIN_INTERVAL - (time.time() - _em_last_call[0])
     if wait > 0:
         time.sleep(wait + random.uniform(0.1, 0.5))
     try:
-        mode = _em_mode[0]
-        if mode != "auto":
-            return _em_session(mode == "direct").get(url, params=params, headers=headers, timeout=timeout)
-        # auto：先直连，成功固定 direct；直连失败再走系统代理、成功固定 proxy。
-        try:
-            r = _em_session(True).get(url, params=params, headers=headers, timeout=min(timeout, 8))
-            _em_mode[0] = "direct"
-            return r
-        except Exception:
-            r = _em_session(False).get(url, params=params, headers=headers, timeout=timeout)
-            _em_mode[0] = "proxy"
-            return r
+        # 优先使用上次成功路（直连/代理），失败再切另一路
+        order = ["proxy", "direct"] if _em_mode[0] == "proxy" else ["direct", "proxy"]
+        last_exc = None
+        tried_modes = set()
+        for mode in order:
+            if mode in tried_modes:
+                continue
+            tried_modes.add(mode)
+            for attempt in range(2):           # 每路最多 2 次（含退避）
+                try:
+                    r = _em_session(mode == "direct").get(
+                        url, params=params, headers=headers, timeout=timeout)
+                    if r.status_code == 200:
+                        try:
+                            payload = r.json()
+                        except Exception:
+                            payload = None
+                        if payload is not None and not _is_empty_payload(payload):
+                            _em_mode[0] = mode          # 固定成功路
+                            if use_cache:
+                                _EM_CACHE[_em_cache_key(url, params)] = (time.time(), payload)
+                            return r
+                    last_exc = RuntimeError(
+                        f"em_get {url} status={r.status_code} "
+                        f"empty={payload is None or _is_empty_payload(payload)}")
+                except Exception as e:
+                    last_exc = e
+                if attempt < 1:
+                    time.sleep(0.6 + random.uniform(0, 0.4))   # 退避，缓解限流
+        # 两路全失败 → 最近成功缓存兜底（TTL 内）
+        if use_cache:
+            hit = _EM_CACHE.get(_em_cache_key(url, params))
+            if hit and (time.time() - hit[0]) < _EM_CACHE_TTL:
+                logger.warning("[astock] em_get 双路失败，回退 %ds 前缓存: %s",
+                               int(time.time() - hit[0]), url)
+                return _CachedResponse(hit[1])
+        raise last_exc or RuntimeError(f"em_get failed: {url}")
     finally:
         _em_last_call[0] = time.time()
 
