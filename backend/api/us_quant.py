@@ -28,7 +28,8 @@ from sqlalchemy import func
 from us_quant.repository import ensure_schema
 from us_quant.indicators import ema, sma, rsi as calc_rsi, macd as calc_macd, kdj as calc_kdj, ma_bias
 from us_quant.repository import USStrategyScore, USSignal, USBacktestResult, USBacktestTrade
-from us_quant.backtest import run_backtest_batch, BACKTEST_POOL
+from us_quant.backtest import run_backtest_batch, resolve_backtest_pool
+from us_quant.rebalance import run_rebalance, get_universe_definitions
 from us_quant.universe import (
     list_universes, get_universe, get_universe_members,
     uniques_for_scanner, pool_stats, get_scanner_limit,
@@ -720,8 +721,9 @@ async def api_backtest(
     strategy: str = "ALL",
     start_date: str = "",
     end_date: str = "",
+    pool_source: str = "",
 ):
-    """触发回测"""
+    """触发回测（V2.2: 支持 pool_source 参数，从 universe_memberships 读取池）"""
     try:
         sym_list = [s.strip().upper() for s in symbols.split(",") if s.strip()] if symbols else None
         results = run_backtest_batch(
@@ -730,6 +732,7 @@ async def api_backtest(
             start_date=start_date or None,
             end_date=end_date or None,
             save_to_db=True,
+            pool_source=pool_source or None,
         )
         return jsonable_encoder({
             "status": "ok",
@@ -858,3 +861,16 @@ async def get_universe_members_api(code: str):
         "count": len(members),
         "target": defn.get("target_count"),
     })
+
+
+# ─── API: 股票池再平衡（V2.2）─────────────────────────────────────────────────
+
+@router.get("/rebalance")
+async def api_rebalance(dry_run: bool = True):
+    """触发股票池再平衡（V2.2: 按配置自动填充 300/500/1500 目标）
+
+    Args:
+        dry_run: True=预览, False=执行写入
+    """
+    report = run_rebalance(dry_run=dry_run)
+    return jsonable_encoder(report)

@@ -179,6 +179,8 @@ class USBacktestResult(Base):
     run_id = Column(String(32), nullable=False, index=True)
     symbol = Column(String(32), nullable=False)
     strategy = Column(String(32), nullable=False)
+    pool_source = Column(String(64), nullable=True, default='')     # 回测使用的股票池来源
+    pool_snapshot = Column(JSON, nullable=True)                      # 回测时点的池快照 (symbol列表)
     total_trades = Column(Integer, default=0)
     winning_trades = Column(Integer, default=0)
     losing_trades = Column(Integer, default=0)

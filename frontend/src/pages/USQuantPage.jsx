@@ -402,13 +402,35 @@ function DashboardTab({ overview, loading }) {
 }
 
 // ─── Scanner ──────────────────────────────────────────────────────────────────
+// 参考 A 股 StrategyCenterPage 风格：分组 Tab 栏 + 卡片布局 + 状态指示
 
-const POOL_TABS = [
-  { key: 'US_CORE_A', label: '⚡ 核心A池', desc: '179种子 · 300目标' },
-  { key: 'US_CORE_B', label: '📋 核心B池', desc: '60扩展 · 500目标' },
-  { key: 'ALL', label: '🔀 全池', desc: 'A+B 去重扫描' },
-  { key: 'US_RESEARCH', label: '🔬 研究池', desc: '239只 · 动态扩展' },
-  { key: 'CUSTOM', label: '✏️ 自选', desc: '手动输入代码' },
+const SCANNER_GROUPS = [
+  {
+    key: 'core',
+    label: '核心池',
+    color: '#ef4444',
+    tabs: [
+      { key: 'US_CORE_A', label: '核心A池', icon: '⚡', desc: '179种子 · 300目标' },
+      { key: 'US_CORE_B', label: '核心B池', icon: '📋', desc: '60扩展 · 500目标' },
+    ],
+  },
+  {
+    key: 'full',
+    label: '全量池',
+    color: '#3b82f6',
+    tabs: [
+      { key: 'ALL', label: '全池', icon: '🔀', desc: 'A+B 去重扫描' },
+      { key: 'US_RESEARCH', label: '研究池', icon: '🔬', desc: '239只 · 动态扩展' },
+    ],
+  },
+  {
+    key: 'custom',
+    label: '自定义',
+    color: '#a855f7',
+    tabs: [
+      { key: 'CUSTOM', label: '自选', icon: '✏️', desc: '手动输入代码' },
+    ],
+  },
 ];
 
 function ScannerTab() {
@@ -420,8 +442,13 @@ function ScannerTab() {
   const cands = data?.candidates || [];
   const topScore = cands.length ? Math.max(...cands.map(c => c.breakout_score || c.pullback_score || 0)) : 0;
 
+  // 当前分组高亮色
+  const activeGroup = SCANNER_GROUPS.find(g => g.tabs.some(t => t.key === pool));
+  const groupColor = activeGroup?.color || C.blue;
+
   return (
     <div style={{ padding: 20, maxWidth: 1320, margin: '0 auto', color: C.primary }}>
+      {/* 头部 */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12, marginBottom: 16 }}>
         <div>
           <h1 style={{ margin: 0, fontSize: 22, fontWeight: 800, display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -438,28 +465,72 @@ function ScannerTab() {
         </button>
       </div>
 
-      {/* KPI */}
+      {/* KPI 卡片行 */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(185px, 1fr))', gap: 12, marginBottom: 16 }}>
         <Kpi label="候选数量" value={cands.length} sub={data?.pool ? `池 ${data.pool}` : '—'} color={C.blue} loading={loading} />
         <Kpi label="最高评分" value={topScore || '—'} sub={cands[0]?.symbol ? `领跑 ${cands[0].symbol}` : '—'} color={scoreColor(topScore)} loading={loading} />
         <Kpi label="扫描进度" value={data ? `${data.scanned || 0}/${data.pool_total || 0}` : '—'} sub="单次最多 30 只" color={C.secondary} loading={loading} />
-        <Kpi label="当前池" value={POOL_TABS.find(t => t.key === pool)?.label.replace(/^[^\u4e00-\u9fa5]+\s*/, '') || pool} sub="点击上方按钮切换" color={C.blue} />
+        <Kpi label="当前池" value={SCANNER_GROUPS.flatMap(g => g.tabs).find(t => t.key === pool)?.label.replace(/^[^\u4e00-\u9fa5]+\s*/, '') || pool} sub="点击下方按钮切换" color={C.blue} />
       </div>
 
-      {/* 池选择器 */}
-      <div style={{ display: 'flex', gap: 8, marginBottom: 14, flexWrap: 'wrap' }}>
-        {POOL_TABS.map(tab => (
-          <button key={tab.key} onClick={() => setPool(tab.key)} title={tab.desc}
-            style={{
-              padding: '7px 14px', borderRadius: 10, fontSize: 12.5, fontWeight: 600, cursor: 'pointer',
-              border: pool === tab.key ? `1px solid ${C.blue}` : `1px solid ${C.border}`,
-              background: pool === tab.key ? C.blue : C.card,
-              color: pool === tab.key ? '#fff' : C.secondary,
-            }}>
-            {tab.label}
-          </button>
-        ))}
+      {/* 分组 Tab 栏（参考 A 股 StrategyCenterPage 风格：单行Tab + 分组色 + 下划线指示器） */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 0, borderBottom: `1px solid ${C.border}`, marginBottom: 14, flexWrap: 'wrap' }}>
+        {SCANNER_GROUPS.map((group, gi) => {
+          const showDivider = gi > 0;
+          return (
+            <div key={group.key} style={{ display: 'flex', alignItems: 'center' }}>
+              {showDivider && <span style={{ margin: '0 4px', fontSize: 13, color: C.border }}>|</span>}
+              {group.tabs.map((tab) => {
+                const isActive = pool === tab.key;
+                return (
+                  <button key={tab.key} onClick={() => setPool(tab.key)} title={tab.desc}
+                    style={{
+                      position: 'relative',
+                      padding: '7px 12px', fontSize: 12, fontWeight: isActive ? 700 : 500, cursor: 'pointer',
+                      background: 'transparent',
+                      color: isActive ? group.color : C.secondary,
+                      border: 'none',
+                      transition: 'all 0.15s ease',
+                    }}>
+                    <span style={{ fontSize: 13, marginRight: 4 }}>{tab.icon}</span>
+                    {tab.label}
+                    {isActive && (
+                      <span style={{
+                        position: 'absolute', left: 6, right: 6, bottom: 0, height: 2.5,
+                        background: group.color, borderRadius: '2px 2px 0 0',
+                      }} />
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          );
+        })}
       </div>
+
+      {/* 扫描状态摘要（参考 A 股 StrategyHealthBar 风格） */}
+      {data && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 10, padding: '6px 12px',
+          marginBottom: 14, borderRadius: 8, flexWrap: 'wrap',
+          background: C.card, border: `1px solid ${C.border}`,
+        }}>
+          <span style={{ fontSize: 11, fontWeight: 600, color: C.secondary }}>
+            📊 扫描状态
+          </span>
+          <span style={{ fontSize: 11, color: loading ? '#f59e0b' : '#22c55e' }}>
+            {loading ? '⏳ 扫描中…' : '✓ 扫描完成'}
+          </span>
+          <span style={{ fontSize: 11, color: C.muted }}>
+            候选 {cands.length} 只 · 扫描 {data.scanned || 0}/{data.pool_total || 0}
+          </span>
+          {data.updated_at && (
+            <span style={{ fontSize: 10, color: C.muted, marginLeft: 'auto' }}>
+              更新 {new Date(data.updated_at).toLocaleTimeString('zh-CN')}
+            </span>
+          )}
+        </div>
+      )}
 
       {/* 自选输入 */}
       {pool === 'CUSTOM' && (
@@ -480,17 +551,17 @@ function ScannerTab() {
           {Object.entries(poolStats.stats || {}).map(([code, s]) => (
             <span key={code} style={{
               padding: '3px 10px', borderRadius: 999, fontSize: 11,
-              background: pool === code ? C.blue + '1c' : C.surface,
-              border: `1px solid ${pool === code ? C.blue : C.borderLight}`,
+              background: pool === code ? groupColor + '1c' : C.surface,
+              border: `1px solid ${pool === code ? groupColor : C.borderLight}`,
               fontWeight: pool === code ? 600 : 400, color: C.secondary,
             }}>
-              {s.name}: <b style={{ color: pool === code ? C.blue : C.primary }}>{s.current}</b>{s.target ? ` / ${s.target}` : ''}
+              {s.name}: <b style={{ color: pool === code ? groupColor : C.primary }}>{s.current}</b>{s.target ? ` / ${s.target}` : ''}
             </span>
           ))}
         </div>
       )}
 
-      {/* 结果表 */}
+      {/* 扫描结果卡片（参考 A 股 Panel 风格） */}
       <Panel title="扫描结果" icon="📋" loading={loading} right={
         <span style={{ fontSize: 11, color: C.muted }}>共 {cands.length} 只候选 · 扫描 {data?.scanned || 0}/{data?.pool_total || 0}</span>
       }>

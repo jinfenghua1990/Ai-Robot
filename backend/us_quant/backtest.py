@@ -1,5 +1,10 @@
 """US Quant System — 回测引擎
 
+V2.2 架构冻结:
+- 股票池从 universe_memberships 读取（不再硬编码）
+- 回测时自动保存池快照（pool_snapshot）
+- 策略通过 strategy_registry 注册表加载（插件化）
+
 支持 3 套策略（Breakout / Pullback / Earnings Gap）的历史回测，
 输出胜率、盈亏比、最大回撤、夏普比率等指标。
 """
@@ -21,21 +26,14 @@ from us_quant.strategies import score_breakout, score_pullback, score_earnings_g
 from us_quant.states import determine_stock_state
 from us_quant.filters import check_hard_filters
 from us_quant.repository import USBacktestResult, USBacktestTrade
+from us_quant.universe import get_universe_members, list_universes
+from us_quant.strategy_registry import list_strategies
 
 logger = logging.getLogger(__name__)
 
-# ─── 预设回测股票池 ──────────────────────────────────────────────────────────
+# ─── 默认回测股票池来源（从 universe_memberships 读取）───────────────────────
 
-BACKTEST_POOL = [
-    "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "TSLA", "META", "TSM",
-    "AVGO", "AMD", "JPM", "V", "MA", "UNH", "HD", "DIS", "NFLX",
-    "ADBE", "CRM", "INTC", "CSCO", "ORCL", "IBM", "QCOM", "TXN",
-    "BA", "CAT", "GE", "MMM", "HON", "UPS", "RTX", "LMT",
-    "XOM", "CVX", "COP", "OXY", "SLB", "DUK", "NEE", "SO",
-    "JNJ", "PFE", "MRK", "ABBV", "LLY", "BMY", "TMO", "DHR",
-    "PG", "KO", "PEP", "WMT", "COST", "MCD", "SBUX", "NKE",
-    "BAC", "WFC", "C", "GS", "MS", "BLK", "SCHW", "AXP",
-]
+DEFAULT_BACKTEST_POOL_SOURCE = "US_CORE_A"  # 默认使用核心A池
 
 # ─── 回测结果数据结构 ────────────────────────────────────────────────────────
 
@@ -396,30 +394,72 @@ def run_backtest(
     return metrics
 
 
+def resolve_backtest_pool(
+    pool_source: Optional[str] = None,
+    symbols: Optional[list[str]] = None,
+) -> tuple[list[str], str, Optional[list[str]]]:
+    """解析回测股票池
+
+    优先级:
+    1. 显式传入 symbols
+    2. 指定 pool_source（从 universe_memberships 读取）
+    3. 默认使用 US_CORE_A
+
+    Returns:
+        (symbols列表, pool_source名称, pool_snapshot)
+    """
+    if symbols:
+        return symbols, pool_source or "custom", symbols
+
+    source = (pool_source or DEFAULT_BACKTEST_POOL_SOURCE).upper()
+
+    # 从 universe_memberships 读取
+    members = get_universe_members(source)
+    if members:
+        logger.info(f"[backtest] 从 universe_memberships 读取池 {source}: {len(members)} 只")
+        return members, source, list(members)
+
+    # 兜底：使用 US_CORE_A
+    fallback = get_universe_members("US_CORE_A")
+    if fallback:
+        logger.warning(f"[backtest] 池 {source} 为空，回退到 US_CORE_A: {len(fallback)} 只")
+        return fallback, "US_CORE_A", list(fallback)
+
+    # 最后兜底
+    logger.warning("[backtest] 所有池为空，返回空列表")
+    return [], source, []
+
+
 def run_backtest_batch(
     symbols: Optional[list[str]] = None,
     strategy: str = "ALL",
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     save_to_db: bool = True,
+    pool_source: Optional[str] = None,
 ) -> list[BacktestMetrics]:
     """批量回测多个股票
 
+    V2.2: 股票池从 universe_memberships 读取，不再硬编码。
+
     Args:
-        symbols: 股票代码列表，None 则使用预设池
+        symbols: 股票代码列表，None 则从 universe_memberships 读取
         strategy: 策略名称
         start_date: 开始日期
         end_date: 结束日期
         save_to_db: 是否保存到数据库
+        pool_source: 股票池代码（如 US_CORE_A），默认使用 US_CORE_A
 
     Returns:
         回测结果列表
     """
-    if symbols is None:
-        symbols = BACKTEST_POOL
+    resolved_symbols, pool_name, pool_snapshot = resolve_backtest_pool(pool_source, symbols)
+    if not resolved_symbols:
+        logger.warning("[backtest] 无股票可回测")
+        return []
 
     results = []
-    for sym in symbols:
+    for sym in resolved_symbols:
         try:
             metrics = run_backtest(sym, strategy, start_date, end_date)
             results.append(metrics)
@@ -429,13 +469,18 @@ def run_backtest_batch(
             logger.error(f"[backtest] {sym} error: {e}")
 
     if save_to_db:
-        _save_backtest_results(results, strategy)
+        _save_backtest_results(results, strategy, pool_source=pool_name, pool_snapshot=pool_snapshot)
 
     return results
 
 
-def _save_backtest_results(results: list[BacktestMetrics], strategy: str):
-    """保存回测结果到数据库"""
+def _save_backtest_results(
+    results: list[BacktestMetrics],
+    strategy: str,
+    pool_source: str = "",
+    pool_snapshot: Optional[list[str]] = None,
+):
+    """保存回测结果到数据库（V2.2: 包含池快照）"""
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
     try:
         with get_db_session() as db:
@@ -446,6 +491,8 @@ def _save_backtest_results(results: list[BacktestMetrics], strategy: str):
                     run_id=run_id,
                     symbol=m.symbol,
                     strategy=strategy,
+                    pool_source=pool_source or None,
+                    pool_snapshot=pool_snapshot,
                     total_trades=m.total_trades,
                     winning_trades=m.winning_trades,
                     losing_trades=m.losing_trades,

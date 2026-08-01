@@ -27,8 +27,19 @@ def _query_status():
     with get_db_session() as db:
         latest_sector_time = db.query(func.max(RealtimeSectorFlow.snapshot_time)).scalar()
         latest_stock_time = db.query(func.max(RealtimeStockFlow.snapshot_time)).scalar()
-        sector_count = db.query(RealtimeSectorFlow).count()
-        stock_count = db.query(RealtimeStockFlow).count()
+        # 统计「最新快照」的覆盖量（走 snapshot_time 索引，毫秒级），
+        # 而非历史累计全表 count —— realtime_stock_flow 已达 679 万行，
+        # 全表 count 在缓存失效时会偶发 12s 阻塞实时状态轮询。
+        sector_count = (
+            db.query(RealtimeSectorFlow)
+            .filter_by(snapshot_time=latest_sector_time).count()
+            if latest_sector_time else 0
+        )
+        stock_count = (
+            db.query(RealtimeStockFlow)
+            .filter_by(snapshot_time=latest_stock_time).count()
+            if latest_stock_time else 0
+        )
 
         # 今天的快照次数
         today = date.today()
