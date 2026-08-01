@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from db.session import get_db_session
 from db.models import WatchlistSignalDaily, StockFlow, SectorFlow, Watchlist
+from quant_vnext.production import is_st_name
 import logging
 logger = logging.getLogger(__name__)
 
@@ -61,9 +62,9 @@ def _get_candidate_stocks(db, trade_date, limit=300):
         StockFlow.main_force_inflow, StockFlow.price_chg,
     ).filter(
         StockFlow.trade_date == trade_date, StockFlow.main_force_inflow > 0,
-    ).order_by(StockFlow.main_force_inflow.desc()).limit(limit).all()
+    ).order_by(StockFlow.main_force_inflow.desc()).limit(limit * 2).all()
 
-    for r in rows:
+    for r in [row for row in rows if not is_st_name(row.name)][:limit]:
         code = r.ts_code.split('.')[0] if '.' in r.ts_code else r.ts_code
         candidates[code] = {
             'code': code, 'ts_code': r.ts_code, 'name': r.name or '',
@@ -81,6 +82,8 @@ def _get_candidate_stocks(db, trade_date, limit=300):
         sf = db.query(StockFlow).filter(
             StockFlow.trade_date == trade_date, StockFlow.ts_code == ts_code
         ).first()
+        if is_st_name((sf.name if sf else None) or r.stock_name):
+            continue
         candidates[code] = {
             'code': code, 'ts_code': ts_code, 'name': r.stock_name or code,
             'sector': sf.sector if sf else '', 'change_rate': float(sf.price_chg or 0) if sf else 0,

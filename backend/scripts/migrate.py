@@ -93,6 +93,7 @@ def _ensure_bs_strategy_columns():
         for col_def in [
             ('buy_quantity', 'INTEGER DEFAULT 100'),
             ('sell_quantity', 'INTEGER DEFAULT 100'),
+            ('account_source', "VARCHAR(20) DEFAULT 'displayed'"),
         ]:
             conn.execute(text(
                 f"ALTER TABLE auto_trade_config ADD COLUMN IF NOT EXISTS {col_def[0]} {col_def[1]}"
@@ -104,6 +105,23 @@ def _ensure_bs_strategy_columns():
             _db.commit()
     # 再确保新列存在（兼容旧表）
     with engine.connect() as conn:
+        # V2 自动交易审计字段：把“为什么选、依据哪天、是否真正成交”分开保存。
+        # 旧表可能已经有历史日志，因此全部使用 IF NOT EXISTS 做增量迁移。
+        for col_def in [
+            ('signal_date', 'DATE'),
+            ('account_source', 'VARCHAR(20)'),
+            ('signal_state', 'VARCHAR(20)'),
+            ('factor_score', 'NUMERIC(6,2)'),
+            ('resonance_count', 'INTEGER DEFAULT 0'),
+            ('order_id', 'VARCHAR(100)'),
+            ('fill_status', 'VARCHAR(20)'),
+            ('filled_quantity', 'INTEGER DEFAULT 0'),
+            ('filled_price', 'NUMERIC(10,2)'),
+            ('updated_at', 'TIMESTAMP DEFAULT NOW()'),
+        ]:
+            conn.execute(text(
+                f"ALTER TABLE auto_trade_log ADD COLUMN IF NOT EXISTS {col_def[0]} {col_def[1]}"
+            ))
         # bs_strategies 新列
         for col in ['volume_filter', 'ma20_filter', 'ma60_trend', 'rsi_filter', 'strong_volume']:
             conn.execute(text(
@@ -123,6 +141,12 @@ def _ensure_bs_strategy_columns():
                 f"ALTER TABLE bs_backtest_results ADD COLUMN IF NOT EXISTS {col_def[0]} {col_def[1]}"
             ))
         conn.commit()
+
+    # V2 因子、共振、结果验证表不依赖 ORM 模型，使用同一连接初始化。
+    # 这样新环境和旧环境都能在服务启动时自动具备完整研究链路。
+    from quant_vnext.repository import ensure_schema as ensure_quant_vnext_schema
+    with engine.begin() as conn:
+        ensure_quant_vnext_schema(conn)
 
 
 def _ensure_analysis_tables():

@@ -5,7 +5,7 @@ async function v2(path, opts = {}) {
   const response = await fetch(url, opts);
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(data.detail || data.error || `请求失败 ${response.status}`);
+    throw new Error(data.detail || data.message || data.error || `请求失败 ${response.status}`);
   }
   return data;
 }

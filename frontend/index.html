@@ -4,6 +4,22 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>AIROBOT 市场指挥舱</title>
+    <script>
+      // 看门狗：若入口 bundle（或其依赖 chunk）在重建后被删除，整页可能空白。
+      // 6 秒后若应用仍未挂载，则硬刷新一次拉取最新 index.html。
+      window.addEventListener('DOMContentLoaded', function () {
+        setTimeout(function () {
+          try {
+            var root = document.getElementById('root');
+            if (root && root.childElementCount === 0 && !window.__AIROBOT_BOOTED) {
+              var n = 0;
+              try { n = parseInt(sessionStorage.getItem('airobot_recover') || '0', 10); } catch (e) {}
+              if (n < 3) window.location.replace(window.location.href);
+            }
+          } catch (e) {}
+        }, 6000);
+      });
+    </script>
   </head>
   <body>
     <div id="root"></div>

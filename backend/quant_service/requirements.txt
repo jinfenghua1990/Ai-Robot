@@ -1,0 +1,4 @@
+# 轻量运行依赖：让 Quant Service 在无 Qlib 时也能启动（返回 pending），便于先联调架构。
+fastapi
+uvicorn[standard]
+pydantic

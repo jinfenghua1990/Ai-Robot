@@ -75,6 +75,37 @@ export const formatWan = (v) => {
 };
 
 /**
+ * 统一百分比格式化：+20.00% / -3.90%（2位小数，带正负号）
+ * null/NaN → '—'
+ */
+export const fmtPct2 = (v) => {
+  if (v == null || isNaN(v)) return '—';
+  return `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`;
+};
+
+/**
+ * 统一金额格式化（输入为元）：3.34亿 / 30万 / —
+ * null/NaN → '—'
+ */
+export const fmtAmount = (v) => {
+  if (v == null || isNaN(v)) return '—';
+  const a = Math.abs(v);
+  if (a >= 1e8) return (v / 1e8).toFixed(2) + '亿';
+  if (a >= 1e4) return (v / 1e4).toFixed(0) + '万';
+  return Math.round(v) + '元';
+};
+
+/**
+ * 统一缺失值：始终返回 '—'
+ */
+export const fmtMissing = () => '—';
+
+/**
+ * 判断值是否为有效数据（非 null/undefined/NaN/空字符串）
+ */
+export const hasValue = (v) => v != null && v !== '' && !isNaN(v);
+
+/**
  * 龙头数据 → SignalCard 兼容格式
  * 用于龙头趋势阶段/强度排行/周期V3页面，直接复用模拟盘的 SignalCard 组件
  */

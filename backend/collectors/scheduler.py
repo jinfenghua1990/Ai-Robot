@@ -392,6 +392,16 @@ def start_scheduler():
                       seconds=5, id='realtime_aggregator_5s',
                       misfire_grace_time=30, max_instances=1)
 
+    # === 美股日K线数据采集（北京时间 4:00-5:00，美股收盘后数据就绪）===
+    scheduler.add_job(jobs.scheduled_us_quant_collect, 'cron',
+                      hour='4', minute='0', id='us_quant_collect')
+
+    # === 美股量化策略扫描（北京时间 5:00-8:00，美股收盘后每30分钟）===
+    scheduler.add_job(jobs.scheduled_us_quant_scan, 'cron',
+                      hour='5-7', minute='*/30', id='us_quant_scan_5_7')
+    scheduler.add_job(jobs.scheduled_us_quant_scan, 'cron',
+                      hour='8', minute='0', id='us_quant_scan_8')
+
     scheduler.start()
     logger.info('[scheduler] Started (realtime snapshot every 1min, orderbook every 3s during trading hours)')
 

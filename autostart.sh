@@ -63,4 +63,28 @@ cd /Users/gino/Projects/AIROBOT/backend
   --port 9000 \
   --limit-concurrency 200 \
   --timeout-keep-alive 15 \
-  --no-access-log 2>&1 | /usr/sbin/rotatelogs -l -f -n 7 /tmp/airobot_backend.log 10M
+  --no-access-log 2>&1 | /usr/sbin/rotatelogs -l -f -n 7 /tmp/airobot_backend.log 10M &
+UVPID=$!
+
+# 等待端口就绪（最多 30 秒）
+for i in $(seq 1 30); do
+  /usr/sbin/lsof -nP -iTCP:9000 -sTCP:LISTEN -t >/dev/null 2>&1 && break
+  sleep 1
+done
+
+# 预热：单独拉 /scanner（不带 regime/sectors 的前置请求，避免撞 Nasdaq 限流），
+# 把 watchlist 真实行情填进 120s 缓存；用户访问 /overview 时 scanner 直接命中缓存。
+echo "[$(ts)] 预热 US-Quant 行情缓存（scanner）..." >> "$LOG"
+for i in $(seq 1 8); do
+  /usr/bin/curl -s --max-time 60 "http://127.0.0.1:9000/api/us-quant/scanner?symbols=AAPL,MSFT,GOOGL,AMZN,NVDA,TSLA,META,TSM" -o /tmp/airobot_warmup.json
+  CNT=$(/usr/bin/python3 -c "import json;d=json.load(open('/tmp/airobot_warmup.json'));print(d.get('count',0))" 2>/dev/null || echo "0")
+  if [ "$CNT" = "8" ]; then
+    echo "[$(ts)] 预热完成（第 $i 轮，scanner=$CNT）" >> "$LOG"
+    break
+  fi
+  echo "[$(ts)] 预热第 $i 轮不足（scanner=${CNT:-0}），重试..." >> "$LOG"
+  sleep $((i * 3))
+done
+
+# 前台等待 uvicorn（其崩溃则由 launchd KeepAlive 重启整个 job）
+wait $UVPID

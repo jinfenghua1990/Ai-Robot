@@ -58,12 +58,26 @@ export default function KLineChart({ stockCode, stockName, code, height, onSumma
 
   if (!data) return null;
 
-  const { klines = [], indicators = {}, techSignals = [], tradeRecords = [], summary } = data;
-  if (!klines.length || !indicators.ma5) return (
+  const { klines = [], indicators: rawInd = {}, techSignals = [], tradeRecords = [], summary } = data;
+  if (!klines.length || !rawInd.ma5) return (
     <div className="flex items-center justify-center h-full text-sm" style={{ color: 'var(--text-muted)' }}>
       无K线数据
     </div>
   );
+  // 防御性兜底：后端在计算降级时可能仅返回部分指标数组（例如有 ma5 但缺 macd/dif 等），
+  // 未兜底会导致 indicators.macd.map(...) 抛 "Cannot read properties of undefined" 并触发 ErrorBoundary 白屏。
+  // 统一把缺失的指标数组强制为 []，图表区域为空但不崩溃。
+  const indicators = {
+    ma5: rawInd.ma5 || [],
+    ma20: rawInd.ma20 || [],
+    supertrend: rawInd.supertrend || [],
+    macd: rawInd.macd || [],
+    dif: rawInd.dif || [],
+    dea: rawInd.dea || [],
+    kdj_k: rawInd.kdj_k || [],
+    kdj_d: rawInd.kdj_d || [],
+    kdj_j: rawInd.kdj_j || [],
+  };
   // 实时最新价：仅更新最后一根日K的 close/high/low（盘中跳动），不影响历史K线；不传 livePrice 时原样
   const displayKlines = (livePrice != null && klines.length)
     ? klines.map((k, i) => i === klines.length - 1

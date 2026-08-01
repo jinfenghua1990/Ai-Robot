@@ -24,7 +24,12 @@ def lifecycle_state(dimensions: Mapping[str, DimensionScore]) -> str:
     return "吸筹"
 
 
-def trading_state(dimensions: Mapping[str, DimensionScore], resonance_eligible: bool) -> str:
+def trading_state(
+    dimensions: Mapping[str, DimensionScore],
+    resonance_eligible: bool,
+    market_state: str = "",
+    allow_new_positions: bool = True,
+) -> str:
     risk = dimensions.get("risk")
     position = dimensions.get("position")
     trend = dimensions.get("trend")
@@ -32,6 +37,8 @@ def trading_state(dimensions: Mapping[str, DimensionScore], resonance_eligible: 
         return "INVALID"
     if risk.score is not None and risk.score < 40:
         return "INVALID"
+    if not allow_new_positions or market_state == "WEAK":
+        return "NO_CHASE"
     if position.score is not None and position.score >= 85:
         return "NO_CHASE"
     if resonance_eligible and trend.score is not None and trend.score >= 70:

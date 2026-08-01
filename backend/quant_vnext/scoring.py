@@ -1,11 +1,22 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from statistics import mean, pstdev
-from typing import Dict, Iterable, Mapping
+from statistics import mean
+from typing import Iterable, Mapping
 
 from .contracts import DimensionScore, FactorValue
 from .registry import FactorRegistry
+
+
+GROUP_WEIGHTS = {
+    "market": 0.10,
+    "sector": 0.20,
+    "strength": 0.20,
+    "trend": 0.15,
+    "volume_price": 0.15,
+    "position": 0.15,
+    "risk_penalty": 0.05,
+}
 
 
 def _percentile(values: list[float], value: float) -> float:
@@ -17,8 +28,22 @@ def _percentile(values: list[float], value: float) -> float:
     return 100.0 * (below + equal / 2) / len(ordered)
 
 
+def _market_score(name: str, value: float) -> float:
+    """Map global context factors to 0-100 without turning equal values into 50."""
+    if name == "market_up_ratio":
+        return max(0.0, min(100.0, value * 100.0))
+    if name == "market_limit_pressure":
+        return max(0.0, min(100.0, (value + 1.0) * 50.0))
+    if name == "market_index_trend":
+        return max(0.0, min(100.0, 50.0 + value * 1000.0))
+    return max(0.0, min(100.0, value))
+
+
 class CrossSectionScorer:
+    """Normalize individual factors, then aggregate the seven factor groups."""
+
     DIMENSION_MAP = {
+        "market": "market",
         "momentum": "strength",
         "trend": "trend",
         "volume_price": "volume_price",
@@ -27,6 +52,8 @@ class CrossSectionScorer:
         "sector": "sector",
         "risk": "risk",
     }
+
+    DIMENSIONS = ("market", "sector", "strength", "trend", "volume_price", "position", "risk")
 
     def score(self, values: Iterable[FactorValue], registry: FactorRegistry) -> dict[str, dict[str, DimensionScore]]:
         rows = list(values)
@@ -37,7 +64,7 @@ class CrossSectionScorer:
         by_stock: dict[str, list[FactorValue]] = defaultdict(list)
         for row in rows:
             by_stock[row.ts_code].append(row)
-        result = {}
+        result: dict[str, dict[str, DimensionScore]] = {}
         for ts_code, stock_rows in by_stock.items():
             dimensions: dict[str, list[float]] = defaultdict(list)
             factor_names: dict[str, list[str]] = defaultdict(list)
@@ -45,26 +72,39 @@ class CrossSectionScorer:
                 if not row.valid or row.raw_value is None:
                     continue
                 definition = registry.get(row.name)
-                normalized = _percentile(by_factor[row.name], row.raw_value)
-                if definition.direction < 0:
-                    normalized = 100.0 - normalized
+                if definition.category == "market":
+                    normalized = _market_score(row.name, row.raw_value)
+                else:
+                    normalized = _percentile(by_factor[row.name], row.raw_value)
+                    if definition.direction < 0:
+                        normalized = 100.0 - normalized
                 row.normalized = round(normalized, 4)
                 dimension = self.DIMENSION_MAP[definition.category]
                 dimensions[dimension].append(normalized)
                 factor_names[dimension].append(row.name)
             result[ts_code] = {
-                name: DimensionScore(name, round(mean(scores), 2), True, factor_names[name])
-                for name, scores in dimensions.items()
+                name: DimensionScore(name, round(mean(dimensions[name]), 2), True, factor_names[name])
+                for name in dimensions
             }
-            for name in {"strength", "trend", "volume_price", "risk", "position", "sector"} - set(result[ts_code]):
-                result[ts_code][name] = DimensionScore(name, None, False, [], "missing_factor")
+            for name in self.DIMENSIONS:
+                if name not in result[ts_code]:
+                    result[ts_code][name] = DimensionScore(name, None, False, [], "missing_factor")
         return result
 
     @staticmethod
-    def factor_score(dimensions: Mapping[str, DimensionScore]) -> float | None:
-        usable = [d.score for d in dimensions.values() if d.valid and d.score is not None and d.name != "risk"]
-        if not usable:
-            return None
+    def factor_score(dimensions: Mapping[str, DimensionScore], weights: Mapping[str, float] | None = None) -> float | None:
+        active_weights = dict(GROUP_WEIGHTS)
+        if weights:
+            active_weights.update(weights)
+        usable = []
+        for name in ("market", "sector", "strength", "trend", "volume_price", "position"):
+            item = dimensions.get(name)
+            if item and item.valid and item.score is not None:
+                usable.append(item.score * active_weights.get(name, 0.0))
         risk = dimensions.get("risk")
-        penalty = (100 - risk.score) * 0.15 if risk and risk.valid and risk.score is not None else 0.0
-        return round(max(0.0, min(100.0, mean(usable) * 0.85 + penalty)), 2)
+        if not usable and not (risk and risk.valid and risk.score is not None):
+            return None
+        score = sum(usable)
+        if risk and risk.valid and risk.score is not None:
+            score -= (100.0 - risk.score) * active_weights.get("risk_penalty", 0.05)
+        return round(max(0.0, min(100.0, score)), 2)

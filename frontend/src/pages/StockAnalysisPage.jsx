@@ -6,9 +6,11 @@ import StockActionButtons from '../components/trading/StockActionButtons';
 import { apiFetch } from '../utils/request';
 import { useTrading } from '../context/TradingContext';
 import { POLL_INTERVAL } from '../utils/constants';
+import { fmtPct2, fmtAmount, fmtMissing, hasValue } from '../utils/format';
+import { UP_COLOR, DOWN_COLOR } from '../utils/colors';
 
-const UP = '#D8504A';    // 涨=红（原型奶油蓝配色）
-const DOWN = '#3B9A2E';  // 跌=绿
+const UP = UP_COLOR;
+const DOWN = DOWN_COLOR;
 
 const TABS = [
   { key: 'overview', label: '诊断', id: 'sec-overview' },
@@ -35,18 +37,24 @@ const STRATEGY_TAG_COLORS = {
   volume_breakout: { bg: 'rgba(249,115,22,0.08)', color: '#a3a3a3', border: 'rgba(249,115,22,0.2)' },
 };
 
-function fmtMoney(y) {
-  if (y == null || isNaN(y)) return '—';
-  const a = Math.abs(y);
-  if (a >= 1e8) return (y / 1e8).toFixed(2) + '亿';
-  if (a >= 1e4) return (y / 1e4).toFixed(0) + '万';
-  return Math.round(y) + '元';
-}
+
 
 const DIM_LABELS = {
   trend_strength: '趋势强度', capital_momentum: '资金动能', sector_resonance: '板块共振',
   volume_health: '量能健康', volatility_health: '波动健康', relative_strength: '相对强度',
   drawdown_status: '回撤状态', institution_signal: '机构信号',
+};
+
+// 评分维度 → 左侧模块锚点映射（点击右侧评分项可跳转到左侧对应模块）
+const DIM_TO_SECTION = {
+  trend_strength: 'sec-tech',
+  capital_momentum: 'sec-capital',
+  sector_resonance: 'sec-capital',
+  volume_health: 'sec-tech',
+  volatility_health: 'sec-overview',
+  relative_strength: 'sec-capital',
+  drawdown_status: 'sec-bs',
+  institution_signal: 'sec-f10',
 };
 
 // 14 日 RSI
@@ -293,7 +301,7 @@ export default function StockAnalysisPage({ embedded = false, initialCode } = {}
     const fundWord = fundIn ? '资金净流入' : '资金净流出';
     const rsiWord = tech.rsi == null ? '—' : tech.rsi >= 70 ? 'RSI超买' : tech.rsi <= 30 ? 'RSI超卖' : `RSI${tech.rsi.toFixed(0)}`;
     const summary = `综合评分 ${score}｜${trendWord}｜${fundWord}｜MACD${tech.mCross}／KDJ${tech.kCross}｜${rsiWord}。操作建议：${dash?.action_label || '观望'}`;
-    return { state, stateColor, stateBg, score, summary, action: dash?.action_label, actionColor: dash?.action_color, techBull, fundIn };
+    return { state, stateColor, stateBg, score, summary, action: dash?.action_label, actionColor: dash?.action_color, techBull, techBear, fundIn };
   }, [dash, tech, dayMainNet, composite, dims]);
 
   const cum = dash?.main_net_cumulative?.stock || {};
@@ -349,7 +357,7 @@ export default function StockAnalysisPage({ embedded = false, initialCode } = {}
           </div>
           <div className="flex items-baseline gap-2">
             <span className="text-xl font-bold tabular-nums" style={{ color: chgColor }}>{price != null ? price.toFixed(2) : '—'}</span>
-            <span className="text-sm font-semibold tabular-nums" style={{ color: chgColor }}>{chg != null ? `${up ? '+' : ''}${chg}% ${up ? '▲' : '▼'}` : ''}</span>
+            <span className="text-sm font-semibold tabular-nums" style={{ color: chgColor }}>{chg != null ? `${fmtPct2(chg)} ${up ? '▲' : '▼'}` : ''}</span>
           </div>
           <div className="flex items-center gap-1.5">
             {TABS.map(t => (
@@ -379,7 +387,7 @@ export default function StockAnalysisPage({ embedded = false, initialCode } = {}
             size="sm"
           />
           <div className="px-2.5 py-1 rounded-lg text-xs" style={{ background: dayMainNet != null && dayMainNet >= 0 ? 'rgba(216,80,74,0.1)' : 'rgba(59,154,46,0.1)', color: dayMainNet != null && dayMainNet >= 0 ? UP : DOWN, border: `1px solid ${dayMainNet != null && dayMainNet >= 0 ? 'rgba(216,80,74,0.35)' : 'rgba(59,154,46,0.35)'}` }}>
-            主力净流入 {dayMainNet != null ? fmtMoney(dayMainNet) : '—'}
+            主力净流入 {fmtAmount(dayMainNet)}
           </div>
         </div>
       </div>
@@ -388,10 +396,10 @@ export default function StockAnalysisPage({ embedded = false, initialCode } = {}
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2">
         {[
           { k: '现价', v: price != null ? price.toFixed(2) : '—', c: chgColor },
-          { k: '涨跌幅', v: chg != null ? `${up ? '+' : ''}${chg}%` : '—', c: chgColor },
+          { k: '涨跌幅', v: chg != null ? fmtPct2(chg) : '—', c: chgColor },
           { k: '振幅', v: amplitude != null ? `${amplitude.toFixed(2)}%` : '—' },
           { k: '量比', v: tech.volRatio != null ? tech.volRatio.toFixed(2) : '—', c: tech.volRatio > 1 ? UP : null },
-          { k: '当日主力', v: fmtMoney(dayMainNet), c: dayMainNet != null && dayMainNet >= 0 ? UP : dayMainNet != null ? DOWN : null },
+          { k: '当日主力', v: fmtAmount(dayMainNet), c: dayMainNet != null && dayMainNet >= 0 ? UP : dayMainNet != null ? DOWN : null },
           { k: '操作建议', v: dash?.action_label || '—', c: dash?.action_color },
         ].map(x => (
           <div key={x.k} className="rounded-xl border p-2.5" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
@@ -399,6 +407,65 @@ export default function StockAnalysisPage({ embedded = false, initialCode } = {}
             <div className="text-base font-bold mt-0.5 tabular-nums truncate" style={{ color: x.c || 'var(--text-primary)' }}>{x.v}</div>
           </div>
         ))}
+      </div>
+
+      {/* 交易摘要（结论前置：一眼看清操作方向） */}
+      <div className="rounded-xl border p-3" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          {/* 左：状态摘要 */}
+          <div className="space-y-1.5">
+            <div className="text-[10px] font-bold tracking-wider" style={{ color: 'var(--text-muted)' }}>当前状态</div>
+            <div className="flex items-center gap-2 flex-wrap">
+              {verdict && (
+                <span className="px-2 py-0.5 rounded text-xs font-bold" style={{ background: verdict.stateBg, color: verdict.stateColor }}>{verdict.state}</span>
+              )}
+              {verdict && (
+                <span className="text-sm font-bold" style={{ color: 'var(--accent-blue)' }}>评分 {verdict.score}</span>
+              )}
+              <span className="px-2 py-0.5 rounded text-xs font-bold" style={{
+                background: dash?.action_color ? `${dash.action_color}18` : 'rgba(148,163,184,0.12)',
+                color: dash?.action_color || 'var(--text-muted)'
+              }}>{dash?.action_label || '观望'}</span>
+            </div>
+            <div className="flex items-center gap-1 flex-wrap text-xs">
+              <span style={{ color: 'var(--text-muted)' }}>短线：</span>
+              <span className="font-bold" style={{ color: tech.mCross === '多头' ? UP : DOWN }}>{tech.mCross === '多头' ? '强势' : '偏弱'}</span>
+              <span style={{ color: 'var(--text-muted)' }}>｜中期：</span>
+              <span className="font-bold" style={{ color: tech.closeVsMa20 >= 0 ? UP : DOWN }}>{tech.closeVsMa20 >= 0 ? '趋势强' : '趋势偏弱'}</span>
+              <span style={{ color: 'var(--text-muted)' }}>｜板块：</span>
+              <span className="font-bold" style={{ color: (sector?.avg_chg || 0) >= 0 ? UP : DOWN }}>{(sector?.avg_chg || 0) >= 0 ? '升温' : '走弱'}</span>
+            </div>
+          </div>
+          {/* 中：策略建议 */}
+          <div className="space-y-1.5">
+            <div className="text-[10px] font-bold tracking-wider" style={{ color: 'var(--text-muted)' }}>操作策略</div>
+            <div className="text-xs space-y-1" style={{ color: 'var(--text-secondary)' }}>
+              <div><span style={{ color: 'var(--text-muted)' }}>空仓：</span>{verdict?.techBull ? '不追，等回踩确认' : '等待趋势修复'}</div>
+              <div><span style={{ color: 'var(--text-muted)' }}>持仓：</span>{verdict?.techBear ? '跌破关键位减仓' : '强势继续持有'}</div>
+              <div><span style={{ color: 'var(--text-muted)' }}>买入触发：</span>{verdict?.techBull ? '突破关键位并放量' : '回踩企稳'}</div>
+            </div>
+          </div>
+          {/* 右：止盈止损 + 自动交易 */}
+          <div className="space-y-1.5">
+            <div className="text-[10px] font-bold tracking-wider" style={{ color: 'var(--text-muted)' }}>止盈止损</div>
+            <div className="text-xs space-y-1" style={{ color: 'var(--text-secondary)' }}>
+              <div className="flex items-center gap-3">
+                <span><span style={{ color: 'var(--text-muted)' }}>止损：</span><span className="font-bold" style={{ color: DOWN }}>{price != null ? (price * 0.93).toFixed(2) : '—'}</span></span>
+                <span><span style={{ color: 'var(--text-muted)' }}>止盈1：</span><span className="font-bold" style={{ color: UP }}>{price != null ? (price * 1.05).toFixed(2) : '—'}</span></span>
+                <span><span style={{ color: 'var(--text-muted)' }}>止盈2：</span><span className="font-bold" style={{ color: UP }}>{price != null ? (price * 1.10).toFixed(2) : '—'}</span></span>
+              </div>
+              <div className="flex items-center gap-2 pt-1" style={{ borderTop: '1px solid var(--border-color)' }}>
+                <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>自动交易：</span>
+                <button
+                  className="px-1.5 py-0.5 rounded text-[10px] font-bold cursor-pointer hover:opacity-80"
+                  style={{ background: 'rgba(148,163,184,0.12)', color: 'var(--text-muted)', border: '1px solid var(--border-color)' }}
+                  title="点击跳转策略模块配置"
+                  onClick={() => document.getElementById('sec-strategy')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+                >关闭</button>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
 
       {/* 个股诊断结论带（专属页灵魂：综合全页数据） */}
@@ -451,12 +518,12 @@ export default function StockAnalysisPage({ embedded = false, initialCode } = {}
 
             {/* MACD × KDJ 共振结论条 */}
             <div className="flex items-center justify-between rounded-lg px-3 py-2 mb-2.5" style={{
-              background: techBull ? UP + '12' : techBear ? DOWN + '12' : 'var(--bg-surface)',
-              border: `1px solid ${techBull ? UP + '40' : techBear ? DOWN + '40' : 'var(--border-color)'}`,
+              background: verdict?.techBull ? UP + '12' : verdict?.techBear ? DOWN + '12' : 'var(--bg-surface)',
+              border: `1px solid ${verdict?.techBull ? UP + '40' : verdict?.techBear ? DOWN + '40' : 'var(--border-color)'}`,
             }}>
               <div className="flex items-center gap-1.5">
-                <span className="text-base leading-none">{techBull ? '🔼' : techBear ? '🔽' : '➖'}</span>
-                <span className="text-sm font-bold" style={{ color: techBull ? UP : techBear ? DOWN : 'var(--text-muted)' }}>{techBull ? '双金叉共振 · 看多' : techBear ? '双死叉共振 · 看空' : 'MACD/KDJ 未共振'}</span>
+                <span className="text-base leading-none">{verdict?.techBull ? '🔼' : verdict?.techBear ? '🔽' : '➖'}</span>
+                <span className="text-sm font-bold" style={{ color: verdict?.techBull ? UP : verdict?.techBear ? DOWN : 'var(--text-muted)' }}>{verdict?.techBull ? '双金叉共振 · 看多' : verdict?.techBear ? '双死叉共振 · 看空' : 'MACD/KDJ 未共振'}</span>
               </div>
               <span className="text-[10px] font-medium" style={{ color: 'var(--text-muted)' }}>MACD {tech.mCross} × KDJ {tech.kCross}</span>
             </div>
@@ -473,6 +540,11 @@ export default function StockAnalysisPage({ embedded = false, initialCode } = {}
                   <div><div className="text-[9px]" style={{ color: 'var(--text-muted)' }}>DEA</div><div className="text-xs font-bold tabular-nums" style={{ color: 'var(--text-primary)' }}>{tech.macdDea != null ? tech.macdDea.toFixed(2) : '—'}</div></div>
                   <div><div className="text-[9px]" style={{ color: 'var(--text-muted)' }}>MACD</div><div className="text-xs font-bold tabular-nums" style={{ color: tech.macdHist != null ? (tech.macdHist >= 0 ? UP : DOWN) : 'var(--text-primary)' }}>{tech.macdHist != null ? tech.macdHist.toFixed(2) : '—'}</div></div>
                 </div>
+                <div className="mt-1.5 text-[10px] leading-relaxed" style={{ color: 'var(--text-muted)' }}>
+                  {tech.macdDif != null && tech.macdDea != null
+                    ? (tech.macdDif >= tech.macdDea ? 'DIF高于DEA，中期动能修复中' : 'DIF低于DEA，中期动能暂未修复')
+                    : '暂无MACD数据'}
+                </div>
               </div>
               <div className="rounded-lg p-2.5" style={{ background: 'var(--bg-surface)', border: '1px solid var(--border-color)' }}>
                 <div className="flex items-center justify-between">
@@ -484,20 +556,26 @@ export default function StockAnalysisPage({ embedded = false, initialCode } = {}
                   <div><div className="text-[9px]" style={{ color: 'var(--text-muted)' }}>D</div><div className="text-xs font-bold tabular-nums" style={{ color: 'var(--text-primary)' }}>{tech.kdjD != null ? tech.kdjD.toFixed(1) : '—'}</div></div>
                   <div><div className="text-[9px]" style={{ color: 'var(--text-muted)' }}>J</div><div className="text-xs font-bold tabular-nums" style={{ color: 'var(--text-primary)' }}>{tech.kdjJ != null ? tech.kdjJ.toFixed(1) : '—'}</div></div>
                 </div>
+                <div className="mt-1.5 text-[10px] leading-relaxed" style={{ color: 'var(--text-muted)' }}>
+                  {tech.kdjK != null && tech.kdjD != null
+                    ? (tech.kdjK >= tech.kdjD ? 'K值高于D值，短线动能偏强' : 'K值低于D值，短线动能仍偏弱')
+                    : '暂无KDJ数据'}
+                </div>
               </div>
             </div>
 
             {/* 其余指标紧凑行 */}
             <div className="mt-2.5">
               {[
-                { n: 'RSI(14)', v: tech.rsi != null ? tech.rsi.toFixed(1) : '—', s: tech.rsi >= 70 ? '超买' : tech.rsi <= 30 ? '超卖' : '中性', c: tech.rsi >= 70 ? UP : tech.rsi <= 30 ? DOWN : 'var(--text-muted)' },
-                { n: '量比', v: tech.volRatio != null ? tech.volRatio.toFixed(2) : '—', s: tech.volRatio >= 1 ? '放量' : '缩量', c: tech.volRatio >= 1 ? UP : DOWN },
-                { n: '价/MA20', v: tech.closeVsMa20 != null ? `${(tech.closeVsMa20 * 100).toFixed(1)}%` : '—', s: tech.closeVsMa20 >= 0 ? '站上' : '跌破', c: tech.closeVsMa20 >= 0 ? UP : DOWN },
+                { n: 'RSI(14)', v: tech.rsi != null ? tech.rsi.toFixed(1) : '—', s: tech.rsi >= 70 ? '超买' : tech.rsi <= 30 ? '超卖' : '中性', c: tech.rsi >= 70 ? UP : tech.rsi <= 30 ? DOWN : 'var(--text-muted)', ex: tech.rsi == null ? '暂无数据' : tech.rsi >= 70 ? '短期超买，注意回调风险' : tech.rsi <= 30 ? '短期超卖，关注反弹机会' : '尚未进入超买或超卖区域' },
+                { n: '量比', v: tech.volRatio != null ? tech.volRatio.toFixed(2) : '—', s: tech.volRatio >= 1 ? '放量' : '缩量', c: tech.volRatio >= 1 ? UP : DOWN, ex: tech.volRatio == null ? '暂无数据' : tech.volRatio >= 1.5 ? '显著放量，资金参与度高' : tech.volRatio <= 0.5 ? '显著缩量，交投清淡' : '量能正常' },
+                { n: '价/MA20', v: tech.closeVsMa20 != null ? `${(tech.closeVsMa20 * 100).toFixed(1)}%` : '—', s: tech.closeVsMa20 >= 0 ? '站上' : '跌破', c: tech.closeVsMa20 >= 0 ? UP : DOWN, ex: tech.closeVsMa20 == null ? '暂无数据' : tech.closeVsMa20 >= 0 ? '股价站上MA20，中期趋势偏强' : '股价低于MA20，中期趋势未修复' },
               ].map(d => (
-                <div key={d.n} className="flex items-center justify-between py-1.5" style={{ borderBottom: '1px solid var(--border-color)' }}>
-                  <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>{d.n}</span>
-                  <span className="text-xs font-bold tabular-nums">{d.v}</span>
-                  <span className="text-[11px] font-medium" style={{ color: d.c }}>{d.s}</span>
+                <div key={d.n} className="flex items-center justify-between py-1.5 gap-2" style={{ borderBottom: '1px solid var(--border-color)' }}>
+                  <span className="text-xs flex-shrink-0" style={{ color: 'var(--text-secondary)' }}>{d.n}</span>
+                  <span className="text-xs font-bold tabular-nums flex-shrink-0">{d.v}</span>
+                  <span className="text-[11px] font-medium flex-shrink-0" style={{ color: d.c }}>{d.s}</span>
+                  <span className="text-[10px] flex-1 text-right truncate" style={{ color: 'var(--text-muted)' }}>{d.ex}</span>
                 </div>
               ))}
             </div>
@@ -509,6 +587,22 @@ export default function StockAnalysisPage({ embedded = false, initialCode } = {}
               <span className="text-sm font-bold" style={{ color: 'var(--text-primary)' }}>主力净流入累计（近 1/3/5/10/20 日）</span>
               <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>红流入 · 绿流出 · 真实</span>
             </div>
+            {dash && (
+              <div className="mb-2 rounded-lg px-2.5 py-1.5 text-xs" style={{ background: 'var(--bg-surface)', border: '1px solid var(--border-color)', color: 'var(--text-secondary)' }}>
+                <span className="font-bold" style={{ color: 'var(--text-primary)' }}>资金结论：</span>
+                {(() => {
+                  const d1 = cum[1], d3 = cum[3], d5 = cum[5];
+                  if (d1 == null) return '暂无资金数据';
+                  const parts = [];
+                  parts.push(d1 >= 0 ? '当日流入较强' : '当日流出');
+                  if (d3 != null) parts.push(d3 >= 0 ? '3日净流入' : '3日净流出');
+                  if (d5 != null) parts.push(d5 >= 0 ? '5日仍偏强' : '5日仍偏弱');
+                  const sustained = d3 != null && d5 != null && d3 >= 0 && d5 >= 0;
+                  parts.push(sustained ? '持续性较好' : '持续性一般');
+                  return parts.join('，');
+                })()}
+              </div>
+            )}
             {dash ? (
               <>
                 <div className="grid grid-cols-5 gap-2">
@@ -517,7 +611,7 @@ export default function StockAnalysisPage({ embedded = false, initialCode } = {}
                     return (
                       <div key={r.p} className="rounded-lg p-2 text-center" style={{ background: 'var(--bg-surface)', border: '1px solid var(--border-color)' }}>
                         <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{r.p}日</div>
-                        <div className="text-sm font-bold mt-0.5 tabular-nums" style={{ color: v == null ? 'var(--text-muted)' : pos ? UP : DOWN }}>{fmtMoney(v)}</div>
+                        <div className="text-sm font-bold mt-0.5 tabular-nums" style={{ color: v == null ? 'var(--text-muted)' : pos ? UP : DOWN }}>{fmtAmount(v)}</div>
                       </div>
                     );
                   })}
@@ -526,7 +620,7 @@ export default function StockAnalysisPage({ embedded = false, initialCode } = {}
                   {[{ k: '主力净流入', v: dash?.institution_flow?.main_net }, { k: '散户净流入', v: dash?.institution_flow?.retail_net }, { k: '超大单净流入', v: dash?.institution_flow?.super_large_net }, { k: '大单净流入', v: dash?.institution_flow?.large_net }].map(x => (
                     <div key={x.k} className="rounded-lg p-2" style={{ background: 'var(--bg-surface)', border: '1px solid var(--border-color)' }}>
                       <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{x.k}</div>
-                      <div className="text-sm font-bold mt-0.5 tabular-nums" style={{ color: x.v == null ? 'var(--text-muted)' : x.v >= 0 ? UP : DOWN }}>{fmtMoney(x.v)}</div>
+                      <div className="text-sm font-bold mt-0.5 tabular-nums" style={{ color: x.v == null ? 'var(--text-muted)' : x.v >= 0 ? UP : DOWN }}>{fmtAmount(x.v)}</div>
                     </div>
                   ))}
                 </div>
@@ -553,7 +647,13 @@ export default function StockAnalysisPage({ embedded = false, initialCode } = {}
               </div>
             </div>
             <div className="rounded-xl border p-2.5" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
-              <div className="text-sm font-bold mb-2" style={{ color: 'var(--text-primary)' }}>盘中实时数据</div>
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-sm font-bold" style={{ color: 'var(--text-primary)' }}>盘中实时数据</span>
+                <div className="text-[10px] text-right" style={{ color: 'var(--text-muted)' }}>
+                  <div>实时：{realtimeData?.realtime_intraday?.current_price != null ? '正常' : '—'}</div>
+                  <div>盘后：{dash?.date || '—'}</div>
+                </div>
+              </div>
               {realtimeData?.realtime_intraday?.available ? (
                 <IntradayLive data={realtimeData.realtime_intraday} />
               ) : (
@@ -565,6 +665,25 @@ export default function StockAnalysisPage({ embedded = false, initialCode } = {}
           {/* 策略信号 */}
           <div id="sec-strategy" style={{ scrollMarginTop: 64 }} className="rounded-xl border p-2.5" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
             <div className="text-sm font-bold mb-2" style={{ color: 'var(--text-primary)' }}>策略信号（真实命中）</div>
+            {/* 自动交易配置面板（只读展示，默认关闭） */}
+            <div className="mb-3 rounded-lg border p-2" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-surface)' }}>
+              <div className="flex items-center justify-between mb-1.5">
+                <span className="text-xs font-bold" style={{ color: 'var(--text-primary)' }}>⚙️ 自动交易配置</span>
+                <span className="px-1.5 py-0.5 rounded text-[10px] font-bold" style={{ background: 'rgba(148,163,184,0.12)', color: 'var(--text-muted)', border: '1px solid var(--border-color)' }}>关闭</span>
+              </div>
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-x-3 gap-y-1 text-[10px]" style={{ color: 'var(--text-secondary)' }}>
+                <div><span style={{ color: 'var(--text-muted)' }}>执行模式：</span>仅提醒</div>
+                <div><span style={{ color: 'var(--text-muted)' }}>买入触发：</span>策略命中</div>
+                <div><span style={{ color: 'var(--text-muted)' }}>最大仓位：</span>10%</div>
+                <div><span style={{ color: 'var(--text-muted)' }}>止损方式：</span>关键位止损</div>
+                <div><span style={{ color: 'var(--text-muted)' }}>止盈方式：</span>分批止盈</div>
+                <div><span style={{ color: 'var(--text-muted)' }}>单日最大交易：</span>1次</div>
+                <div className="col-span-2 md:col-span-3"><span style={{ color: 'var(--text-muted)' }}>风险退出：</span>板块转弱 / 大盘转弱 / 资金反转 / 信号失效</div>
+              </div>
+              <div className="mt-1.5 pt-1.5 text-[10px]" style={{ borderTop: '1px solid var(--border-color)', color: 'var(--text-muted)' }}>
+                默认关闭，开启时需二次确认
+              </div>
+            </div>
             {strategyLoading ? (
               <div className="py-3 text-center text-xs" style={{ color: 'var(--text-muted)' }}>加载中…</div>
             ) : !strategyData || (strategyData.today_count === 0 && (strategyData.history || []).length === 0) ? (
@@ -593,7 +712,7 @@ export default function StockAnalysisPage({ embedded = false, initialCode } = {}
                               {d['20day_gain'] != null && <div>20日涨幅: <strong style={{ color: d['20day_gain'] >= 20 ? UP : 'var(--text-primary)' }}>{d['20day_gain']}%</strong></div>}
                               {d.deviation != null && <div>偏离MA: <strong>{d.deviation}%</strong></div>}
                               {d.rsi != null && <div>RSI: <strong style={{ color: d.rsi > 70 ? UP : d.rsi < 30 ? DOWN : 'var(--text-primary)' }}>{d.rsi}</strong></div>}
-                              {d.change_pct != null && <div>当日涨幅: <strong style={{ color: d.change_pct >= 0 ? UP : DOWN }}>{d.change_pct >= 0 ? '+' : ''}{d.change_pct}%</strong></div>}
+                              {d.change_pct != null && <div>当日涨幅: <strong style={{ color: d.change_pct >= 0 ? UP : DOWN }}>{fmtPct2(d.change_pct)}</strong></div>}
                               {d.vol_ratio != null && <div>量比: <strong>{d.vol_ratio}%</strong></div>}
                               {d.lower_shadow != null && <div>下影线: <strong>{d.lower_shadow}%</strong></div>}
                               {d.ma_spread != null && <div>MA排列强度: <strong>{d.ma_spread}%</strong></div>}
@@ -634,6 +753,23 @@ export default function StockAnalysisPage({ embedded = false, initialCode } = {}
           {/* F10 / 盘后底牌 */}
           <div id="sec-f10" style={{ scrollMarginTop: 64 }} className="rounded-xl border p-2.5" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
             <div className="text-sm font-bold mb-2" style={{ color: 'var(--text-primary)' }}>🎯 盘后底牌 / F10</div>
+            {superPanel?.post_market_base && (
+              <div className="mb-2 rounded-lg px-2.5 py-1.5 text-xs" style={{ background: 'var(--bg-surface)', border: '1px solid var(--border-color)', color: 'var(--text-secondary)' }}>
+                <span className="font-bold" style={{ color: 'var(--text-primary)' }}>游资结论：</span>
+                {(() => {
+                  const pmb = superPanel.post_market_base;
+                  const score = pmb.quant_score;
+                  const bosses = pmb.yesterday_bosses || [];
+                  if (score == null && bosses.length === 0) return '暂无明显游资信号';
+                  const parts = [];
+                  if (bosses.length > 0) parts.push(`有${bosses.length}位游资参与`);
+                  if (score != null && score >= 80) parts.push('游资活跃度高');
+                  else if (score != null && score >= 60) parts.push('游资有一定参与度');
+                  parts.push('持续性仍需观察');
+                  return parts.join('，');
+                })()}
+              </div>
+            )}
             {superPanel?.post_market_base ? (
               <PostMarketBase data={superPanel.post_market_base} />
             ) : (
@@ -737,7 +873,10 @@ export default function StockAnalysisPage({ embedded = false, initialCode } = {}
             {dash ? (
               <>
                 {dims.map(d => (
-                  <div key={d.key} className="mb-1.5">
+                  <div key={d.key} className="mb-1.5 cursor-pointer hover:opacity-80" onClick={() => {
+                    const el = document.getElementById(DIM_TO_SECTION[d.key] || 'sec-overview');
+                    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                  }} title={`点击跳转到${d.label}对应模块`}>
                     <div className="flex justify-between text-[11px] mb-0.5" style={{ color: 'var(--text-secondary)' }}><span>{d.label}</span><span>{Math.round(d.v)}</span></div>
                     <div className="h-1.5 rounded-full overflow-hidden" style={{ background: 'var(--bg-surface)', border: '1px solid var(--border-color)' }}>
                       <div className="h-full rounded-full" style={{ width: `${d.v}%`, background: d.v >= 60 ? UP : d.v >= 40 ? '#EF9F27' : DOWN }} />
@@ -747,18 +886,31 @@ export default function StockAnalysisPage({ embedded = false, initialCode } = {}
                 <div className="text-center mt-2">
                   <div className="text-3xl font-bold" style={{ color: 'var(--accent-blue)' }}>{composite ?? '—'}</div>
                   <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>综合评分 / 100</div>
+                  {verdict && (
+                    <div className="mt-1 text-[11px] font-medium" style={{ color: 'var(--text-secondary)' }}>
+                      {verdict.techBull ? '短线强' : verdict.techBear ? '短线弱' : '短线中性'}，
+                      {tech.closeVsMa20 >= 0 ? '中期强' : '中期弱'}，
+                      {(sector?.avg_chg || 0) >= 0 ? '板块升温' : '板块走弱'}
+                    </div>
+                  )}
                 </div>
               </>
             ) : <div className="text-xs" style={{ color: 'var(--text-muted)' }}>—</div>}
           </div>
 
           {/* 板块关联 */}
-          <div className="rounded-xl border p-2.5" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
+          <div id="sec-sector" className="rounded-xl border p-2.5" style={{ scrollMarginTop: 64, borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
             <div className="text-sm font-bold mb-2" style={{ color: 'var(--text-primary)' }}>板块关联</div>
             {sector ? (
               <div className="space-y-1.5 text-xs">
+                <div className="mb-1.5 rounded-lg px-2 py-1 text-[11px]" style={{ background: 'var(--bg-surface)', border: '1px solid var(--border-color)' }}>
+                  <span style={{ color: 'var(--text-muted)' }}>板块状态：</span>
+                  <span className="font-bold" style={{ color: (sector.avg_chg || 0) >= 0 ? UP : DOWN }}>{(sector.avg_chg || 0) >= 0 ? '升温' : '走弱'}</span>
+                  <span className="ml-2" style={{ color: 'var(--text-muted)' }}>个股强弱：</span>
+                  <span className="font-bold" style={{ color: (tech.closeVsMa20 || 0) >= 0 ? UP : DOWN }}>{(sector.avg_chg || 0) >= 0 && (chg || 0) >= (sector.avg_chg || 0) ? '强于板块' : '弱于板块'}</span>
+                </div>
                 <div className="flex justify-between"><span style={{ color: 'var(--text-muted)' }}>所属板块</span><span style={{ color: 'var(--text-primary)' }}>{sector.sector || '—'}</span></div>
-                <div className="flex justify-between"><span style={{ color: 'var(--text-muted)' }}>板块净流入(7日)</span><span style={{ color: (sector.net_flow || 0) >= 0 ? UP : DOWN }}>{fmtMoney(sector.net_flow)}</span></div>
+                <div className="flex justify-between"><span style={{ color: 'var(--text-muted)' }}>板块净流入(7日)</span><span style={{ color: (sector.net_flow || 0) >= 0 ? UP : DOWN }}>{fmtAmount(sector.net_flow)}</span></div>
                 <div className="flex justify-between"><span style={{ color: 'var(--text-muted)' }}>板块均涨</span><span style={{ color: (sector.avg_chg || 0) >= 0 ? UP : DOWN }}>{sector.avg_chg != null ? `${sector.avg_chg}%` : '—'}</span></div>
                 <div className="flex justify-between"><span style={{ color: 'var(--text-muted)' }}>涨停数</span><span>{sector.limit_up_count ?? '—'}</span></div>
                 <div className="flex justify-between"><span style={{ color: 'var(--text-muted)' }}>龙头股</span><span style={{ color: 'var(--text-primary)' }}>{sector.leader_stock || '—'}</span></div>
@@ -788,8 +940,8 @@ export default function StockAnalysisPage({ embedded = false, initialCode } = {}
               <div className="text-sm font-bold mb-2" style={{ color: 'var(--text-primary)' }}>我的持仓</div>
               <div className="space-y-1 text-xs">
                 <div className="flex justify-between"><span style={{ color: 'var(--text-muted)' }}>数量</span><span style={{ color: 'var(--text-primary)' }}>{myPos.count} 股</span></div>
-                <div className="flex justify-between"><span style={{ color: 'var(--text-muted)' }}>持仓盈亏</span><span style={{ color: (myPos.profit || 0) >= 0 ? UP : DOWN }}>{fmtMoney(myPos.profit)}</span></div>
-                <div className="flex justify-between"><span style={{ color: 'var(--text-muted)' }}>市值</span><span style={{ color: 'var(--text-primary)' }}>{fmtMoney(myPos.value)}</span></div>
+                <div className="flex justify-between"><span style={{ color: 'var(--text-muted)' }}>持仓盈亏</span><span style={{ color: (myPos.profit || 0) >= 0 ? UP : DOWN }}>{fmtAmount(myPos.profit)}</span></div>
+                <div className="flex justify-between"><span style={{ color: 'var(--text-muted)' }}>市值</span><span style={{ color: 'var(--text-primary)' }}>{fmtAmount(myPos.value)}</span></div>
                 <div className="flex justify-between"><span style={{ color: 'var(--text-muted)' }}>成本</span><span style={{ color: 'var(--text-primary)' }}>{myPos.costPrice != null ? myPos.costPrice.toFixed(2) : '—'}</span></div>
               </div>
             </div>
@@ -817,7 +969,7 @@ function IntradayLive({ data }) {
           {data.current_price?.toFixed(2) || '—'}
         </span>
         <span className="text-base font-semibold" style={{ color: pctColor }}>
-          {pct != null ? `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%` : '—'}
+          {pct != null ? fmtPct2(pct) : '—'}
         </span>
         {data.last_close > 0 && (
           <span className="text-xs" style={{ color: 'var(--text-muted)' }}>昨收 {data.last_close.toFixed(2)}</span>

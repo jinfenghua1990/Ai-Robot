@@ -7,6 +7,10 @@ import { useTrading } from '../../context/TradingContext';
 import { useNavigate } from 'react-router-dom';
 import { apiFetch } from '../../utils/request';
 
+// 自动交易状态：默认关闭，未来从后端 /api/stock-dashboard/{code}.auto_trade 读取
+// 当前为前端只读展示，点击跳转详情页策略模块配置
+const AUTO_TRADE_ENABLED = false;
+
 /**
  * 统一股票操作面板：
  * - 横排：买 / 卖 / 跟踪 / 自选 / 操作
@@ -31,6 +35,7 @@ export default function StockActionButtons({
   showSina = true,
   showKline = true,
   showAnalysis = true,
+  showAutoTrade = true,
   layout = 'inline', // 'inline' | 'vertical' | 'both'
   size = 'sm',
   className = '',
@@ -154,6 +159,19 @@ export default function StockActionButtons({
             title="新浪财经"
           >
             新浪
+          </button>
+        )}
+        {showAutoTrade && (
+          <button
+            onClick={(e) => { e.stopPropagation(); navigate(`/stock-analysis?code=${stockCode}#sec-strategy`); }}
+            className={mainBtnClass()}
+            style={AUTO_TRADE_ENABLED
+              ? { background: 'rgba(239,68,68,0.1)', color: '#ef4444', border: '1px solid rgba(239,68,68,0.3)' }
+              : { background: 'rgba(107,114,128,0.1)', color: '#6b7280', border: '1px solid rgba(107,114,128,0.3)' }
+            }
+            title={AUTO_TRADE_ENABLED ? '自动交易：已开启（点击进入策略模块配置）' : '自动交易：已关闭（点击进入策略模块配置）'}
+          >
+            {AUTO_TRADE_ENABLED ? '⚙ 自动·开' : '⚙ 自动·关'}
           </button>
         )}
         {showMore && (

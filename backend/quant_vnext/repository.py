@@ -62,7 +62,13 @@ def save_factor_validation(connection, rows: list[dict]) -> int:
     """)
     payload = []
     for row in rows:
-        payload.append({**row, "passed": row.get("rank_ic") is not None and row["rank_ic"] > 0})
+        rank_ic_value = row.get("rank_ic")
+        sample_count = int(row.get("sample_count") or 0)
+        # 少于 30 个横截面样本的正 IC 只能算观察结果，不能进入生产。
+        payload.append({
+            **row,
+            "passed": sample_count >= 30 and rank_ic_value is not None and rank_ic_value > 0,
+        })
     connection.execute(statement, payload)
     return len(payload)
 
@@ -70,13 +76,17 @@ def save_factor_validation(connection, rows: list[dict]) -> int:
 def save_signal_outcomes(connection, rows: list[dict]) -> int:
     statement = text("""
         INSERT INTO signal_outcome
-          (ts_code, signal_date, trading_state, return_1d, return_3d, return_5d, return_10d, return_20d)
-        VALUES (:ts_code, :signal_date, :trading_state, :return_1d, :return_3d, :return_5d, :return_10d, :return_20d)
+          (ts_code, signal_date, trading_state, return_1d, return_3d, return_5d, return_10d, return_20d,
+           max_profit, max_loss, max_drawdown)
+        VALUES (:ts_code, :signal_date, :trading_state, :return_1d, :return_3d, :return_5d, :return_10d, :return_20d,
+                :max_profit, :max_loss, :max_drawdown)
         ON CONFLICT (ts_code, signal_date) DO UPDATE SET
           trading_state=EXCLUDED.trading_state,
           return_1d=EXCLUDED.return_1d, return_3d=EXCLUDED.return_3d,
           return_5d=EXCLUDED.return_5d, return_10d=EXCLUDED.return_10d,
-          return_20d=EXCLUDED.return_20d
+          return_20d=EXCLUDED.return_20d,
+          max_profit=EXCLUDED.max_profit, max_loss=EXCLUDED.max_loss,
+          max_drawdown=EXCLUDED.max_drawdown
     """)
     payload = []
     for row in rows:
@@ -90,6 +100,9 @@ def save_signal_outcomes(connection, rows: list[dict]) -> int:
             "return_5d": returns.get("5"),
             "return_10d": returns.get("10"),
             "return_20d": returns.get("20"),
+            "max_profit": row.get("max_profit"),
+            "max_loss": row.get("max_loss"),
+            "max_drawdown": row.get("max_drawdown"),
         })
     connection.execute(statement, payload)
     return len(payload)

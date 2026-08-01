@@ -24,6 +24,7 @@ from sqlalchemy import func
 from db.session import get_db_session
 from db.models import StrategyResult, StrategyRunLog, StockFlow, SectorFlow, StockDailyKline
 from services.indicators import calc_supertrend
+from quant_vnext.production import is_st_name
 import logging
 logger = logging.getLogger(__name__)
 
@@ -155,7 +156,11 @@ def get_candidate_stocks(db, trade_date, limit=300):
         StockFlow.main_force_inflow > 0,
     ).order_by(
         StockFlow.main_force_inflow.desc()
-    ).limit(limit).all()
+    ).limit(limit * 2).all()
+
+    # ST/*ST 是交易限制和风险标签，不得进入新的候选池；多取一倍再过滤，
+    # 避免单纯 SQL limit 导致过滤后股票数量不足。
+    rows = [row for row in rows if not is_st_name(row.name)][:limit]
 
     return [{
         'ts_code': r.ts_code,

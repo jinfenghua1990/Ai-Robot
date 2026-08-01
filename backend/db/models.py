@@ -506,7 +506,9 @@ class StockDailyKline(Base):
     close = Column(Numeric(10, 4))
     volume = Column(BigInteger)
     amount = Column(Numeric(20, 4))
-    pct_chg = Column(Numeric(8, 4))
+    # IPO/北交所个别首日涨跌幅可能超过 999%，数据库列保持与真实
+    # Tushare daily 数据一致，避免整日批量写入因精度不足回滚。
+    pct_chg = Column(Numeric(10, 4))
     main_force_inflow = Column(Numeric(20, 4))
     sector = Column(String(50))
     created_at = Column(DateTime, server_default=func.now())
@@ -663,6 +665,7 @@ class AutoTradeConfig(Base):
     use_market_price = Column(Boolean, default=True)          # 市价委托
     buy_quantity = Column(Integer, default=100)               # 每次买入股数（100的整数倍）
     sell_quantity = Column(Integer, default=100)              # 每次卖出股数（100的整数倍）
+    account_source = Column(String(20), default='displayed')  # displayed=持仓页账户, dedicated=专用交易账户
     updated_at = Column(DateTime, server_default=func.now())
 
 
@@ -671,16 +674,26 @@ class AutoTradeLog(Base):
     __tablename__ = "auto_trade_log"
     id = Column(Integer, primary_key=True, autoincrement=True)
     trade_date = Column(Date, index=True)
+    signal_date = Column(Date, index=True)       # 产生决策所依据的已完成交易日
+    account_source = Column(String(20))          # 本次操作实际使用的账户
     ts_code = Column(String(20), index=True)
     action = Column(String(10))           # buy/sell/skip
     reason = Column(String(200))
     vote_score = Column(Integer)
+    signal_state = Column(String(20))     # WATCH/READY/TRIGGERED/HOLD/NO_CHASE/INVALID
+    factor_score = Column(Numeric(6, 2))  # V2 Factor Score
+    resonance_count = Column(Integer, default=0)
     strategies_json = Column(Text)        # 命中策略明细
     price = Column(Numeric(10, 2))
     quantity = Column(Integer)
     order_result = Column(Text)           # 妙想API返回
+    order_id = Column(String(100), index=True)
     status = Column(String(20))           # success/failed/skipped
+    fill_status = Column(String(20))      # pending/submitted/partial/filled/canceled/failed
+    filled_quantity = Column(Integer, default=0)
+    filled_price = Column(Numeric(10, 2))
     created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
 
 class SimAccount(Base):

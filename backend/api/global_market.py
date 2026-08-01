@@ -554,3 +554,181 @@ def get_kline_batch(market: str, days: int = Query(default=20, le=60)):
             for k in klines[-days:]
         ]
     return {"market": market, "data": result, "days": days, "updated_at": datetime.now().strftime("%Y/%m/%d %H:%M:%S")}
+
+
+# ─── 真实基本面（腾讯 gtimg 行情，覆盖估算） ─────────────────────────────────
+# 数据源：腾讯 gtimg (qt.gtimg.cn)。覆盖港股/美股，含 PE/PB/股息/市值/52周高低，
+# 且不像 Eastmoney 那样限流。字段为真实值；ROE/增速/南向/资金流等需 F10 或另源，保留估算。
+# 字段索引（已实测校准）：
+#   [3]=现价 [32]=涨跌幅% [39]=市盈率TTM [44]=总市值(亿元)
+#   [48]=52周最高 [49]=52周最低 [58]=市净率(HK可靠) [59]=股息率%(HK可靠)
+_GT_CACHE: dict[str, tuple[float, dict]] = {}
+_GT_CACHE_TTL = 3600  # 1 小时缓存
+
+
+def _to_gtimg(market: str, code: str) -> str:
+    """业务代码 → 腾讯 gtimg 查询符号"""
+    if market == "HK":
+        return "hk" + code.zfill(5)          # 00700 → hk00700
+    return "us" + code.upper()               # AAPL  → usAAPL
+
+
+def _gtimg_fetch(q: str):
+    import re as _re
+    url = f"https://qt.gtimg.cn/q={q}"
+    try:
+        resp = requests.get(
+            url,
+            headers={"User-Agent": "Mozilla/5.0", "Referer": "https://finance.qq.com/"},
+            timeout=12,
+        )
+        resp.encoding = "gbk"
+        m = _re.search(r'="(.*)";', resp.text)
+        if not m:
+            return None
+        return m.group(1).split("~")
+    except Exception as e:
+        logger.warning(f"gtimg fetch failed for {q}: {e}")
+        return None
+
+
+def _gt_num(arr, idx):
+    try:
+        v = arr[idx]
+        if v in (None, ""):
+            return None
+        return float(v)
+    except Exception:
+        return None
+
+
+def _parse_fundamentals(market: str, arr) -> dict:
+    if not arr or len(arr) < 50:
+        return {}
+    real: dict = {}
+    pe = _gt_num(arr, 39)          # 市盈率(TTM)
+    pb = _gt_num(arr, 58)          # 市净率（HK 可靠；美股 gtimg 该位不准，跳过）
+    div = _gt_num(arr, 59)         # 股息率(%)
+    mcap = _gt_num(arr, 44)        # 总市值(亿元)
+    high52 = _gt_num(arr, 48)      # 52周最高
+    low52 = _gt_num(arr, 49)       # 52周最低
+    price = _gt_num(arr, 3)
+    if pe is not None and pe > 0:
+        real["pe"] = round(pe, 2)
+    if market == "HK" and pb is not None and pb > 0:
+        real["pb"] = round(pb, 2)
+    if market == "HK" and div is not None and div >= 0:
+        real["divYield"] = round(div, 2)
+    if mcap is not None and mcap > 0:
+        real["marketCap"] = round(mcap, 1)   # 亿元
+    if price and high52 and low52 and high52 > low52 > 0:
+        pct = (price - low52) / (high52 - low52) * 100
+        real["pePercentile"] = round(max(0.0, min(100.0, pct)), 1)
+    return real
+
+
+def _fetch_fundamentals(market: str) -> dict:
+    """逐只抓取真实基本面；仅填充可获得的真实字段，缺失字段由前端回退估算。"""
+    watchlist = DEFAULT_WATCHLIST.get(market, [])
+    result: dict[str, dict] = {}
+    for stock in watchlist:
+        code = stock["code"]
+        q = _to_gtimg(market, code)
+        arr = _gtimg_fetch(q)
+        real = _parse_fundamentals(market, arr) if arr else {}
+        result[code] = {
+            "code": code, "name": stock["name"], "real": real,
+            "source": "gtimg" if real else None, "estimated": not real, "query": q,
+        }
+        time.sleep(0.05)
+    return result
+
+
+@router.get("/fundamentals/{market}")
+def get_fundamentals(market: str, raw: bool = Query(default=False)):
+    """真实基本面（腾讯 gtimg）：PE/PB/股息率/市值/52周估值分位。
+    real 字段为真实值，前端用它覆盖估算；estimated=true 表示未取到真实值。"""
+    market = market.upper()
+    if market not in ("HK", "US"):
+        return {"market": market, "error": "仅支持 HK / US"}
+    cache_key = f"fund:{market}"
+    now = time.time()
+    if cache_key in _GT_CACHE:
+        ts, data = _GT_CACHE[cache_key]
+        if now - ts < _GT_CACHE_TTL:
+            return {"market": market, "items": data, "updated_at": datetime.now().strftime("%Y/%m/%d %H:%M:%S"),
+                    "source": "gtimg", "cached": True}
+    data = _fetch_fundamentals(market)
+    _GT_CACHE[cache_key] = (now, data)
+    out = {"market": market, "items": data, "updated_at": datetime.now().strftime("%Y/%m/%d %H:%M:%S"),
+           "source": "gtimg"}
+    if raw:
+        out["raw"] = {code: _gtimg_fetch(_to_gtimg(market, code)) for code in data}
+    return out
+
+
+# ─── 南向资金（Eastmoney 港股通） ──────────────────────────────────────────────
+_SB_CACHE: dict[str, tuple[float, dict]] = {}
+_SB_CACHE_TTL = 1800  # 30 分钟
+
+
+def _fetch_southbound() -> dict:
+    """港股通南向资金：聚合净买入(最新+20日) + 个股港股通持股变化(尽力)。"""
+    out = {"totalNet20d": None, "latestNet": None, "latestDate": None, "byStock": {}, "source": None}
+    # 1) 聚合：港股通南向净买入时序
+    kline_url = "https://push2.eastmoney.com/api/qt/kamt.kline/get"
+    kp = {"fields1": "f1,f3", "fields2": "f51,f52", "klt": "101", "lmt": "30",
+          "ut": "b2884a393a59ad64003c8a8bbb4d8fb9", "invt": "2"}
+    try:
+        r = requests.get(kline_url, params=kp, headers={
+            "User-Agent": "Mozilla/5.0", "Referer": "https://data.eastmoney.com/hsgt/index.html"}, timeout=12)
+        j = r.json().get("data") or {}
+        klines = j.get("klines") or []
+        vals = []
+        for row in klines:
+            parts = row.split(",")
+            if len(parts) >= 2:
+                try:
+                    vals.append((parts[0], float(parts[1])))
+                except Exception:
+                    pass
+        if vals:
+            out["latestDate"] = vals[-1][0]
+            out["latestNet"] = round(vals[-1][1], 2)
+            out["totalNet20d"] = round(sum(v for _, v in vals[-20:]), 2)
+            out["source"] = "eastmoney"
+    except Exception as e:
+        logger.warning(f"Eastmoney southbound kline failed: {e}")
+    # 2) 个股：港股通标的持股变化（尽力，失败不影响聚合）
+    try:
+        clist_url = "https://push2.eastmoney.com/api/qt/clist/get"
+        cp = {"pn": "1", "pz": "2000", "fid": "f62", "fs": "m:105+t:3",
+              "fields": "f12,f14,f62,f63,f64,f65", "invt": "2", "fltt": "2"}
+        r2 = requests.get(clist_url, params=cp, headers={
+            "User-Agent": "Mozilla/5.0", "Referer": "https://data.eastmoney.com/hsgt/index.html"}, timeout=12)
+        arr = (r2.json().get("data") or {}).get("diff") or []
+        for it in arr:
+            code = str(it.get("f12") or "").zfill(5)
+            chg = _em_num(it.get("f65"))  # 持股变化(估算，字段待校准)
+            if chg is not None:
+                out["byStock"][code] = round(chg, 2)
+    except Exception as e:
+        logger.warning(f"Eastmoney southbound byStock failed: {e}")
+    return out
+
+
+@router.get("/southbound")
+def get_southbound(raw: bool = Query(default=False)):
+    """港股通南向资金（Eastmoney）。聚合真实；个股持股变化尽力获取。"""
+    cache_key = "southbound"
+    now = time.time()
+    if cache_key in _SB_CACHE:
+        ts, data = _SB_CACHE[cache_key]
+        if now - ts < _SB_CACHE_TTL:
+            data = {**data, "cached": True}
+            return data
+    data = _fetch_southbound()
+    _SB_CACHE[cache_key] = (now, data)
+    if raw:
+        data = {**data, "raw_note": "见服务端日志/调试"}
+    return data

@@ -1,0 +1,10 @@
+# 重依赖（Phase 1+ 才需要）：Qlib 因子/ML 排序 + VectorBT 高速扫描。
+# 安装较重，建议在后台执行；Apple Silicon 需先 `brew install libomp`。
+# Qlib 对 Python 版本敏感，已在 Python 3.11 venv 中验证。
+pyqlib
+vectorbt
+lightgbm
+pyyaml
+pandas
+numpy
+scipy

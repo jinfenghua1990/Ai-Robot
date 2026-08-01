@@ -523,7 +523,7 @@ def fetch_from_tushare_ths():
         ts.set_token(TUSHARE_TOKEN)
         pro = ts.pro_api()
     except Exception as e:
-        logger.warning(f'[sync_concept_sectors] tushare init error: {e}', exc_info=True)
+        logger.warning(f'[sync_concept_sectors] Tushare 概念源初始化失败，跳过: {e}')
         return {}
 
     concepts = {}
@@ -532,7 +532,9 @@ def fetch_from_tushare_ths():
         df_index = pro.ths_index(type='N', fields='ts_code,name,count')
         logger.info('[sync_concept_sectors] fetched %d ths concept boards', len(df_index))
     except Exception as e:
-        logger.warning(f'[sync_concept_sectors] tushare ths_index error: {e}', exc_info=True)
+        # ths_index 需要额外积分权限；失败时必须安静降级到新浪/AkShare/兜底，
+        # 不能用异常堆栈淹没采集日志，也不能把失败误报成全量概念已更新。
+        logger.warning(f'[sync_concept_sectors] Tushare ths_index 无权限或不可用，跳过该源: {e}')
         return {}
 
     def _fetch_one(row):

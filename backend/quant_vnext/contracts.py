@@ -28,7 +28,8 @@ class MarketContext:
     limit_up_count: int = 0
     limit_down_count: int = 0
     broken_rate: float = 0.0
-    market_return_20d: float = 0.0
+    market_return_20d: Optional[float] = None
+    market_data_available: bool = False
 
 
 @dataclass(frozen=True)
@@ -84,4 +85,5 @@ class SignalSnapshot:
     lifecycle: str
     trading_state: str
     reasons: List[str] = field(default_factory=list)
-
+    market_state: str = ""
+    factor_weights: Dict[str, float] = field(default_factory=dict)

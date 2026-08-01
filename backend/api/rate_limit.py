@@ -12,6 +12,20 @@ from collections import defaultdict
 
 logger = logging.getLogger("rate_limit")
 
+# V2 总览是本地数据库只读接口。首屏会并行请求 dashboard/candidates，
+# 还会被用户频繁切换页面重新读取；把它们计入全局外部接口频率桶，
+# 会导致正常的页面导航被错误地返回 429。并发限制仍然保留，避免请求堆积。
+V2_READ_ONLY_PREFIXES = (
+    "/api/v2/dashboard",
+    "/api/v2/candidates",
+    "/api/v2/health",
+    "/api/v2/registry",
+    "/api/v2/factor-lifecycle",
+    "/api/v2/system/quality",
+    "/api/v2/system/quality-dashboard",
+    "/api/v2/collection/status",
+)
+
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
     """单 worker 语义的限流中间件。
@@ -37,11 +51,16 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         client_ip = request.client.host if request.client else "unknown"
         path = request.url.path
 
+        # 只对 GET/HEAD 生效；POST 的快照保存、系统检查和交易接口仍受限。
+        skip_frequency_limit = (
+            request.method in {"GET", "HEAD"}
+            and path.startswith(V2_READ_ONLY_PREFIXES)
+        )
+
         # 跳过：SSE 长连接 / 静态资源 / 健康检查 / 文档
         skip_connection_limit = (
             path == '/api/watchlist/realtime/stream' or
             path.startswith('/assets/') or
-            path.startswith('/_vibe/') or
             path.startswith('/_dsa/') or
             path == '/api/health' or
             path == '/api/health/detailed' or
@@ -76,7 +95,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         elif client_ip in self.request_timestamps:
             del self.request_timestamps[client_ip]
 
-        if len(recent) >= self.max_requests:
+        if not skip_frequency_limit and len(recent) >= self.max_requests:
             logger.warning(
                 "[rate_limit] 429 RATE_LIMITED ip=%s path=%s requests=%d/%d in %ds",
                 client_ip, path, len(recent), self.max_requests, self.window_seconds
@@ -88,9 +107,11 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                     "message": "请求过于频繁，请稍后再试",
                     "retry_after": self.window_seconds,
                 },
+                headers={"Retry-After": str(self.window_seconds)},
             )
 
-        self.request_timestamps[client_ip].append(now)
+        if not skip_frequency_limit:
+            self.request_timestamps[client_ip].append(now)
         if not skip_connection_limit:
             self.active_connections[client_ip] += 1
 

@@ -6,7 +6,7 @@
  *  - 龙头系统：主龙头加冕 + 候选龙头 + 板块状态 + 热度池（原 TradingSystemPage）
  *  - 大佬持仓：BUY→SELL 配对,持有几天跑了,赚还是亏（BossHoldingsPage）
  */
-import { useState, lazy, Suspense } from 'react';
+import { lazy, Suspense } from 'react';
 import { useSearchParams } from 'react-router-dom';
 
 const YuziBillboardPage = lazy(() => import('./YuziBillboardPage'));
@@ -14,49 +14,13 @@ const TradingSystemPage = lazy(() => import('./TradingSystemPage'));
 const BossHoldingsPage = lazy(() => import('./BossHoldingsPage'));
 const YuziLifecycleTrackerPage = lazy(() => import('./YuziLifecycleTrackerPage'));
 
-const TABS = [
-  { key: 'billboard', label: '龙虎榜', icon: '📊', desc: '资金动向 + 共振信号 + 游资战绩' },
-  { key: 'leader', label: '龙头系统', icon: '👑', desc: '主龙头 + 候选 + 板块状态 + 热度池' },
-  { key: 'holdings', label: '大佬持仓', icon: '💼', desc: 'BUY→SELL 配对 · 持有几天跑了' },
-  { key: 'tracker', label: '20天跟踪', icon: '🧬', desc: '游资生命周期 20 日跟踪' },
-];
 
 export default function YuziCenterPage() {
-  const [params, setParams] = useSearchParams();
-  const initial = TABS.some(t => t.key === params.get('tab')) ? params.get('tab') : 'billboard';
-  const [activeTab, setActiveTab] = useState(initial);
-  const switchTab = (key) => {
-    setActiveTab(key);
-    setParams(key === 'billboard' ? {} : { tab: key });
-  };
+  const [params] = useSearchParams();
+  const tab = params.get('tab') || 'billboard';
 
   return (
     <div className="flex flex-col h-full">
-      {/* Tab 栏 */}
-      <div
-        className="flex items-center gap-1 px-3 py-2 border-b flex-shrink-0"
-        style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}
-      >
-        {TABS.map(tab => (
-          <button
-            key={tab.key}
-            onClick={() => switchTab(tab.key)}
-            className="px-3 py-1.5 rounded-lg text-sm font-medium transition-colors flex items-center gap-1.5"
-            style={{
-              background: activeTab === tab.key ? 'rgba(168,85,247,0.15)' : 'transparent',
-              color: activeTab === tab.key ? '#a855f7' : 'var(--text-secondary)',
-              border: `1px solid ${activeTab === tab.key ? 'rgba(168,85,247,0.4)' : 'var(--border-color)'}`,
-            }}
-          >
-            <span>{tab.icon}</span>
-            <span>{tab.label}</span>
-          </button>
-        ))}
-        <span className="text-[10px] ml-2" style={{ color: 'var(--text-muted)' }}>
-          {TABS.find(t => t.key === activeTab)?.desc}
-        </span>
-      </div>
-
       {/* Tab 内容 */}
       <div className="flex-1 overflow-auto">
         <Suspense
@@ -66,10 +30,10 @@ export default function YuziCenterPage() {
             </div>
           }
         >
-          {activeTab === 'billboard' && <YuziBillboardPage />}
-          {activeTab === 'leader' && <TradingSystemPage />}
-          {activeTab === 'holdings' && <BossHoldingsPage />}
-          {activeTab === 'tracker' && <YuziLifecycleTrackerPage />}
+          {tab === 'billboard' && <YuziBillboardPage />}
+          {tab === 'leader' && <TradingSystemPage />}
+          {tab === 'holdings' && <BossHoldingsPage />}
+          {tab === 'tracker' && <YuziLifecycleTrackerPage />}
         </Suspense>
       </div>
     </div>

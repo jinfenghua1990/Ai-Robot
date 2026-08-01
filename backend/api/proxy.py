@@ -1,14 +1,11 @@
 """反向代理：将子系统 API 统一收敛到 AIROBOT 端口 9000。
 
 Hermes 子系统已并入本进程（见 backend/main.py 中 hermes_backend 路由并入），
-不再经此代理转发到 8788。此处仅保留仍独立运行的子系统：
+不再经此代理转发到 8788。此处仅保留仍独立运行的 DSA 子系统：
 
 - /api/v1/*          -> DSA   localhost:8000
-- /_aihf_api/*       -> AIHF  localhost:8002（去掉前缀）
-- /_openclaw/*       -> OpenClaw    localhost:18789（去掉前缀）
 """
 import logging
-import os
 from typing import Optional
 
 from fastapi import APIRouter, Request
@@ -19,8 +16,6 @@ router = APIRouter()
 
 # 子系统代理目标（内部端口）
 _DSA_BASE = "http://127.0.0.1:8000"
-_AIHF_BASE = os.environ.get("AIHF_BACKEND_URL", "http://127.0.0.1:8002")
-_OPENCLAW_BASE = os.environ.get("OPENCLAW_UI_URL", "http://127.0.0.1:18789")
 
 _HOP_BY_HOP_HEADERS = {
     "connection",
@@ -56,7 +51,7 @@ async def _proxy_request(
     """将请求转发到目标子系统后端。
 
     :param strip_prefix: 若提供，从请求路径中去掉此前缀后再转发。
-                         例如 `/_aihf_api/` -> 转发到目标根路径。
+                         例如 `/api/v1/` -> 转发到目标根路径。
     """
     client = request.app.state.http_client
     original_path = request.url.path
@@ -117,44 +112,3 @@ async def _proxy_request(
 )
 async def proxy_dsa(request: Request, path: str) -> Response:
     return await _proxy_request(request, _DSA_BASE, path)
-
-
-# ---------------------------------------------------------------------------
-# AIHF API 代理：同源路径 /_aihf_api/* 收敛到后端 8002
-# ---------------------------------------------------------------------------
-@router.api_route(
-    "/_aihf_api/{path:path}",
-    methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"],
-    include_in_schema=False,
-)
-async def proxy_aihf_api(request: Request, path: str) -> Response:
-    return await _proxy_request(
-        request, _AIHF_BASE, path,
-        strip_prefix="/_aihf_api/",
-        timeout=120.0,
-    )
-
-
-# ---------------------------------------------------------------------------
-# OpenClaw / robot3 控制面板代理：同源路径 /_openclaw/* 收敛到 18789
-# ---------------------------------------------------------------------------
-@router.api_route(
-    "/_openclaw/{path:path}",
-    methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"],
-    include_in_schema=False,
-)
-async def proxy_openclaw(request: Request, path: str) -> Response:
-    return await _proxy_request(
-        request, _OPENCLAW_BASE, path,
-        strip_prefix="/_openclaw/",
-        timeout=120.0,
-    )
-
-
-@router.get("/_openclaw/", include_in_schema=False)
-async def proxy_openclaw_index(request: Request):
-    return await _proxy_request(
-        request, _OPENCLAW_BASE, "",
-        strip_prefix="/_openclaw/",
-        timeout=120.0,
-    )

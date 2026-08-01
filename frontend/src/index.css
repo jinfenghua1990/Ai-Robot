@@ -79,7 +79,7 @@ table td, table th {
   background: transparent;
 }
 
-/* ===== Premium integration utilities (AIHF / TAgents / go-stock) ===== */
+/* ===== Premium integration utilities (go-stock) ===== */
 .premium-card {
   background: var(--bg-card);
   border: 1px solid var(--border-color);

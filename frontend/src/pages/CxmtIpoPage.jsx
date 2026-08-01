@@ -4,6 +4,8 @@ import { apiFetch } from '../utils/request';
 import TradeModal from '../components/trading/TradeModal';
 import { useTrading } from '../context/TradingContext';
 import { TOAST_DURATION } from '../utils/constants';
+import { IPO_PROJECTS } from '../data/ipoProjects';
+import { IpoTimeline, IpoListingCard, computeIpoProgress } from '../components/IpoTracker';
 
 /* ─── 长鑫科技IPO关联标的分类 ───
    评估说明：
@@ -134,34 +136,41 @@ export default function CxmtIpoPage() {
     }
   }, [tradeResult, clearTradeResult]);
 
-  // IPO 进度状态机
+  // IPO 跟踪（数据驱动，详见 src/data/ipoProjects.js）
+  const project = IPO_PROJECTS.cxmt;
   const [quoteProgress, setQuoteProgress] = useState({ loaded: 0, total: ALL_CODES.length });
-  const ipoState = useMemo(() => {
-    const now = Date.now();
-    const days = [
-      { d: new Date('2026-07-15T00:00:00+08:00'), label: '询价定价', icon: '💰', color: '#f59e0b' },
-      { d: new Date('2026-07-16T00:00:00+08:00'), label: '今日申购!', icon: '🎯', color: '#ef4444' },
-      { d: new Date('2026-07-17T00:00:00+08:00'), label: '等待中签', icon: '⏳', color: '#3b82f6' },
-      { d: new Date('2026-07-20T00:00:00+08:00'), label: '缴款截止', icon: '💳', color: '#f97316' },
-      { d: new Date('2026-07-22T00:00:00+08:00'), label: '发行结果', icon: '📋', color: '#a855f7' },
-    ];
-    for (const phase of days) {
-      if (now < phase.d.getTime()) {
-        const diff = phase.d - now;
-        const dd = Math.floor(diff / 86400000);
-        const hh = Math.floor((diff % 86400000) / 3600000);
-        return { ...phase, countdown: dd > 0 ? `${dd}天${hh}小时` : `${hh}小时`, done: false };
-      }
+  const [companyQuote, setCompanyQuote] = useState(null);
+
+  // 公司自身实时行情（后跟踪）：上市后自动拉取
+  const refreshCompanyQuote = useCallback(async () => {
+    if (!project.listed || !project.code) return;
+    try {
+      const { ok, data } = await apiFetch(`/api/trading/quote?code=${project.code}`, {}, 6000);
+      if (ok) setCompanyQuote(data);
+    } catch {}
+  }, [project]);
+
+  // 当前 IPO 阶段（用于状态卡，整页渲染时计算一次）
+  const ipoStatus = useMemo(() => {
+    const p = computeIpoProgress(project, Date.now());
+    const next = p.nextIdx >= 0 ? p.stages[p.nextIdx] : null;
+    const allDone = p.stages.every((s) => s.status === 'done');
+    if (project.listed && allDone) return { icon: '🚀', label: '已上市', color: '#22c55e', sub: '后跟踪进行中' };
+    if (next) {
+      const diff = next.ms - Date.now();
+      const dd = Math.floor(diff / 86400000);
+      const hh = Math.floor((diff % 86400000) / 3600000);
+      return { icon: '⏳', label: next.label, color: '#3b82f6', sub: dd > 0 ? `${dd}天${hh}小时` : `${hh}小时` };
     }
-    return { label: '已上市', icon: '🚀', color: '#22c55e', countdown: '—', done: true };
-  }, []);
+    return { icon: '📝', label: '进行中', color: 'var(--text-muted)', sub: '节点待披露' };
+  }, [project]);
 
   // 刷新行情
   const refreshQuotes = useCallback(async () => {
     setQuoteProgress(p => ({ ...p, loaded: 0 }));
     const results = await Promise.allSettled(
       ALL_CODES.map(code =>
-        apiFetch(`/api/trading/realtime-quote?code=${code}`, {}, 6000)
+        apiFetch(`/api/trading/quote?code=${code}`, {}, 6000)
       )
     );
     let loaded = 0;
@@ -203,14 +212,15 @@ export default function CxmtIpoPage() {
     return () => { active = false; };
   }, []);
 
-  // 获取实时行情
+  // 获取实时行情 + 公司自身行情（后跟踪）
   useEffect(() => {
     let active = true;
     refreshQuotes().then(() => {
       if (active) setLoading(false);
     });
+    refreshCompanyQuote();
     return () => { active = false; };
-  }, [refreshQuotes]);
+  }, [refreshQuotes, refreshCompanyQuote]);
 
   // 获取存储芯片板块数据
   useEffect(() => {
@@ -261,7 +271,7 @@ export default function CxmtIpoPage() {
             688825.SH
           </span>
         </h2>
-        <button onClick={refreshQuotes}
+        <button onClick={() => { refreshQuotes(); refreshCompanyQuote(); }}
           className="px-2.5 py-1 rounded-lg border text-xs flex items-center gap-1"
           style={{ borderColor: 'var(--border-color)', color: 'var(--text-secondary)' }}>
           🔄 刷新行情
@@ -279,11 +289,20 @@ export default function CxmtIpoPage() {
         {/* 顶部：公司名 + 申购日 */}
         <div className="flex items-center gap-2 flex-wrap">
           <span className="text-lg font-bold" style={{ color: 'var(--text-primary)' }}>长鑫科技</span>
-          <span className="text-xs px-1.5 py-0.5 rounded-full" style={{ background: 'rgba(239,68,68,0.12)', color: '#ef4444', border: '1px solid rgba(239,68,68,0.3)' }}>
-            🗓 7月16日网上申购
-          </span>
+          {(() => {
+            const sub = project.stages.find((s) => s.key === 'subscribe');
+            return sub?.date ? (
+              <span className="text-xs px-1.5 py-0.5 rounded-full" style={{ background: 'rgba(239,68,68,0.12)', color: '#ef4444', border: '1px solid rgba(239,68,68,0.3)' }}>
+                🗓 {sub.date.replace(/-/g, '/')} 网上申购
+              </span>
+            ) : (
+              <span className="text-xs px-1.5 py-0.5 rounded-full" style={{ background: 'rgba(239,68,68,0.12)', color: '#ef4444', border: '1px solid rgba(239,68,68,0.3)' }}>
+                🗓 网上申购待披露
+              </span>
+            );
+          })()}
           <span className="text-xs px-1.5 py-0.5 rounded" style={{ background: 'rgba(59,130,246,0.1)', color: '#3b82f6' }}>
-            科创板 · 代码 688825
+            科创板 · 代码 {project.code}
           </span>
         </div>
         {/* 关键数据卡 */}
@@ -311,10 +330,14 @@ export default function CxmtIpoPage() {
         </div>
       </div>
 
+      {/* ===== IPO 前/后跟踪（动态） ===== */}
+      <IpoTimeline project={project} />
+      <IpoListingCard project={project} quote={companyQuote} loading={loading} />
+
       {/* ===== 评估速览 + 倒计时 ===== */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
         {[
-          { label: 'IPO状态', value: `${ipoState.icon} ${ipoState.label}`, color: ipoState.color, sub: ipoState.done ? '已上市' : ipoState.countdown },
+          { label: 'IPO状态', value: `${ipoStatus.icon} ${ipoStatus.label}`, color: ipoStatus.color, sub: ipoStatus.sub },
           { label: '行情加载', value: `${quoteProgress.loaded}/${quoteProgress.total}`, color: quoteProgress.loaded === quoteProgress.total ? '#22c55e' : '#f59e0b', sub: quoteProgress.loaded === quoteProgress.total ? '已就绪' : '加载中...' },
           { label: '强烈推荐(★★★)', value: CATEGORIES.flatMap(c=>c.stocks).filter(s=>s.rec==='BUY').length+'只', color: '#1D9E75', sub: '★★★★★' },
           { label: '可关注(★★)', value: CATEGORIES.flatMap(c=>c.stocks).filter(s=>s.rec==='WATCH').length+'只', color: '#f59e0b', sub: '回调列入' },

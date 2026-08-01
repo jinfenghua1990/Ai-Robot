@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Ai-Robot V2 · 右侧多因子决策系统</title>
+    <link rel="stylesheet" href="/static/styles.css?v=20260730-ui16" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="brand-block" aria-label="Ai-Robot V2">
+          <div class="brand-mark">AI</div>
+          <div class="brand-copy">
+            <div class="eyebrow">AI-ROBOT V2</div>
+            <strong>右侧多因子</strong>
+          </div>
+        </div>
+
+        <div class="market-switch" aria-label="市场切换">
+          <button class="market-tab active" data-market="cn">A股</button>
+          <button class="market-tab" data-market="hk" disabled>港股<span>待接入</span></button>
+          <button class="market-tab" data-market="us" disabled>美股<span>待接入</span></button>
+          <button class="market-tab" data-market="global" disabled>全球<span>待接入</span></button>
+        </div>
+
+        <div class="top-actions">
+          <button class="top-system" data-page="system">🛡️ 系统状态</button>
+          <button class="top-system" data-page="collection">📡 数据中心</button>
+          <button class="theme-toggle" id="themeToggle" type="button" aria-label="切换黑夜模式" aria-pressed="false">🌙 黑夜</button>
+          <span class="status-chip live"><i></i>新程序</span>
+          <span class="port-chip">9001</span>
+          <span class="top-date">研究版</span>
+        </div>
+      </header>
+
+      <nav class="nav-tabs" aria-label="业务导航">
+        <div class="nav-group-label" data-nav-scope="market">市场观察</div>
+        <button class="nav-tab active" data-nav-scope="market" data-page="overview"><span class="nav-icon">📊</span>总览</button>
+        <button class="nav-tab" data-nav-scope="market" data-page="sectors"><span class="nav-icon">🔥</span>板块流动</button>
+        <button class="nav-tab" data-nav-scope="market" data-page="candidates"><span class="nav-icon">🎯</span>选股中心</button>
+        <div class="nav-group-label" data-nav-scope="market">交易研究</div>
+        <button class="nav-tab" data-nav-scope="market" data-page="yuzi"><span class="nav-icon">🐉</span>游资</button>
+        <button class="nav-tab" data-nav-scope="market" data-page="actions"><span class="nav-icon">🧬</span>量化动作</button>
+        <button class="nav-tab" data-nav-scope="market" data-page="watchlist"><span class="nav-icon">⭐</span>自选</button>
+        <button class="nav-tab" data-nav-scope="market" data-page="holdings"><span class="nav-icon">💼</span>持仓与交易</button>
+        <button class="nav-tab" data-nav-scope="market" data-page="analysis"><span class="nav-icon">🔍</span>个股研究</button>
+        <button class="nav-tab" data-nav-scope="market" data-page="validation"><span class="nav-icon">🧪</span>因子验证</button>
+        <div class="nav-group-label" data-nav-scope="global">系统管理</div>
+        <button class="nav-tab" data-nav-scope="global" data-page="system"><span class="nav-icon">🛡️</span>系统状态</button>
+        <button class="nav-tab" data-nav-scope="global" data-page="collection"><span class="nav-icon">📡</span>数据中心</button>
+      </nav>
+
+      <div class="status-strip">
+        <span class="status-dot"></span><b>V2 数据链路正常</b>
+        <span class="strip-divider"></span><span>旧系统 9000 保留</span>
+        <span class="strip-divider"></span><span class="danger-text">自动下单关闭</span>
+        <span class="strip-spacer"></span><span class="strip-hint">先看市场，再看共振，最后看交易状态</span>
+      </div>
+
+      <main id="app" class="content">
+        <div class="loading-card">
+          <div class="loading-spinner" aria-hidden="true"></div>
+          <strong>正在读取新 V2 数据链路…</strong>
+          <span>正在读取最近完成交易日、股票池和因子评分；首次计算可能需要十几秒。</span>
+          <div class="loading-skeleton" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+        </div>
+      </main>
+    </div>
+    <script src="/static/app.js?v=20260730-ui12"></script>
+  </body>
+</html>

@@ -26,10 +26,10 @@ export default function HealthStrip() {
       onClick={() => navigate('/quality')}
       className="flex items-center gap-1 px-2 py-1 rounded-md text-xs border transition-colors"
       style={{ borderColor: 'var(--border-color)', color: 'var(--text-secondary)' }}
-      title="前往系统与服务健康"
+      title="前往服务健康"
     >
       <span>🛡️</span>
-      <span>系统</span>
+      <span>服务健康</span>
       <span className="w-1.5 h-1.5 rounded-full" style={{ background: statusColor, boxShadow: `0 0 5px ${statusColor}` }} />
       <span style={{ color: downCount ? 'var(--accent-red)' : 'var(--text-muted)' }}>
         {services.length ? `${upCount}/${services.length}` : '…'}

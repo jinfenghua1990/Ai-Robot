@@ -132,22 +132,46 @@ async def portfolio_snapshot_endpoint():
         })
     total_mv = sum(it["market_value_base"] for it in items)
     total_upnl = sum(it["unrealized_pnl_base"] for it in items)
+    # 资产口径必须来自同一个妙想账户快照，不能把“持仓市值”冒充“总资产”。
+    # positions 接口在部分情况下不返回完整账户字段，因此保留明确的质量标记。
+    api_cash = pos_data.get("availBalance")
+    api_market_value = pos_data.get("totalPosValue")
+    api_equity = pos_data.get("totalAssets")
+    total_cash = float(api_cash or 0)
+    if api_market_value not in (None, ""):
+        total_mv = float(api_market_value or 0)
+    total_equity = float(api_equity or 0) if api_equity not in (None, "") else total_cash + total_mv
+    limitations = []
+    if api_cash in (None, ""):
+        limitations.append("现金余额未从妙想账户返回")
+    if api_market_value in (None, ""):
+        limitations.append("持仓市值使用持仓明细求和")
+    if api_equity in (None, ""):
+        limitations.append("总资产使用现金加持仓市值估算")
+    limitations.extend(["已实现盈亏未由当前接口提供", "手续费与印花税未由当前接口提供"])
+    data_quality = "ok" if not any(
+        item in limitations for item in (
+            "现金余额未从妙想账户返回",
+            "持仓市值使用持仓明细求和",
+            "总资产使用现金加持仓市值估算",
+        )
+    ) else "partial"
     return {
         "as_of": _date.today().isoformat(),
         "cost_method": "avg", "currency": "CNY",
         "account_count": 1 if items else 0,
-        "total_cash": 0.0, "total_market_value": total_mv, "total_equity": total_mv,
+        "total_cash": total_cash, "total_market_value": total_mv, "total_equity": total_equity,
         "realized_pnl": 0.0, "unrealized_pnl": total_upnl,
         "fee_total": 0.0, "tax_total": 0.0,
-        "fx_stale": False, "data_quality": "ok", "limitations": [],
+        "fx_stale": False, "data_quality": data_quality, "limitations": limitations,
         "accounts": [{
             "account_id": 1, "account_name": "模拟交易", "market": "cn",
             "base_currency": "CNY", "as_of": _date.today().isoformat(),
-            "cost_method": "avg", "total_cash": 0.0,
-            "total_market_value": total_mv, "total_equity": total_mv,
+            "cost_method": "avg", "total_cash": total_cash,
+            "total_market_value": total_mv, "total_equity": total_equity,
             "realized_pnl": 0.0, "unrealized_pnl": total_upnl,
             "fee_total": 0.0, "tax_total": 0.0,
-            "fx_stale": False, "data_quality": "ok", "limitations": [], "positions": items,
+            "fx_stale": False, "data_quality": data_quality, "limitations": limitations, "positions": items,
         }],
     }
 

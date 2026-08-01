@@ -54,7 +54,7 @@ function WatchlistItem({ signal, isSelected, realtimeFlow, onSelect, onRemove, o
           onRemove={onRemove}
           onRefresh={onRefresh}
           onAnalyze={onAnalyze}
-          showWatchBtn={!signal.poolSources?.includes('自选')}
+          showWatchBtn={false}
           // 自选页现在是持仓状态管理页，不在这里把未持仓标的当成买入信号。
           showBuyBtn={false}
           mode="watchlist"

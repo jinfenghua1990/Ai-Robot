@@ -876,3 +876,58 @@ def scheduled_generate_recap():
         logger.info(f'[scheduler] 盘后复盘生成{"完成" if created else "已存在"}: {date_str}')
     except Exception as e:
         logger.error(f'[scheduler] 盘后复盘生成失败: {e}', exc_info=True)
+
+
+# ============================================================
+# G) 美股量化扫描
+# ============================================================
+
+def scheduled_us_quant_collect():
+    """美股日K线数据采集（北京时间 4:00-5:00，美股收盘后数据就绪时执行）
+
+    数据流：东财push2(gstock) → akshare(新浪) → Nasdaq → Yahoo → 入 USStockDaily 表
+    """
+    now = datetime.now()
+    if now.weekday() >= 5:
+        return
+    t = now.hour * 100 + now.minute
+    # 北京时间 4:00-5:00 执行（美股收盘后约 4:00 ET，数据已就绪）
+    if t < 400 or t > 500:
+        return
+
+    logger.info(f'[scheduler] US quant data collection triggered at {now.strftime("%H:%M")}')
+    try:
+        from us_quant.collector import collect_all
+        result = collect_all()
+        logger.info(f'[scheduler] US quant collect done: {result.get("inserted", 0)} inserted, '
+                    f'{result.get("skipped", 0)} skipped, {result.get("total", 0)} total')
+    except Exception as e:
+        logger.error(f'[scheduler] US quant collect error: {e}', exc_info=True)
+
+
+def scheduled_us_quant_scan():
+    """美股盘后策略扫描（北京时间 5:00-8:00，美股收盘后约 4:00 ET）
+    
+    扫描预设美股池，运行 3 套策略，结果落库到 USStrategyScore 表，
+    高分自动生成信号到 USSignal 表。
+    """
+    now = datetime.now()
+    today = now.date()
+    t = now.hour * 100 + now.minute
+    
+    # 北京时间 5:00-8:00 执行（美股收盘后）
+    if t < 500 or t > 800:
+        return
+    
+    # 周末跳过
+    if now.weekday() >= 5:
+        return
+    
+    logger.info(f'[scheduler] US quant scan triggered at {now.strftime("%H:%M")}')
+    try:
+        from api.us_quant import run_us_quant_scan
+        result = run_us_quant_scan(str(today))
+        logger.info(f'[scheduler] US quant scan done: {result.get("scored", 0)} scored, '
+                    f'{result.get("count", 0)} candidates')
+    except Exception as e:
+        logger.error(f'[scheduler] US quant scan error: {e}', exc_info=True)

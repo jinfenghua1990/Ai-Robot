@@ -219,7 +219,7 @@ export default function StockTrackerPage() {
       <div className="p-3 border-b space-y-3" style={{ borderColor: 'var(--border-color)' }}>
         <div className="flex items-center justify-between flex-wrap gap-2">
           <div>
-            <h2 className="text-lg font-bold gradient-text">📈 股票跟踪</h2>
+            <h2 className="text-lg font-bold gradient-text">📈 BS 跟踪池</h2>
             <p className="text-xs" style={{ color: 'var(--text-muted)' }}>平铺展示每只股票入选后的 1-30 日累计收益</p>
           </div>
           <div className="flex items-center gap-2">
@@ -410,37 +410,46 @@ export default function StockTrackerPage() {
                         </div>
                       );
                     })()}
-                    <div className="px-3 pb-3 grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-2">
-                    {exited.map(x => {
-                      const reasonColor = x.exit_reason === 'BS 转 S 自动退出' ? '#ea580c' : '#9ca3af';
-                      return (
-                        <div key={x.id} className="rounded border p-2" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-hover)' }}>
-                          <div className="flex items-center justify-between gap-2">
-                            <div className="flex items-center gap-1.5 min-w-0">
-                              <span className="font-bold text-sm truncate" style={{ color: 'var(--text-primary)' }}>{x.stock_name || '—'}</span>
-                              <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{x.stock_code}</span>
-                            </div>
-                            <span className="px-1 py-0 rounded text-[9px] font-bold shrink-0" style={{ background: `${reasonColor}15`, color: reasonColor, border: `1px solid ${reasonColor}40` }}>{x.exit_reason}</span>
-                          </div>
-                          <div className="mt-1 flex items-center justify-between text-[11px]">
-                            <span style={{ color: 'var(--text-muted)' }}>退出 {x.exit_date}</span>
-                            <span className="font-bold font-mono" style={{ color: pctColor(x.total_pct_chg) }}>{fmtPct(x.total_pct_chg)}</span>
-                          </div>
-                          <div className="mt-0.5 text-[10px] leading-tight" style={{ color: 'var(--text-muted)' }}>
-                            入选 {x.entry_date} · ¥{f2(x.entry_price)} · 持有 {x.days_held ?? 0} 天
-                          </div>
-                          {x.detail ? (
-                            <div className="mt-1 text-[10px] leading-tight truncate" style={{ color: 'var(--text-secondary)' }} title={x.detail}>📝 {x.detail}</div>
-                          ) : null}
-                          <button
-                            type="button"
-                            onClick={e => handleRetrack(e, x)}
-                            className="mt-1.5 w-full text-[10px] rounded border py-1 hover:opacity-80"
-                            style={{ borderColor: 'var(--border-color)', color: '#3b82f6', background: 'transparent' }}
-                          >↻ 重新跟踪</button>
-                        </div>
-                      );
-                    })}
+                    <div className="px-3 pb-3 overflow-x-auto">
+                    <table className="w-full text-xs border-collapse" style={{ minWidth: '680px' }}>
+                      <thead>
+                        <tr style={{ background: 'var(--bg-hover)', height: '26px' }}>
+                          <th className="px-2 py-1 text-left font-bold" style={{ color: 'var(--text-primary)', minWidth: '150px' }}>股票</th>
+                          <th className="px-2 py-1 text-left font-bold" style={{ color: 'var(--text-primary)' }}>退出原因</th>
+                          <th className="px-2 py-1 text-left font-bold" style={{ color: 'var(--text-primary)' }}>退出日期</th>
+                          <th className="px-2 py-1 text-left font-bold" style={{ color: 'var(--text-primary)' }}>入选 / 持有</th>
+                          <th className="px-2 py-1 text-right font-bold" style={{ color: 'var(--text-primary)' }}>盈亏</th>
+                          <th className="px-2 py-1 text-center font-bold" style={{ color: 'var(--text-primary)' }}>操作</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {exited.map((x, i) => {
+                          const reasonColor = x.exit_reason === 'BS 转 S 自动退出' ? '#ea580c' : '#9ca3af';
+                          return (
+                            <tr key={x.id} className="border-t hover:opacity-95" style={{ borderColor: 'var(--border-color)', background: i % 2 ? 'rgba(0,0,0,0.02)' : 'transparent' }}>
+                              <td className="px-2 py-1.5">
+                                <div className="flex items-center gap-1.5">
+                                  <span className="font-bold text-sm" style={{ color: 'var(--text-primary)' }}>{x.stock_name || '—'}</span>
+                                  <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{x.stock_code}</span>
+                                </div>
+                                {x.detail ? <div className="text-[10px] mt-0.5 truncate" style={{ color: 'var(--text-secondary)' }} title={x.detail}>📝 {x.detail}</div> : null}
+                              </td>
+                              <td className="px-2 py-1.5">
+                                <span className="px-1 py-0 rounded text-[9px] font-bold whitespace-nowrap" style={{ background: `${reasonColor}15`, color: reasonColor, border: `1px solid ${reasonColor}40` }}>{x.exit_reason}</span>
+                              </td>
+                              <td className="px-2 py-1.5 text-[11px] whitespace-nowrap" style={{ color: 'var(--text-muted)' }}>{x.exit_date}</td>
+                              <td className="px-2 py-1.5 text-[10px] whitespace-nowrap" style={{ color: 'var(--text-muted)' }}>
+                                入选 {x.entry_date} · ¥{f2(x.entry_price)} · {x.days_held ?? 0} 天
+                              </td>
+                              <td className="px-2 py-1.5 text-right font-bold font-mono" style={{ color: pctColor(x.total_pct_chg) }}>{fmtPct(x.total_pct_chg)}</td>
+                              <td className="px-2 py-1.5 text-center">
+                                <button type="button" onClick={e => handleRetrack(e, x)} className="text-[10px] rounded border px-1.5 py-0.5 hover:opacity-80 whitespace-nowrap" style={{ borderColor: 'var(--border-color)', color: '#3b82f6', background: 'transparent' }}>↻ 重新跟踪</button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
                   </div>
                   </>
                 )}

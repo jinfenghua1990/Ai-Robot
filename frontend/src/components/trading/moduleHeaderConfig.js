@@ -8,16 +8,18 @@
 //
 // 修改一处规则，所有模块自动生效。新增模块只需在此处加一个 key。
 
-// === 颜色常量 ===
+import { UP_COLOR, DOWN_COLOR, UP_DARK } from '../../utils/colors';
+
+// === 颜色常量（统一使用 colors.js 的语义色） ===
 export const COLOR = {
-  BULL: '#ef4444',        // 红=买入/看多
-  BEAR: '#22c55e',        // 绿=卖出/看空
-  CAUTION: '#f97316',     // 橙=谨慎/分歧
-  ATTENTION: '#eab308',   // 黄=关注
-  NEUTRAL: '#64748b',     // 灰=中性
-  RISK: '#dc2626',        // 深红=高危
-  STRONG: '#dc2626',      // 主升浪
-  BOTTOM: '#3b82f6',      // 超卖低吸
+  BULL: UP_COLOR,           // 红=买入/看多
+  BEAR: DOWN_COLOR,         // 绿=卖出/看空
+  CAUTION: '#f97316',       // 橙=谨慎/分歧
+  ATTENTION: '#eab308',     // 黄=关注
+  NEUTRAL: '#64748b',       // 灰=中性
+  RISK: UP_DARK,            // 深红=高危
+  STRONG: UP_DARK,          // 主升浪
+  BOTTOM: '#3b82f6',        // 超卖低吸
 };
 
 // === 模块标题配置 ===

@@ -2,14 +2,12 @@ import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { apiFetch } from '../utils/request';
 
-// 计算需要提醒的事项：离线服务 + AIHF 缺行情 Key
+// 计算需要提醒的事项：离线服务
 function computeIssues(services) {
   const issues = [];
   for (const s of services) {
     if (s.status === 'down') {
       issues.push({ key: s.key, label: s.label, level: 'error', msg: '服务离线', path: s.path });
-    } else if (s.key === 'aihf' && s.has_market_key === false) {
-      issues.push({ key: s.key, label: s.label, level: 'warn', msg: '缺行情 Key（无法跑真实分析）', path: s.path });
     }
   }
   return issues;

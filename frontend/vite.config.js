@@ -6,6 +6,7 @@ const BUILD_VERSION = Date.now()
 
 export default defineConfig({
   plugins: [react()],
+  base: '/',
   server: {
     proxy: {
       '/api': {

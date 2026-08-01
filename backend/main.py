@@ -26,8 +26,9 @@ from api import strategy_track
 from api import wave_analysis
 from api import quant_vnext
 from api import v2_research
+from api import us_quant
 from api.rate_limit import RateLimitMiddleware
-from api import vibe, scheduler_api, shared, proxy, stock_dashboard
+from api import scheduler_api, shared, proxy, stock_dashboard, research_workspace
 from api.auth import verify_api_key
 from api import stock_info
 
@@ -65,6 +66,14 @@ async def lifespan(app: FastAPI):
     # 预热自选股缓存（后台异步，不阻塞启动）
     from api.watchlist import _refresh_watchlist_cache
     _refresh_watchlist_cache()
+    # 创建 US Quant 表
+    try:
+        from us_quant.repository import ensure_schema
+        ensure_schema()
+        logger.info("[us-quant] 数据库表已创建")
+    except Exception as e:
+        logger.warning(f"[us-quant] 建表失败: {e}")
+
     # 预热共享数据缓存（持仓/重点关注）
     try:
         from api.shared import _refresh_portfolio, _export_focus_stocks
@@ -211,14 +220,15 @@ app.include_router(global_market.router)
 app.include_router(hk_strategy.router)
 app.include_router(market_stage.router)
 app.include_router(git_push.router)
-app.include_router(vibe.router)
+app.include_router(research_workspace.router)
+app.include_router(us_quant.router)
 app.include_router(report.router)
 app.include_router(scheduler_api.router)
 
 # 共享数据层：自选股/持仓/重点关注（所有子系统共享）
 app.include_router(shared.router)
 
-# 反向代理：将 DSA / AIHF / OpenClaw 子系统 API 收敛到 9000 端口
+# 反向代理：将仍保留的 DSA 子系统 API 收敛到 9000 端口
 app.include_router(proxy.router)
 
 
@@ -330,124 +340,26 @@ def latest_date():
         return {"date": None}
 
 
-# Vibe-Research 子系统静态资源（独立构建产物，browser-router SPA）
-# 挂载到 /_vibe/ 避免和 AIROBOT 前端 /vibe/* 路由冲突；iframe 通过 /_vibe/* 加载原生 Vibe 页面
-vibe_static = os.path.join(os.path.dirname(__file__), 'static', 'vibe')
-if os.path.exists(vibe_static):
-    app.mount("/_vibe/assets", StaticFiles(directory=os.path.join(vibe_static, 'assets')), name="vibe_assets")
-
-    @app.get("/_vibe/{full_path:path}")
-    async def serve_vibe(full_path: str):
-        # Vibe 内部 API 不存在时返回真实 404（StaticFiles 会处理 /vibe/assets）
-        if full_path.startswith('api/'):
-            raise HTTPException(status_code=404, detail="Not found")
-        index_path = os.path.join(vibe_static, 'index.html')
-        if os.path.exists(index_path):
-            return FileResponse(index_path, media_type='text/html', headers={
-                "Cache-Control": "no-cache, no-store, must-revalidate",
-                "Pragma": "no-cache",
-                "Expires": "0",
-            })
-        return JSONResponse({"error": "Vibe frontend not built"}, status_code=503)
-
-
 # ---------------------------------------------------------------------------
-# daily_stock_analysis (DSA) 子系统集成
-# DSA 后端作为独立子进程运行在 127.0.0.1:8000（与 AIROBOT 9000 隔离，避免依赖冲突）
-# AIROBOT 反向代理 /api/v1/* 和 /stocks.index.json 到 8000，托管 DSA 前端静态资源
-# ---------------------------------------------------------------------------
-import httpx as _httpx
-DSA_BACKEND_URL = os.environ.get("DSA_BACKEND_URL", "http://127.0.0.1:8000")
-
-async def _dsa_proxy(request: Request, path: str):
-    """反向代理到 DSA 后端 8000。后端未启动时返回 503。"""
-    # 特别处理：DSA 持仓快照 → 直接从 api.trading 模块读取（不用HTTP自调用，避免死锁）
-    if path == "api/v1/portfolio/snapshot":
-        # 使用共享数据层（统一读 portfolio.json，所有子系统共享）
-        try:
-            from datetime import date
-            from api.shared import get_portfolio
-            pf = get_portfolio()
-            items = []
-            for p in pf.get("positions", []):
-                items.append({
-                    "symbol": p.get("symbol", ""), "market": "cn", "currency": "CNY",
-                    "quantity": p.get("quantity", 0) or 0,
-                    "avg_cost": float(p.get("avg_cost", 0) or 0),
-                    "last_price": float(p.get("last_price", 0) or 0),
-                    "market_value_base": float(p.get("market_value", 0) or 0),
-                    "unrealized_pnl_base": float(p.get("unrealized_pnl", 0) or 0),
-                    "price_source": "realtime_quote", "price_available": True,
-                })
-            mv = pf.get("total_market_value", 0)
-            up = pf.get("total_unrealized_pnl", 0)
-            return JSONResponse({
-                "as_of": date.today().isoformat(), "cost_method": "avg", "currency": "CNY",
-                "account_count": 1, "total_cash": 0.0, "total_market_value": mv,
-                "total_equity": mv, "realized_pnl": 0.0, "unrealized_pnl": up,
-                "fee_total": 0.0, "tax_total": 0.0, "fx_stale": False,
-                "data_quality": "ok", "limitations": [],
-                "accounts": [{
-                    "account_id": 1, "account_name": "模拟交易", "market": "cn",
-                    "base_currency": "CNY", "as_of": date.today().isoformat(),
-                    "cost_method": "avg", "total_cash": 0.0,
-                    "total_market_value": mv, "total_equity": mv,
-                    "realized_pnl": 0.0, "unrealized_pnl": up,
-                    "fee_total": 0.0, "tax_total": 0.0, "fx_stale": False,
-                    "data_quality": "ok", "limitations": [], "positions": items,
-                }]
-            })
-        except Exception as e:
-            logger.warning(f"[DSA portfolio bridge] shared data failed: {e}")
-        # fall through to DSA backend
-    target = f"{DSA_BACKEND_URL}/{path}"
-    if request.url.query:
-        target = f"{target}?{request.url.query}"
-    method = request.method
-    # 简化 headers：仅透传必要头，避免 httpx 对 list 类型调用 .items()
-    skip_req = {'host', 'content-length', 'transfer-encoding', 'connection'}
-    headers = {}
-    for k, v in request.headers.items():
-        if k.lower() not in skip_req:
-            headers[k] = v
-    body = await request.body()
-    client: _httpx.AsyncClient = app.state.http_client
-    try:
-        upstream = await client.request(
-            method, target, headers=headers, content=body or None, timeout=60,
-        )
-        # 过滤 hop-by-hop 头，用 dict 传给 Response
-        skip_resp = {'content-encoding', 'transfer-encoding', 'connection', 'content-length'}
-        resp_headers = {}
-        for k, v in upstream.headers.items():
-            if k.lower() not in skip_resp:
-                resp_headers[k] = v
-        return Response(
-            content=upstream.content,
-            status_code=upstream.status_code,
-            headers=resp_headers,
-            media_type=upstream.headers.get('content-type'),
-        )
-    except Exception as e:
-        return JSONResponse(
-            {"error": "DSA backend unavailable", "detail": str(e), "hint": "请启动 DSA 后端：./start_dsa.sh (端口 8000)"},
-            status_code=503,
-        )
-
-@app.api_route("/api/v1/{full_path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"])
-async def dsa_api_proxy(full_path: str, request: Request):
-    return await _dsa_proxy(request, f"api/v1/{full_path}")
-
-@app.api_route("/stocks.index.json", methods=["GET", "HEAD"], include_in_schema=False)
-async def dsa_stock_index_proxy(request: Request):
-    return await _dsa_proxy(request, "stocks.index.json")
-
-
-# ---------------------------------------------------------------------------
-# V2 多因子决策子系统集成（9001）
-# 反向代理 /api/v2/* 到 v2_app（127.0.0.1:9001），同源、零跨域
+# V2 多因子决策子系统集成
+# 现在优先在 9000 进程内注册 V2 API；保留反向代理作为迁移期间兜底。
 # ---------------------------------------------------------------------------
 V2_BACKEND_URL = os.environ.get("V2_BACKEND_URL", "http://127.0.0.1:9001")
+
+# 迁移 9001 的业务 API 到 9000。同一套 v2_app 路由和共享数据库，
+# 不启动第二个采集器，也不复制数据。路由放在代理之前，确保本地实现优先命中。
+try:
+    from v2_app.main import app as _local_v2_app
+    from v2_app.repository import ensure_schema as _ensure_v2_schema
+    _ensure_v2_schema()
+    _local_v2_routes = [
+        route for route in _local_v2_app.routes
+        if getattr(route, "path", "").startswith("/api/v2/")
+    ]
+    # 延后插入到当前路由表，代理路由声明后再把本地路由放到代理之前。
+except Exception as _v2_import_error:
+    _local_v2_routes = []
+    logger.warning("V2 本地路由迁移暂不可用: %s", _v2_import_error)
 
 async def _v2_proxy(request: Request, path: str):
     """反向代理到 V2 后端 9001。后端未启动时返回 503。"""
@@ -489,322 +401,65 @@ async def v2_api_proxy(full_path: str, request: Request):
     return await _v2_proxy(request, f"api/v2/{full_path}")
 
 
-# DSA 前端静态资源
-dsa_static = os.path.join(os.path.dirname(__file__), 'static', 'dsa')
-if os.path.exists(dsa_static):
-    app.mount("/_dsa/assets", StaticFiles(directory=os.path.join(dsa_static, 'assets')), name="dsa_assets")
-
-    @app.get("/_dsa/{full_path:path}")
-    async def serve_dsa(full_path: str):
-        if full_path.startswith('api/'):
-            raise HTTPException(status_code=404, detail="Not found")
-        index_path = os.path.join(dsa_static, 'index.html')
-        if os.path.exists(index_path):
-            return FileResponse(index_path, media_type='text/html', headers={
-                "Cache-Control": "no-cache, no-store, must-revalidate",
-                "Pragma": "no-cache",
-                "Expires": "0",
-            })
-        return JSONResponse({"error": "DSA frontend not built"}, status_code=503)
-
-    @app.get("/_dsa")
-    async def redirect_dsa_root():
-        # 裸 /_dsa（无尾斜杠）重定向到 /_dsa/，避免被主前端 catch-all 兜走
-        return RedirectResponse(url="/_dsa/", status_code=307)
-
-
 # ---------------------------------------------------------------------------
-# AI Hedge Fund (AIHF) 子系统集成
-# 后端独立运行在 127.0.0.1:8002（避免与 DSA 8000 冲突）
-# 前端构建产物托管于 /_aihf/，API 经同源代理 /_aihf_api/ 转发到 8002
+# Quant 子系统集成（Qlib 因子/ML 排序 + VectorBT 扫描，独立服务 @9003）
+# 反代到 Quant Service；下游未启动或不可用时代理返回 503。
 # ---------------------------------------------------------------------------
-AIHF_BACKEND_URL = os.environ.get("AIHF_BACKEND_URL", "http://127.0.0.1:8002")
-
-aihf_static = os.path.join(os.path.dirname(__file__), 'static', 'aihf')
-if os.path.exists(aihf_static):
-    app.mount("/_aihf/assets", StaticFiles(directory=os.path.join(aihf_static, 'assets')), name="aihf_assets")
-
-    @app.get("/_aihf/")
-    @app.get("/_aihf/{full_path:path}")
-    async def serve_aihf(full_path: str = ""):
-        if full_path.startswith('api/'):
-            full_path = 'index.html'
-        file_path = os.path.join(aihf_static, full_path)
-        if os.path.isfile(file_path):
-            return FileResponse(file_path)
-        index_path = os.path.join(aihf_static, 'index.html')
-        if os.path.exists(index_path):
-            return FileResponse(index_path, media_type='text/html', headers={
-                "Cache-Control": "no-cache, no-store, must-revalidate",
-                "Pragma": "no-cache", "Expires": "0"})
-        return Response("", status_code=404)
+QUANT_BACKEND_URL = os.environ.get("QUANT_BACKEND_URL", "http://127.0.0.1:9003")
 
 
-# ---------------------------------------------------------------------------
-# AIHF 自动报告控制台（run_aihf_report.py 产出）
-# 纯静态 JSON + 自包含 HTML，挂到 9000 同端口，无需额外 8799 服务。
-# 前端 AIHF 页面以 iframe 内嵌 /_aihf_reports/_dashboard/index.html
-# ---------------------------------------------------------------------------
-REPORTS_DIR = os.path.realpath(
-    os.environ.get("AIHF_REPORT_DIR", os.path.join(os.path.expanduser("~"), "Workbuddy", "aihf-reports"))
-)
-if os.path.isdir(REPORTS_DIR):
-    app.mount("/_aihf_reports", StaticFiles(directory=REPORTS_DIR, html=True), name="aihf_reports")
-
-
-# ---------------------------------------------------------------------------
-# TradingAgents (TAgents) 运行器
-# TAgents 无 Web UI，由 AIROBOT 提供表单 + 后台子进程运行 + 日志轮询
-# ---------------------------------------------------------------------------
-import uuid as _uuid
-TAGENTS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'stock-tools', 'trading-agents')
-TAGENTS_RUNS = os.path.join(TAGENTS_DIR, '.runs')
-os.makedirs(TAGENTS_RUNS, exist_ok=True)
-
-
-def _load_tagents_env():
-    env = dict(os.environ)
-    env_path = os.path.join(TAGENTS_DIR, '.env')
-    if os.path.exists(env_path):
-        with open(env_path) as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith('#') or '=' not in line:
-                    continue
-                k, v = line.split('=', 1)
-                env[k.strip()] = v.strip()
-    return env
-
-
-@app.post("/api/tagents/run")
-async def tagents_run(request: Request):
-    data = await request.json()
-    ticker = str(data.get('ticker', 'NVDA')).strip().upper() or 'NVDA'
-    trade_date = str(data.get('trade_date', '2024-05-10')).strip() or '2024-05-10'
-    asset_type = str(data.get('asset_type', 'stock')).strip() or 'stock'
-    run_id = _uuid.uuid4().hex[:8]
-    log_path = os.path.join(TAGENTS_RUNS, f"{run_id}.log")
-    venv_py = os.path.join(TAGENTS_DIR, '.venv', 'bin', 'python')
-    py = venv_py if os.path.exists(venv_py) else 'python3'
-    runner = os.path.join(TAGENTS_DIR, 'run_analysis.py')
-    env = _load_tagents_env()
+async def _quant_proxy(request: Request, path: str):
+    """反向代理到 Quant Service 9003。后端未启动时返回 503。"""
+    target = f"{QUANT_BACKEND_URL}/{path}"
+    if request.url.query:
+        target = f"{target}?{request.url.query}"
+    method = request.method
+    skip_req = {'host', 'content-length', 'transfer-encoding', 'connection'}
+    headers = {}
+    for k, v in request.headers.items():
+        if k.lower() not in skip_req:
+            headers[k] = v
+    body = await request.body()
+    client: _httpx.AsyncClient = app.state.http_client
     try:
-        import subprocess
-        with open(log_path, 'w') as lf:
-            lf.write(f"[init] run_id={run_id} ticker={ticker} date={trade_date} asset={asset_type}\n")
-            lf.flush()
-            subprocess.Popen(
-                [py, runner, ticker, trade_date, asset_type],
-                cwd=TAGENTS_DIR, env=env, stdout=lf, stderr=subprocess.STDOUT,
-                start_new_session=True,
-            )
-        return {"run_id": run_id, "ticker": ticker, "trade_date": trade_date,
-                "log_url": f"/api/tagents/log/{run_id}"}
+        upstream = await client.request(
+            method, target, headers=headers, content=body or None, timeout=60,
+        )
+        skip_resp = {'content-encoding', 'transfer-encoding', 'connection', 'content-length'}
+        resp_headers = {}
+        for k, v in upstream.headers.items():
+            if k.lower() not in skip_resp:
+                resp_headers[k] = v
+        return Response(
+            content=upstream.content,
+            status_code=upstream.status_code,
+            headers=resp_headers,
+            media_type=upstream.headers.get('content-type'),
+        )
     except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
-
-
-@app.get("/api/tagents/log/{run_id}")
-async def tagents_log(run_id: str):
-    log_path = os.path.join(TAGENTS_RUNS, f"{run_id}.log")
-    if not os.path.exists(log_path):
-        return JSONResponse({"status": "not_found"}, status_code=404)
-    with open(log_path) as f:
-        content = f.read()
-    done = ("END ====================" in content) or ("[run_analysis] ERROR" in content)
-    return {"run_id": run_id, "running": not done, "log": content}
-
-
-# ---------------------------------------------------------------------------
-# AI Hedge Fund (AIHF) 后端启动控制
-# 后端在 127.0.0.1:8002 独立运行；前端由 AIROBOT 静态托管 /_aihf/
-# ---------------------------------------------------------------------------
-import subprocess as _subprocess
-AIHF_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'stock-tools', 'ai-hedge-fund')
-
-@app.get("/api/aihf/status")
-async def aihf_status():
-    running = False
-    try:
-        import httpx
-        async with httpx.AsyncClient(timeout=4, trust_env=False) as c:
-            r = await c.get(f"{AIHF_BACKEND_URL}/")
-        running = r.status_code == 200
-    except Exception:
-        running = False
-    has_market_key = bool(_read_aihf_env()[0].get("FINANCIAL_DATASETS_API_KEY"))
-    return {"running": running, "url": AIHF_BACKEND_URL, "has_market_key": has_market_key}
-
-@app.post("/api/aihf/start")
-async def aihf_start():
-    # 已在运行则跳过
-    try:
-        import httpx
-        async with httpx.AsyncClient(timeout=4, trust_env=False) as c:
-            r = await c.get(f"{AIHF_BACKEND_URL}/")
-        if r.status_code == 200:
-            return {"status": "already_running", "url": AIHF_BACKEND_URL}
-    except Exception:
-        logger.debug("AIHF already-running check failed", exc_info=False)
-    venv_py = os.path.join(AIHF_DIR, '.venv', 'bin', 'python')
-    try:
-        env = dict(os.environ)
-        env_path = os.path.join(AIHF_DIR, '.env')
-        if os.path.exists(env_path):
-            with open(env_path) as f:
-                for line in f:
-                    line = line.strip()
-                    if not line or line.startswith('#') or '=' not in line:
-                        continue
-                    k, v = line.split('=', 1)
-                    env[k.strip()] = v.strip()
-        env["PYTHONPATH"] = AIHF_DIR
-        logf = open(os.path.join(AIHF_DIR, 'aihf_backend.log'), 'w')
-        _subprocess.Popen(
-            [venv_py, "-m", "uvicorn", "app.backend.main:app", "--host", "127.0.0.1", "--port", "8002"],
-            cwd=AIHF_DIR, env=env, stdout=logf, stderr=_subprocess.STDOUT, start_new_session=True,
+        return JSONResponse(
+            {"error": "Quant backend unavailable", "detail": str(e),
+             "hint": "请启动 Quant 服务：bash backend/quant_service/start.sh"},
+            status_code=503,
         )
-        logf.close()
-        return {"status": "starting", "url": AIHF_BACKEND_URL}
-    except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
 
 
-def _read_aihf_env():
-    """读取 ai-hedge-fund/.env，返回 (dict, path)。仅解析 KEY=VALUE 行。"""
-    path = os.path.join(AIHF_DIR, ".env")
-    kv = {}
-    if os.path.exists(path):
-        with open(path) as f:
-            for line in f:
-                s = line.strip()
-                if not s or s.startswith("#") or "=" not in s:
-                    continue
-                k, v = s.split("=", 1)
-                kv[k.strip()] = v.strip()
-    return kv, path
+@app.api_route("/api/quant/{full_path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"])
+async def quant_api_proxy(full_path: str, request: Request):
+    # 直接转发 full_path（不含 /api/quant 前缀），与 Quant Service 根级路由对齐。
+    return await _quant_proxy(request, full_path)
 
 
-def _restart_aihf():
-    """重启 AIHF 后端使新 .env 生效：优先 launchctl 重启 KeepAlive 任务，
-    失败则直接拉起 uvicorn（复用 .env 中的 Key）。"""
-    label = "com.airobot.aihf"
-    uid = os.getuid()
-    try:
-        _subprocess.run(
-            ["launchctl", "kickstart", "-k", f"gui/{uid}/{label}"],
-            check=False, timeout=20,
-        )
-        return True
-    except Exception:
-        logger.debug("AIHF already-running check failed", exc_info=False)
-    try:
-        venv_py = os.path.join(AIHF_DIR, ".venv", "bin", "python")
-        kv, _ = _read_aihf_env()
-        env = dict(os.environ)
-        env.update(kv)
-        env["PYTHONPATH"] = AIHF_DIR
-        _logf = open(os.path.join(AIHF_DIR, "aihf_backend.log"), "a")
-        _subprocess.Popen(
-            [venv_py, "-m", "uvicorn", "app.backend.main:app",
-             "--host", "127.0.0.1", "--port", "8002"],
-            cwd=AIHF_DIR, env=env,
-            stdout=_logf,
-            stderr=_subprocess.STDOUT, start_new_session=True,
-        )
-        _logf.close()
-        return True
-    except Exception:
-        return False
+if _local_v2_routes:
+    _proxy_index = next(
+        (index for index, route in enumerate(app.router.routes)
+         if getattr(route, "endpoint", None) is v2_api_proxy),
+        len(app.router.routes),
+    )
+    app.router.routes[_proxy_index:_proxy_index] = _local_v2_routes
 
 
-@app.get("/api/aihf/config")
-async def aihf_config_get():
-    kv, _ = _read_aihf_env()
-    return {"has_market_key": bool(kv.get("FINANCIAL_DATASETS_API_KEY"))}
-
-
-@app.post("/api/aihf/config")
-async def aihf_config_set(request: Request):
-    data = await request.json()
-    key = str(data.get("key", "")).strip()
-    kv, path = _read_aihf_env()
-    if key:
-        kv["FINANCIAL_DATASETS_API_KEY"] = key
-    else:
-        kv.pop("FINANCIAL_DATASETS_API_KEY", None)
-    # 原地写回 .env，保留其他行与注释
-    lines = []
-    seen = set()
-    if os.path.exists(path):
-        with open(path) as f:
-            for line in f:
-                s = line.strip()
-                if s and not s.startswith("#") and "=" in s:
-                    k = s.split("=", 1)[0].strip()
-                    if k in kv:
-                        lines.append(f"{k}={kv[k]}\n")
-                        seen.add(k)
-                        continue
-                lines.append(line if line.endswith("\n") else line + "\n")
-    for k, v in kv.items():
-        if k not in seen:
-            lines.append(f"{k}={v}\n")
-    with open(path, "w") as f:
-        f.writelines(lines)
-    restarted = _restart_aihf()
-    return {
-        "status": "ok",
-        "has_market_key": bool(kv.get("FINANCIAL_DATASETS_API_KEY")),
-        "restarted": restarted,
-    }
-
-
-@app.get("/api/aihf/test-connection")
-async def aihf_test_connection():
-    """验证 AIHF 行情数据源连通性：
-       - DATA_PROVIDER=yfinance：免费雅虎源，打 Yahoo chart 接口验证（无需 Key）
-       - 否则：测 financialdatasets.ai（无 Key / Key 被拒 / 额度$0 / 不可达 分别提示）。"""
-    kv, _ = _read_aihf_env()
-    provider = (kv.get("DATA_PROVIDER") or os.environ.get("DATA_PROVIDER", "financialdatasets")).lower()
-    if provider == "yfinance":
-        try:
-            r = await app.state.http_client.get(
-                "https://query1.finance.yahoo.com/v8/finance/chart/AAPL?interval=1d&range=5d",
-                timeout=12,
-            )
-            if r.status_code == 200:
-                return {"ok": True, "state": "free", "status_code": 200,
-                        "message": "免费数据源（雅虎财经 yfinance）连接正常，无需额度即可跑真实分析"}
-            return {"ok": False, "state": "error", "status_code": r.status_code,
-                    "message": f"雅虎行情接口返回 HTTP {r.status_code}"}
-        except Exception as e:
-            return {"ok": False, "state": "unreachable", "status_code": None,
-                    "message": f"无法连接雅虎行情：{str(e)[:120]}"}
-    key = kv.get("FINANCIAL_DATASETS_API_KEY")
-    if not key:
-        return {"ok": False, "state": "no_key", "status_code": None,
-                "message": "尚未配置 FINANCIAL_DATASETS_API_KEY"}
-    url = "https://api.financialdatasets.ai/prices/snapshot?ticker=AAPL"
-    try:
-        r = await app.state.http_client.get(
-            url, headers={"X-API-KEY": key}, timeout=12,
-        )
-        if r.status_code == 200:
-            return {"ok": True, "state": "ok", "status_code": 200,
-                    "message": "行情数据源连接正常，账户额度可用"}
-        if r.status_code == 402:
-            return {"ok": False, "state": "no_credits", "status_code": 402,
-                    "message": "Key 有效，但账户额度为 $0.00 —— 需到 financialdatasets.ai 充值后才能拉取真实数据"}
-        if r.status_code in (401, 403):
-            return {"ok": False, "state": "invalid_key", "status_code": r.status_code,
-                    "message": f"Key 被拒绝（HTTP {r.status_code}），可能无效或已失效"}
-        return {"ok": False, "state": "error", "status_code": r.status_code,
-                "message": f"行情数据源返回 HTTP {r.status_code}"}
-    except Exception as e:
-        return {"ok": False, "state": "unreachable", "status_code": None,
-                "message": f"无法连接 financialdatasets.ai：{str(e)[:120]}"}
-
+# 已移除的外部智能体模块不再由 AIROBOT 托管。
 
 # ---------------------------------------------------------------------------
 # 服务健康聚合：供前端顶栏「健康灯」使用
@@ -813,42 +468,31 @@ async def aihf_test_connection():
 @app.get("/api/services/status")
 async def services_status():
     """聚合各子服务健康状态。"""
-    import httpx
-    async def _up(url, ok_codes=(200, 401)):
-        # 内部服务健康检查：用独立 client 且 trust_env=False，
-        # 避免本机 HTTP_PROXY 把 127.0.0.1 请求转发到代理导致误判离线。
-        try:
-            async with httpx.AsyncClient(timeout=5, trust_env=False) as c:
-                r = await c.get(url)
-                return r.status_code in ok_codes
-        except Exception:
-            return False
-
-    dsa_up = await _up(f"{DSA_BACKEND_URL}/")
-    # 注意：AIHF 的 /ping 是 5 秒 SSE 流（非健康探测），此处改探根路径 /（瞬时 200）
-    aihf_running = await _up(f"{AIHF_BACKEND_URL}/")
-
-    # TAgents：venv + .env + runner 就绪（按需运行）
-    tagents_ready = (
-        os.path.exists(os.path.join(TAGENTS_DIR, ".venv", "bin", "python"))
-        and os.path.exists(os.path.join(TAGENTS_DIR, ".env"))
-        and os.path.exists(os.path.join(TAGENTS_DIR, "run_analysis.py"))
-    )
-
-    aihf_kv, _ = _read_aihf_env()
-
     services = [
         {"key": "airobot", "label": "AIROBOT", "status": "up", "detail": "门户主服务 · 9000", "path": "/panorama"},
-        {"key": "dsa", "label": "DSA", "status": "up" if dsa_up else "down", "detail": "智能分析 · 8000", "path": "/dsa"},
-        {"key": "aihf", "label": "AI Hedge Fund", "status": "up" if aihf_running else "down",
-         "detail": "AI 对冲基金 · 8002", "has_market_key": bool(aihf_kv.get("FINANCIAL_DATASETS_API_KEY")), "path": "/aihf"},
-        {"key": "tagents", "label": "TradingAgents", "status": "ready" if tagents_ready else "idle", "detail": "交易智能体 · 按需运行", "path": "/tagents"},
     ]
     return {"services": services}
 
 
 # 前端静态资源（构建后存在）
 # 前端构建产物：优先使用最新 dist，保留 dist.new 作为旧环境回退。
+# 已删除的旧研究静态入口：明确返回 404，避免被前端 SPA catch-all 误显示为首页。
+@app.get("/_vibe")
+@app.get("/_vibe/{full_path:path}")
+async def removed_research_legacy(full_path: str = ""):
+    raise HTTPException(status_code=404, detail="旧研究静态入口已删除，请使用 /research/*")
+
+
+@app.get("/_aihf")
+@app.get("/_aihf/{full_path:path}")
+@app.get("/_aihf_api")
+@app.get("/_aihf_api/{full_path:path}")
+@app.get("/_openclaw")
+@app.get("/_openclaw/{full_path:path}")
+async def removed_agents_legacy(full_path: str = ""):
+    raise HTTPException(status_code=404, detail="已删除的外部智能体模块入口")
+
+
 frontend_dist = os.path.join(os.path.dirname(__file__), '..', 'frontend', 'dist')
 if not os.path.isdir(os.path.join(frontend_dist, 'assets')):
     frontend_dist = os.path.join(os.path.dirname(__file__), '..', 'frontend', 'dist.new')

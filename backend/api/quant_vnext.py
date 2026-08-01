@@ -12,71 +12,39 @@ from sqlalchemy import func, or_
 from db.models import StockDailyKline, StockFlow
 from db.session import get_db_session
 from quant_vnext.contracts import DailyBar, MarketContext
+from quant_vnext.alpha158_catalog import alpha158_research_registry
+from quant_vnext.alpha158_engine import Alpha158ResearchEngine
+from quant_vnext.market_regime import MarketRegimeEngine
+from quant_vnext.scoring import GROUP_WEIGHTS
 from quant_vnext.pipeline import QuantPipeline
 from quant_vnext.registry import default_registry
 from quant_vnext.research import evaluate_forward_returns
 from quant_vnext.backtest import walk_forward
 from quant_vnext.repository import ensure_schema, save_factor_values, save_resonance
 from quant_vnext.repository import save_factor_validation, save_signal_outcomes
-from quant_vnext.validation import rolling_factor_validation
+from quant_vnext.validation import rolling_factor_validation, factor_correlation_from_history
 from db.connection import engine
+from quant_vnext.production import (
+    latest_codes as production_latest_codes,
+    load_history as production_load_history,
+    market_context as production_market_context,
+    resolve_trade_date as production_resolve_trade_date,
+    run_production,
+)
 
 router = APIRouter(prefix="/api/vnext", tags=["quant_vnext"])
 
 
 def _load_history(db, codes: list[str], trade_date: date, lookback: int = 120) -> dict[str, list[DailyBar]]:
-    history: dict[str, list[DailyBar]] = {}
-    for code in codes:
-        meta_row = db.query(StockFlow.name, StockFlow.sector).filter(
-            StockFlow.ts_code == code, StockFlow.trade_date <= trade_date
-        ).order_by(StockFlow.trade_date.desc()).first()
-        stock_name = (meta_row[0] or "") if meta_row else ""
-        stock_sector = (meta_row[1] or "") if meta_row else ""
-        normalized_name = stock_name.upper().replace(" ", "")
-        is_st = normalized_name.startswith("ST") or normalized_name.startswith("*ST")
-        rows = (
-            db.query(StockDailyKline)
-            .filter(StockDailyKline.ts_code == code, StockDailyKline.trade_date <= trade_date)
-            .order_by(StockDailyKline.trade_date.desc())
-            .limit(lookback)
-            .all()
-        )
-        rows.reverse()
-        history[code] = [DailyBar(
-            ts_code=row.ts_code,
-            trade_date=row.trade_date,
-            open=float(row.open or 0),
-            high=float(row.high or 0),
-            low=float(row.low or 0),
-            close=float(row.close or 0),
-            volume=float(row.volume or 0),
-            amount=float(row.amount or 0),
-            pct_chg=float(row.pct_chg or 0),
-            sector=row.sector or stock_sector,
-            is_st=is_st,
-        ) for row in rows]
-    return history
+    return production_load_history(db, codes, trade_date, lookback=lookback)
 
 
 def _latest_codes(db, trade_date: date, limit: int) -> list[str]:
-    rows = (
-        db.query(StockDailyKline.ts_code)
-        .outerjoin(StockFlow, (StockFlow.ts_code == StockDailyKline.ts_code) & (StockFlow.trade_date == trade_date))
-        .filter(StockDailyKline.trade_date == trade_date)
-        .filter(or_(StockFlow.name.is_(None), ~func.replace(func.upper(StockFlow.name), " ", "").like("ST%")))
-        .filter(or_(StockFlow.name.is_(None), ~func.replace(func.upper(StockFlow.name), " ", "").like("*ST%")))
-        .order_by(StockDailyKline.ts_code)
-        .limit(limit)
-        .all()
-    )
-    return [row[0] for row in rows]
+    return production_latest_codes(db, trade_date, limit=limit)
 
 
 def _market_context(db, trade_date: date) -> MarketContext:
-    rows = db.query(StockDailyKline.pct_chg).filter(StockDailyKline.trade_date == trade_date).all()
-    changes = [float(row[0]) for row in rows if row[0] is not None]
-    breadth = sum(value > 0 for value in changes) / len(changes) if changes else 0.0
-    return MarketContext(trade_date=trade_date, breadth=breadth)
+    return production_market_context(db, trade_date)
 
 
 def _stock_meta(db, codes: list[str], trade_date: date) -> dict[str, dict[str, str]]:
@@ -101,24 +69,20 @@ def get_snapshots(
     requested_codes = codes if isinstance(codes, str) else None
     requested_limit = limit if isinstance(limit, int) else 50
     with get_db_session() as db:
-        target = requested_date or db.query(func.max(StockDailyKline.trade_date)).scalar()
-        if not target:
+        selected = [item.strip() for item in requested_codes.split(",") if item.strip()] if requested_codes else None
+        result = run_production(
+            db,
+            requested_date=requested_date,
+            display_limit=requested_limit,
+            codes=selected,
+        )
+        if not result.get("trade_date"):
             return {"trade_date": None, "snapshots": [], "message": "no daily kline"}
-        selected = [item.strip() for item in requested_codes.split(",") if item.strip()] if requested_codes else _latest_codes(db, target, requested_limit)
-        history = _load_history(db, selected, target)
-        context = _market_context(db, target)
-        snapshots = QuantPipeline().run(history, target, context)
-        metadata = _stock_meta(db, selected, target)
-        payload = []
-        for snapshot in snapshots[:requested_limit]:
-            item = jsonable_encoder(snapshot)
-            item.update(metadata.get(snapshot.ts_code, {}))
-            payload.append(item)
         return jsonable_encoder({
-            "trade_date": target,
-            "universe_count": len(history),
-            "market": context,
-            "snapshots": payload,
+            "trade_date": result["trade_date"],
+            "universe_count": result["universe_count"],
+            "market": result["market"],
+            "snapshots": result["signals"],
         })
 
 
@@ -126,7 +90,97 @@ def get_snapshots(
 def get_registry():
     """返回新系统当前注册的生产因子定义。"""
     registry = default_registry()
-    return {"count": len(registry.production()), "factors": registry.export()}
+    return {
+        "count": len(registry.production()),
+        "factor_groups": ["market", "sector", "strength", "trend", "volume_price", "position", "risk"],
+        "base_weights": GROUP_WEIGHTS,
+        "factors": registry.export(),
+    }
+
+
+@router.get("/research/alpha158")
+def get_alpha158_research_catalog():
+    """返回 Qlib Alpha158 的本地研究候选，不参与生产评分。"""
+    return {
+        "count": len(alpha158_research_registry()),
+        "production_enabled": False,
+        "factors": [item.__dict__ for item in alpha158_research_registry()],
+    }
+
+
+@router.get("/research/factors/validate")
+def validate_production_factors(
+    days: int = Query(20, ge=5, le=120),
+    limit: int = Query(200, ge=30, le=1000),
+    horizon: int = Query(5, ge=1, le=20),
+):
+    """Validate production factors with date-bounded real daily bars.
+
+    The endpoint is research-only: its result never changes production
+    weights.  ``limit`` controls research cost and is reported explicitly so
+    a small sample cannot be mistaken for a full-market validation.
+    """
+    requested_days = days if isinstance(days, int) else 20
+    requested_limit = limit if isinstance(limit, int) else 200
+    requested_horizon = horizon if isinstance(horizon, int) else 5
+    with get_db_session() as db:
+        target = production_resolve_trade_date(db)
+        if not target:
+            return {"trade_date": None, "sample_count": 0, "rows": [], "correlation": {}}
+        dates = [
+            row[0]
+            for row in db.query(StockDailyKline.trade_date)
+            .distinct()
+            .filter(StockDailyKline.trade_date <= target)
+            .order_by(StockDailyKline.trade_date.desc())
+            .limit(requested_days + 80)
+            .all()
+        ]
+        dates = sorted(dates)
+        codes = production_latest_codes(db, target, requested_limit)
+        history = production_load_history(
+            db, codes, target,
+            lookback=max(120, requested_days + requested_horizon + 80),
+        )
+    pipeline = QuantPipeline()
+    rows = rolling_factor_validation(pipeline.factors, history, dates, requested_horizon)
+    return jsonable_encoder({
+        "trade_date": target,
+        "horizon": requested_horizon,
+        "research_days": requested_days,
+        "research_universe_count": len(history),
+        "production_enabled": True,
+        "sample_count": sum(row["sample_count"] for row in rows),
+        "rows": rows,
+        "correlation": factor_correlation_from_history(pipeline.factors, history, dates),
+    })
+
+
+@router.get("/research/alpha158/validate")
+def validate_alpha158(
+    days: int = Query(20, ge=5, le=120),
+    limit: int = Query(50, ge=3, le=200),
+    horizon: int = Query(5, ge=1, le=20),
+):
+    """用真实历史 K 线验证 Alpha158 候选；不进入生产评分。"""
+    requested_days = days if isinstance(days, int) else 20
+    requested_limit = limit if isinstance(limit, int) else 50
+    requested_horizon = horizon if isinstance(horizon, int) else 5
+    with get_db_session() as db:
+        target = db.query(func.max(StockDailyKline.trade_date)).scalar()
+        if not target:
+            return {"trade_date": None, "sample_count": 0, "rows": []}
+        dates = [row[0] for row in db.query(StockDailyKline.trade_date).distinct().order_by(StockDailyKline.trade_date.desc()).limit(requested_days + 80).all()]
+        codes = _latest_codes(db, target, requested_limit)
+        history = _load_history(db, codes, target, lookback=max(120, requested_days + requested_horizon + 80))
+    rows = rolling_factor_validation(Alpha158ResearchEngine(), history, dates, requested_horizon)
+    return jsonable_encoder({
+        "trade_date": target,
+        "horizon": requested_horizon,
+        "production_enabled": False,
+        "sample_count": sum(row["sample_count"] for row in rows),
+        "rows": rows,
+    })
 
 
 @router.get("/health")
@@ -137,6 +191,8 @@ def get_health():
         "service": "quant_vnext",
         "status": "ok",
         "production_factor_count": len(registry.production()),
+        "factor_groups": ["market", "sector", "strength", "trend", "volume_price", "position", "risk"],
+        "market_regime_engine": MarketRegimeEngine.__name__,
         "read_only": False,
         "legacy_strategy_dependency": False,
     }
@@ -151,19 +207,22 @@ def persist_snapshots(
     requested_date = trade_date if isinstance(trade_date, date) else None
     requested_limit = limit if isinstance(limit, int) else 100
     with get_db_session() as db:
-        target = requested_date or db.query(func.max(StockDailyKline.trade_date)).scalar()
+        result = run_production(
+            db,
+            requested_date=requested_date,
+            display_limit=None,
+        )
+        target = result.get("trade_date")
         if not target:
             return {"trade_date": None, "saved_factors": 0, "saved_snapshots": 0}
-        codes = _latest_codes(db, target, requested_limit)
-        history = _load_history(db, codes, target)
-        context = _market_context(db, target)
-        values, snapshots = QuantPipeline().run_with_values(history, target, context)
+        values = result["values"]
+        snapshots = result["snapshots"]
     with engine.begin() as connection:
         ensure_schema(connection)
         save_factor_values(connection, values)
         for snapshot in snapshots:
             save_resonance(connection, snapshot)
-    return {"trade_date": target, "saved_factors": len(values), "saved_snapshots": len(snapshots)}
+    return {"trade_date": target, "universe_count": len(snapshots), "saved_factors": len(values), "saved_snapshots": len(snapshots)}
 
 
 @router.get("/research")
