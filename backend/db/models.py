@@ -215,6 +215,8 @@ class RealtimeStockFlow(Base):
         UniqueConstraint("snapshot_time", "ts_code", name="uq_realtime_stock_time"),
         Index("ix_realtime_stock_date_code", "trade_date", "ts_code"),
         Index("ix_realtime_stock_date_time", "trade_date", "snapshot_time"),
+        # 个股分析页按单股取最新盘中快照；不能在千万级流水表上反向扫描时间索引。
+        Index("ix_realtime_stock_code_time", "ts_code", "snapshot_time"),
     )
 
 
@@ -540,6 +542,8 @@ class StockRealtimeTick(Base):
     created_at = Column(DateTime, server_default=func.now())
     __table_args__ = (
         Index("ix_realtime_tick_lookup", "trade_date", "ts_code", "snapshot_time"),
+        # 不限定交易日的“最新一条”查询需要代码优先的索引，缺失代码也要快速返回。
+        Index("ix_realtime_tick_code_time", "ts_code", "snapshot_time"),
     )
 
 
@@ -604,6 +608,112 @@ class StrategyRunLog(Base):
     created_at = Column(DateTime, server_default=func.now())
     __table_args__ = (
         UniqueConstraint("trade_date", "strategy_key", name="uq_strategy_run_log_date_key"),
+    )
+
+
+class HorsebackRun(Base):
+    """回马枪选股一次运行及其可审计进度。"""
+    __tablename__ = "horseback_runs"
+    id = Column(String(36), primary_key=True)
+    status = Column(String(24), nullable=False, default="QUEUED", index=True)
+    source = Column(String(32), nullable=False, default="ifind_mcp")
+    strategy_version = Column(String(32), nullable=False)
+    requested_end_date = Column(Date)
+    as_of_date = Column(Date, nullable=False, index=True)
+    window_start = Column(Date, nullable=False)
+    window_end = Column(Date, nullable=False)
+    min_consolidation_days = Column(Integer, nullable=False, default=3)
+    max_consolidation_days = Column(Integer, nullable=False, default=12)
+    min_limit_count = Column(Integer, nullable=False, default=1)
+    max_limit_count = Column(Integer, nullable=False, default=3)
+    min_score = Column(Integer, nullable=False, default=75)
+    max_candidates = Column(Integer, nullable=False, default=100)
+    source_query = Column(Text)
+    source_payload_sha256 = Column(String(64))
+    source_count = Column(Integer, nullable=False, default=0)
+    pool_count = Column(Integer, nullable=False, default=0)
+    total_count = Column(Integer, nullable=False, default=0)
+    processed_count = Column(Integer, nullable=False, default=0)
+    selected_count = Column(Integer, nullable=False, default=0)
+    prefiltered_count = Column(Integer, nullable=False, default=0)
+    quote_total = Column(Integer, nullable=False, default=0)
+    quote_processed = Column(Integer, nullable=False, default=0)
+    realtime_at = Column(DateTime)
+    message = Column(String(200))
+    error = Column(Text)
+    cancel_requested = Column(Boolean, nullable=False, default=False)
+    started_at = Column(DateTime)
+    completed_at = Column(DateTime)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class HorsebackCandidate(Base):
+    """iFinD 返回并落库的候选池快照。"""
+    __tablename__ = "horseback_candidates"
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    run_id = Column(String(36), nullable=False, index=True)
+    ts_code = Column(String(20), nullable=False, index=True)
+    name = Column(String(50))
+    source_rank = Column(Integer, nullable=False)
+    source_limit_count = Column(Integer)
+    observed_limit_count = Column(Integer)
+    effective_limit_count = Column(Integer)
+    last_limit_date = Column(Date)
+    admitted = Column(Boolean, nullable=False, default=False)
+    exclusion_reason = Column(String(200))
+    source_json = Column(Text, nullable=False)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    __table_args__ = (
+        UniqueConstraint("run_id", "ts_code", name="uq_horseback_candidate_run_code"),
+        Index("ix_horseback_candidate_run_admitted", "run_id", "admitted"),
+    )
+
+
+class HorsebackResult(Base):
+    """回马枪评分结果；无效/未入选原因同样持久化。"""
+    __tablename__ = "horseback_results"
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    run_id = Column(String(36), nullable=False, index=True)
+    ts_code = Column(String(20), nullable=False, index=True)
+    name = Column(String(50))
+    status = Column(String(24), nullable=False, index=True)
+    score = Column(Integer)
+    kline_count = Column(Integer, nullable=False, default=0)
+    last_limit_date = Column(Date)
+    days_since_limit = Column(Integer)
+    close = Column(Numeric(12, 4))
+    pct_chg = Column(Numeric(10, 4))
+    ma5 = Column(Numeric(12, 4))
+    ma10 = Column(Numeric(12, 4))
+    ma20 = Column(Numeric(12, 4))
+    ma60 = Column(Numeric(12, 4))
+    pullback_pct = Column(Numeric(10, 4))
+    volume_ratio = Column(Numeric(10, 4))
+    ma_convergence_pct = Column(Numeric(10, 4))
+    suggested_buy = Column(Numeric(12, 4))
+    stop_loss = Column(Numeric(12, 4))
+    limit_up_count = Column(Integer)
+    leader = Column(Boolean, nullable=False, default=False)
+    structure_eligible = Column(Boolean)
+    realtime_price = Column(Numeric(12, 4))
+    realtime_change_pct = Column(Numeric(10, 4))
+    realtime_volume_ratio = Column(Numeric(10, 4))
+    realtime_open = Column(Numeric(12, 4))
+    realtime_high = Column(Numeric(12, 4))
+    realtime_low = Column(Numeric(12, 4))
+    realtime_volume = Column(Numeric(20, 4))
+    today_ma5 = Column(Numeric(12, 4))
+    first_ma5_break = Column(Boolean)
+    realtime_gate = Column(String(300))
+    realtime_state = Column(String(80))
+    realtime_at = Column(DateTime)
+    components_json = Column(Text, nullable=False, default="[]")
+    hard_failures_json = Column(Text, nullable=False, default="[]")
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    __table_args__ = (
+        UniqueConstraint("run_id", "ts_code", name="uq_horseback_result_run_code"),
+        Index("ix_horseback_result_run_status_score", "run_id", "status", "score"),
     )
 
 

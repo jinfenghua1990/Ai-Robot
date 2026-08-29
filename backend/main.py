@@ -27,6 +27,7 @@ from api import wave_analysis
 from api import quant_vnext
 from api import v2_research
 from api import us_quant
+from api import horseback
 from api.rate_limit import RateLimitMiddleware
 from api import scheduler_api, shared, proxy, stock_dashboard, research_workspace
 from api.auth import verify_api_key
@@ -56,6 +57,14 @@ async def lifespan(app: FastAPI):
     set_shared_http_client(app.state.http_client)
     # 启动时开始定时采集
     start_scheduler()
+    # 回马枪：回收上次进程残留的 ACTIVE 僵尸任务，避免永久阻塞当日扫描/刷新
+    try:
+        from horseback.service import recover_orphaned_runs
+        recovered = recover_orphaned_runs()
+        if recovered:
+            logger.info("[horseback] 启动回收孤儿任务 %d 个", recovered)
+    except Exception as e:
+        logger.warning(f"[horseback] 启动回收孤儿任务失败: {e}")
     # 确保新表/新列存在（轻量级迁移）
     run_migrations()
     # 启动研报中心 consumer（后台轮询 pending 请求并自动生成报告）
@@ -222,6 +231,7 @@ app.include_router(market_stage.router)
 app.include_router(git_push.router)
 app.include_router(research_workspace.router)
 app.include_router(us_quant.router)
+app.include_router(horseback.router)
 app.include_router(report.router)
 app.include_router(scheduler_api.router)
 

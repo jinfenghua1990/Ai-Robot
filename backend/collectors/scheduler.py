@@ -19,6 +19,82 @@ from services.alert_service import check_realtime_data_gap
 
 logger = logging.getLogger(__name__)
 
+# 回马枪 v1.1.5 当天实时筛选：直接调用服务层触发（绕过 HTTP API key）。
+# 交易日 09:35 首扫；失败时仅自动补扫一次（由 10:05 刷新或 10:30 兜底触发），
+# 避免 iFinD 瞬时故障造成全天反复请求。盘中每 30 分钟刷新当天任务的实时行情。
+def _horseback_scan_job(retry: bool = False):
+    try:
+        from zoneinfo import ZoneInfo
+        from horseback.service import (
+            ACTIVE_STATUSES,
+            ActiveRunError,
+            get_latest_run,
+            get_today_run_attempt_count,
+            recover_orphaned_runs,
+            start_run,
+        )
+        now = datetime.now(ZoneInfo("Asia/Shanghai"))
+        if not jobs._is_trading_day(now.strftime('%Y-%m-%d')):
+            return
+        recover_orphaned_runs()  # 清理进程重启残留的 ACTIVE 僵尸任务，避免永久阻塞
+        latest = get_latest_run(include_results=False)
+        if latest and latest.get("status") in ACTIVE_STATUSES:
+            logger.info("[horseback] 已有实时任务运行中，跳过定时触发")
+            return
+        if retry and latest and latest.get("requested_end_date") == now.date().isoformat() and latest.get("status") == "COMPLETED":
+            return  # 当天已成功，兜底无需再跑
+        if retry and get_today_run_attempt_count(now.date()) >= 2:
+            logger.info("[horseback] 当天自动扫描已达到两次上限，跳过补扫")
+            return
+        run = start_run(
+            requested_end_date=None,
+            min_consolidation_days=3,
+            max_consolidation_days=12,
+            min_limit_count=1,
+            max_limit_count=3,
+            min_score=75,
+            max_candidates=100,
+        )
+        logger.info("[horseback] 定时实时扫描已触发 run=%s", run.get("id"))
+    except ActiveRunError as exc:
+        logger.info("[horseback] 已有实时任务运行，跳过：%s", exc)
+    except FileNotFoundError:
+        logger.warning("[horseback] iFinD 密钥未配置，跳过定时扫描")
+    except Exception:
+        logger.exception("[horseback] 定时扫描触发失败")
+
+
+def _horseback_refresh_job():
+    try:
+        from zoneinfo import ZoneInfo
+        from horseback.service import ACTIVE_STATUSES, ActiveRunError, get_latest_run, refresh_quotes, recover_orphaned_runs
+        now = datetime.now(ZoneInfo("Asia/Shanghai"))
+        if not jobs._is_trading_day(now.strftime('%Y-%m-%d')):
+            return
+        recover_orphaned_runs()  # 清理进程重启残留的 ACTIVE 僵尸任务，避免永久阻塞
+        latest = get_latest_run(include_results=False)
+        today_iso = now.date().isoformat()
+        has_today_run = latest and latest.get("requested_end_date") == today_iso
+        if not has_today_run:
+            # 当天还没跑过（后端盘中才启动等场景）→ 兜底补扫一次
+            _horseback_scan_job()
+            return
+        if latest.get("status") in ACTIVE_STATUSES or latest.get("status") == "CANCELLED":
+            return
+        if latest.get("status") == "FAILED":
+            _horseback_scan_job(retry=True)
+            return
+        if latest.get("status") != "COMPLETED":
+            return  # 其他终态不刷新，避免无结果可刷的报错刷屏
+        refresh_quotes(latest["id"])
+        logger.info("[horseback] 定时刷新实时行情已触发 run=%s", latest.get("id"))
+    except ActiveRunError:
+        pass  # 页面手动触发中，下一轮再刷
+    except FileNotFoundError:
+        pass
+    except Exception:
+        logger.exception("[horseback] 定时刷新实时行情失败")
+
 # 实时数据断层检测上一次运行时间（避免每5秒重复记录）
 _last_gap_check_time = 0
 
@@ -334,6 +410,20 @@ def start_scheduler():
     # === 个股信号预计算 ===
     scheduler.add_job(jobs.scheduled_watchlist_signal_compute, 'cron', hour='16-18', minute='*/15', id='watchlist_signal_compute')
     scheduler.add_job(jobs.scheduled_watchlist_signal_compute, 'cron', hour='19', minute='0', id='watchlist_signal_compute_19')
+
+    # === 回马枪 v1.1.5 当天实时筛选（交易日 09:35 首扫，10:30 兜底）===
+    scheduler.add_job(_horseback_scan_job, 'cron', hour='9', minute='35', id='horseback_scan',
+                      misfire_grace_time=1800, max_instances=1, coalesce=True)
+    scheduler.add_job(_horseback_scan_job, 'cron', hour='10', minute='30', id='horseback_scan_retry',
+                      misfire_grace_time=1800, max_instances=1, coalesce=True, kwargs={'retry': True})
+    # 盘中每 30 分钟 + 尾盘 14:55 刷新当天任务的实时行情
+    scheduler.add_job(_horseback_refresh_job, 'cron', hour='10-11,13-14', minute='5,35', id='horseback_refresh',
+                      misfire_grace_time=300, max_instances=1, coalesce=True)
+    scheduler.add_job(_horseback_refresh_job, 'cron', hour='14', minute='55', id='horseback_refresh_tail',
+                      args=(), misfire_grace_time=1800, replace_existing=True)
+    # 16:00 收盘行情快照：沿用盘中任务的日线结构基准，仅固化收盘价和收盘量。
+    scheduler.add_job(_horseback_refresh_job, 'cron', hour='16', minute='0', id='horseback_close_final',
+                      misfire_grace_time=300, max_instances=1, coalesce=True)
 
     # === BS策略预扫描 ===
     scheduler.add_job(_sync_wrapper_scheduled_bs_strategy_precompute, 'cron', hour='16-18', minute='*/30', id='bs_strategy_precompute')

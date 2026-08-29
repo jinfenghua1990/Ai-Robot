@@ -29,6 +29,7 @@ const mainSections = [
   { section: '交易研究', items: [
     { path: '/yuzi-center', label: '游资', icon: '🐉' },
     { path: '/quant-vnext', label: '量化动作', icon: '🧬' },
+    { path: '/a-horseback', label: '回马枪选股器', icon: '🐎' },
   ]},
   { section: '交易管理', items: [
     { path: '/watchlist', label: '自选', icon: '⭐' },
@@ -124,6 +125,7 @@ function detectProject(pathname) {
   if (pathname.startsWith('/unitree-ipo')) return 'ipo';
   if (pathname.startsWith('/hk-market') || pathname.startsWith('/hk-strategy')) return 'hk';
   if (pathname.startsWith('/us-market')) return 'us';
+  if (pathname.startsWith('/a-horseback')) return 'a-stock';
   if (pathname.startsWith('/v2') || pathname.startsWith('/a-stock/v2') || pathname.startsWith('/panorama') || pathname.startsWith('/today') || pathname.startsWith('/concept-flow') || pathname.startsWith('/fund-weather') || pathname.startsWith('/index-flow') || pathname.startsWith('/wave-analysis') || pathname.startsWith('/strategy-center') || pathname.startsWith('/yuzi-center') || pathname.startsWith('/quant-vnext') || pathname.startsWith('/watchlist') || pathname.startsWith('/portfolio') || pathname.startsWith('/stock-analysis') || pathname.startsWith('/research/')) return 'a-stock';
   if (pathname.startsWith('/quant-vnext')) return 'quant-vnext';
   // 游资一级
