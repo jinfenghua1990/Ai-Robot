@@ -47,6 +47,7 @@ const StockTrackerPage = lazy(() => import('./pages/StockTrackerPage'));
 const WaveAnalysisPage = lazy(() => import('./pages/WaveAnalysisPage'));
 
 const HorsebackScreenerPage = lazy(() => import('./pages/HorsebackScreenerPage'));
+const HorsebackTrackPage = lazy(() => import('./pages/HorsebackTrackPage'));
 import PageLoader from './components/PageLoader';
 
 function StockCodeRedirect() {
@@ -70,6 +71,7 @@ export default function App() {
           <Route path="/a-stock/v2" element={<Navigate to="/v2" replace />} />
           <Route path="/strategy-center" element={<StrategyCenterPage />} />
           <Route path="/a-horseback" element={<HorsebackScreenerPage />} />
+          <Route path="/a-horseback-track" element={<HorsebackTrackPage />} />
           <Route path="/yuzi-center" element={<YuziCenterPage />} />
           <Route path="/yuzi-tracker-20d" element={<Navigate to="/yuzi-center?tab=tracker" replace />} />
           <Route path="/yuzi-tracker" element={<Navigate to="/yuzi-center?tab=tracker" replace />} />

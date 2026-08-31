@@ -281,6 +281,7 @@ export default function HorsebackScreenerPage() {
           )}
         </div>
         <div className="ml-auto flex items-center gap-2">
+          <a href="/a-horseback-track" className="rounded border px-3 py-1 text-[11px] no-underline" style={{ borderColor: '#8b5cf6', color: '#8b5cf6' }}>20 日跟踪池</a>
           <span className="text-[11px]" style={{ color: config?.configured ? 'var(--flow-up)' : 'var(--accent-red)' }}>
             {config?.configured ? '密钥已配置' : '尚未配置密钥'}
           </span>

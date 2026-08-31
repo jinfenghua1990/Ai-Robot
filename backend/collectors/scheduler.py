@@ -95,6 +95,39 @@ def _horseback_refresh_job():
     except Exception:
         logger.exception("[horseback] 定时刷新实时行情失败")
 
+
+def _horseback_track_job():
+    """盘后同步最新回马枪样本，并用已落库日线推进历史跟踪。"""
+    try:
+        from zoneinfo import ZoneInfo
+        from horseback.tracking import (
+            TrackingRunNotFound,
+            TrackingRunUnsupported,
+            daily_update,
+            sync_completed_run,
+        )
+
+        now = datetime.now(ZoneInfo("Asia/Shanghai"))
+        if not jobs._is_trading_day(now.strftime('%Y-%m-%d')):
+            return
+        try:
+            synced = sync_completed_run()
+        except (TrackingRunNotFound, TrackingRunUnsupported) as exc:
+            synced = {"skipped": True, "reason": str(exc), "total_added": 0}
+            logger.info("[horseback-track] 本轮无新池可同步：%s", exc)
+        updated = daily_update()
+        logger.info(
+            "[horseback-track] 同步完成 run=%s added=%s updated=%s completed=%s",
+            synced.get("run_id"),
+            synced.get("total_added"),
+            updated.get("total_updated"),
+            updated.get("total_completed"),
+        )
+        return {"synced": synced, "updated": updated}
+    except Exception:
+        logger.exception("[horseback-track] 盘后跟踪更新失败")
+        return None
+
 # 实时数据断层检测上一次运行时间（避免每5秒重复记录）
 _last_gap_check_time = 0
 
@@ -424,6 +457,9 @@ def start_scheduler():
     # 16:00 收盘行情快照：沿用盘中任务的日线结构基准，仅固化收盘价和收盘量。
     scheduler.add_job(_horseback_refresh_job, 'cron', hour='16', minute='0', id='horseback_close_final',
                       misfire_grace_time=300, max_instances=1, coalesce=True)
+    # 18:20 主更新，20:20 幂等兜底；只读本地日线，不触发交易。
+    scheduler.add_job(_horseback_track_job, 'cron', hour='18,20', minute='20', id='horseback_track_20d',
+                      misfire_grace_time=3600, max_instances=1, coalesce=True)
 
     # === BS策略预扫描 ===
     scheduler.add_job(_sync_wrapper_scheduled_bs_strategy_precompute, 'cron', hour='16-18', minute='*/30', id='bs_strategy_precompute')

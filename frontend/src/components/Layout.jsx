@@ -30,6 +30,7 @@ const mainSections = [
     { path: '/yuzi-center', label: '游资', icon: '🐉' },
     { path: '/quant-vnext', label: '量化动作', icon: '🧬' },
     { path: '/a-horseback', label: '回马枪选股器', icon: '🐎' },
+    { path: '/a-horseback-track', label: '回马枪 20 天跟踪', icon: '🐎' },
   ]},
   { section: '交易管理', items: [
     { path: '/watchlist', label: '自选', icon: '⭐' },

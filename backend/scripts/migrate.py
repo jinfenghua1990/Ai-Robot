@@ -178,6 +178,12 @@ def _ensure_strategy_track_tables():
     ])
 
 
+def _ensure_horseback_track_tables():
+    """创建回马枪独立 20 日跟踪表。"""
+    from horseback.tracking import ensure_schema
+    ensure_schema()
+
+
 def _ensure_horseback_v116_columns():
     """回马枪 v1.1.6：任务级实时门槛、板块开关与回放模式列。"""
     from db.connection import engine
@@ -202,3 +208,4 @@ def run_migrations():
     _ensure_analysis_tables()
     _ensure_stock_tracker_tables()
     _ensure_strategy_track_tables()
+    _ensure_horseback_track_tables()

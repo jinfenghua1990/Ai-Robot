@@ -28,6 +28,7 @@ from api import quant_vnext
 from api import v2_research
 from api import us_quant
 from api import horseback
+from api import horseback_track
 from api.rate_limit import RateLimitMiddleware
 from api import scheduler_api, shared, proxy, stock_dashboard, research_workspace
 from api.auth import verify_api_key
@@ -232,6 +233,7 @@ app.include_router(git_push.router)
 app.include_router(research_workspace.router)
 app.include_router(us_quant.router)
 app.include_router(horseback.router)
+app.include_router(horseback_track.router)
 app.include_router(report.router)
 app.include_router(scheduler_api.router)
 
