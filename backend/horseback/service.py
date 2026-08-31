@@ -22,7 +22,14 @@ from db.session import get_db_session
 from . import STRATEGY_VERSION
 from .config_store import TokenStore
 from .ifind_client import build_daily_limit_up_query, collect_daily_limit_up_candidates, collect_realtime_quotes
-from .scoring import MIN_HISTORY_BARS, ScoreOptions, apply_realtime_entry_gate, evaluate_candidate, is_main_board_candidate
+from .scoring import (
+    MIN_HISTORY_BARS,
+    GateOptions,
+    ScoreOptions,
+    apply_realtime_entry_gate,
+    evaluate_candidate,
+    is_board_candidate,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -30,15 +37,19 @@ logger = logging.getLogger(__name__)
 TERMINAL_STATUSES = frozenset({"COMPLETED", "FAILED", "CANCELLED"})
 ACTIVE_STATUSES = frozenset({"QUEUED", "COLLECTING", "SCORING", "QUOTING", "CANCEL_REQUESTED"})
 DAILY_COVERAGE_RATIO_MIN = 0.95
+MODE_LIVE = "live"
+MODE_HISTORICAL_LIVE = "historical_live"
+MODE_LEGACY_REPLAY = "replay"
+
 DATA_CONTRACT = {
-    "mode": "v1.1.5 当天实时筛选，不支持历史回放",
+    "mode": "当天与历史截止日均按 v1.1.5 执行实时确认；历史扫描为历史结构 + 当前行情，不是历史回测",
     "candidate_source": "iFinD MCP search_stocks，逐交易日涨停池先落库",
     "kline_source": "stock_daily_kline / Tushare daily",
     "adjustment": "不复权（沿用 stock_daily_kline 当前口径）",
-    "cutoff": "结构评分使用覆盖率达标的最新已完成日线；盘中实时行情不写入日线",
+    "cutoff": "结构评分严格截止到所选日期；实时行情使用扫描或刷新时的当前快照，不写入历史日线",
     "realtime_source": "iFinD stock_highfreq_quotes，行情快照写入本次结果",
     "trading_calendar": "由 stock_daily_kline 实际交易日期推导",
-    "missing_policy": "十日涨停池任一交易日缺失则扫描失败；盘后当日日线覆盖不足上一日 95% 时回退上一完整日；不足 63 根或关键字段缺失标为数据无效；无实时行情留在观察池",
+    "missing_policy": "十日涨停池任一交易日缺失则扫描失败；盘后当日日线覆盖不足上一日 95% 时回退上一完整日；不足 63 根或关键字段缺失标为数据无效；无实时行情留在待触发/观察池",
     "execution_scope": "研究候选，不自动下单",
 }
 
@@ -84,6 +95,14 @@ def _loads(value: str | None, fallback):
 
 def _apply_candidate_limit(candidates: list[dict], max_candidates: int) -> list[dict]:
     return candidates if max_candidates == 0 else candidates[:max_candidates]
+
+
+def _run_mode(requested_end_date: date | None, today: date) -> str:
+    return MODE_HISTORICAL_LIVE if requested_end_date and requested_end_date < today else MODE_LIVE
+
+
+def _uses_realtime_confirmation(mode: str | None) -> bool:
+    return (mode or MODE_LIVE) != MODE_LEGACY_REPLAY
 
 
 def _has_required_daily_coverage(current_count: int, previous_count: int) -> bool:
@@ -184,7 +203,13 @@ def _latest_names(db, symbols: list[str], target: date) -> dict[str, str]:
 
 
 def _result_sort_key(item: dict):
-    return item["status"] != "SELECTED", item["status"] == "INVALID", -(item["score"] or -1), item["ts_code"]
+    return (
+        item["status"] != "SELECTED",
+        item["status"] == "INVALID",
+        item["status"] != "WATCHING",
+        -(item["score"] or -1),
+        item["ts_code"],
+    )
 
 
 def _run_dict(run: HorsebackRun, include_results: bool = False, db=None) -> dict:
@@ -193,6 +218,7 @@ def _run_dict(run: HorsebackRun, include_results: bool = False, db=None) -> dict
         "status": run.status,
         "source": run.source,
         "strategy_version": run.strategy_version,
+        "mode": run.mode or MODE_LIVE,
         "requested_end_date": run.requested_end_date.isoformat() if run.requested_end_date else None,
         "as_of_date": run.as_of_date.isoformat() if run.as_of_date else None,
         "window_start": run.window_start.isoformat() if run.window_start else None,
@@ -204,6 +230,10 @@ def _run_dict(run: HorsebackRun, include_results: bool = False, db=None) -> dict
             "max_limit_count": run.max_limit_count,
             "min_score": run.min_score,
             "max_candidates": run.max_candidates,
+            "live_rise_pct_min": run.live_rise_pct_min,
+            "live_volume_ratio_min": run.live_volume_ratio_min,
+            "allow_gem": bool(run.allow_gem),
+            "allow_star": bool(run.allow_star),
         },
         "progress": {
             "source_count": run.source_count or 0,
@@ -369,21 +399,29 @@ def start_run(
     max_limit_count: int,
     min_score: int,
     max_candidates: int,
+    live_rise_pct_min: float = 3.0,
+    live_volume_ratio_min: float = 1.2,
+    allow_gem: bool = False,
+    allow_star: bool = False,
 ) -> dict:
-    """创建当天实时任务；历史日期被显式拒绝，旧记录不删除。"""
+    """创建实时任务；过去日期按 v1.1.5 使用历史结构与当前行情确认。"""
 
     TokenStore().load()
     today = _today_shanghai()
-    if requested_end_date and requested_end_date != today:
-        raise ValueError("v1.1.5 实时筛选只支持当天日期")
+    if requested_end_date and requested_end_date > today:
+        raise ValueError("筛选日期不能晚于今天")
+    run_mode = _run_mode(requested_end_date, today)
+    historical = run_mode == MODE_HISTORICAL_LIVE
     run_id = str(uuid.uuid4())
     cancel_event = threading.Event()
     _reserve_run(run_id, cancel_event)
     try:
         with get_db_session() as db:
-            as_of = _latest_completed_trade_date(db)
+            # 历史扫描以目标日收盘后视角取基准日线；实时模式取当前最近已完成日线。
+            effective_now = datetime.combine(requested_end_date, time(16, 0)) if historical else None
+            as_of = _latest_completed_trade_date(db, effective_now)
             if not as_of:
-                raise ValueError("当前没有可用于实时结构评分的已完成 A 股日线")
+                raise ValueError("当前没有可用于结构评分的已完成 A 股日线")
             trade_dates = _recent_trade_dates(db, as_of, 10)
             if len(trade_dates) < 10:
                 raise ValueError("候选池需要至少 10 个已完成交易日")
@@ -392,7 +430,8 @@ def start_run(
                 status="QUEUED",
                 source="ifind_mcp",
                 strategy_version=STRATEGY_VERSION,
-                requested_end_date=today,
+                mode=run_mode,
+                requested_end_date=requested_end_date or today,
                 as_of_date=as_of,
                 window_start=trade_dates[0],
                 window_end=trade_dates[-1],
@@ -402,8 +441,12 @@ def start_run(
                 max_limit_count=max_limit_count,
                 min_score=min_score,
                 max_candidates=max_candidates,
+                live_rise_pct_min=live_rise_pct_min,
+                live_volume_ratio_min=live_volume_ratio_min,
+                allow_gem=allow_gem,
+                allow_star=allow_star,
                 source_query="\n".join(build_daily_limit_up_query(item) for item in trade_dates),
-                message="当天实时任务已排队",
+                message="历史扫描已排队，完成结构评分后将读取当前实时行情" if historical else "当天实时任务已排队",
                 created_at=_now_shanghai(),
                 updated_at=_now_shanghai(),
             )
@@ -484,8 +527,12 @@ def _execute_run(run_id: str, cancel_event: threading.Event) -> None:
         with get_db_session() as db:
             run = db.query(HorsebackRun).filter(HorsebackRun.id == run_id).one()
             trade_dates = _recent_trade_dates(db, run.as_of_date, 10)
+            allow_gem = bool(run.allow_gem)
+            allow_star = bool(run.allow_star)
+            run_mode = run.mode or MODE_LIVE
         token = TokenStore().load()
-        source_candidates, raw_payloads = collect_daily_limit_up_candidates(token, trade_dates)
+        board_filter = lambda symbol, name: is_board_candidate(symbol, name, allow_gem, allow_star)
+        source_candidates, raw_payloads = collect_daily_limit_up_candidates(token, trade_dates, board_filter=board_filter)
         payload_hash = hashlib.sha256(
             json.dumps(raw_payloads, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
         ).hexdigest()
@@ -506,8 +553,8 @@ def _execute_run(run_id: str, cancel_event: threading.Event) -> None:
                 effective_count = int(item.get("limit_up_count") or 0)
                 days_since_limit = _trading_days_between(trade_dates, latest_limit_date, run.as_of_date)
                 exclusion = None
-                if not is_main_board_candidate(symbol, name):
-                    exclusion = "非沪深主板或名称含 ST/退市标记"
+                if not is_board_candidate(symbol, name, run.allow_gem, run.allow_star):
+                    exclusion = "板块不在筛选范围（主板/创业板/科创板开关）或名称含 ST/退市标记"
                 elif not run.min_limit_count <= effective_count <= run.max_limit_count:
                     exclusion = f"涨停次数 {effective_count} 不在 {run.min_limit_count}–{run.max_limit_count}"
                 prepared.append({
@@ -561,6 +608,8 @@ def _execute_run(run_id: str, cancel_event: threading.Event) -> None:
                 min_score=run.min_score,
                 min_consolidation_days=run.min_consolidation_days,
                 max_consolidation_days=run.max_consolidation_days,
+                allow_gem=bool(run.allow_gem),
+                allow_star=bool(run.allow_star),
             )
 
         with get_db_session() as db:
@@ -586,11 +635,28 @@ def _execute_run(run_id: str, cancel_event: threading.Event) -> None:
         if _cancelled(run_id, cancel_event):
             _update_run(run_id, status="CANCELLED", message="任务已取消", completed_at=_now_shanghai())
             return
+        if not _uses_realtime_confirmation(run_mode):
+            # 兼容已生成的 v1.1.6 仅形态回放记录；新历史任务不再进入此模式。
+            with get_db_session() as db:
+                statuses = [
+                    row[0] for row in
+                    db.query(HorsebackResult.status).filter(HorsebackResult.run_id == run_id).all()
+                ]
+            selected = statuses.count("SELECTED")
+            invalid = statuses.count("INVALID")
+            _update_run(run_id, selected_count=selected)
+            _complete_run(
+                run_id,
+                {"selected": selected, "observations": len(statuses) - selected - invalid},
+                "历史回放扫描完成（仅形态评分，无实时门槛）",
+            )
+            return
         outcome = _refresh_realtime_quotes(run_id, cancel_event)
         if _cancelled(run_id, cancel_event):
             _update_run(run_id, status="CANCELLED", message="任务已取消", completed_at=_now_shanghai())
             return
-        _complete_run(run_id, outcome, "扫描完成")
+        prefix = "历史扫描完成（历史结构 + 当前实时行情确认）" if run_mode == MODE_HISTORICAL_LIVE else "扫描完成"
+        _complete_run(run_id, outcome, prefix)
     except Exception as exc:
         logger.exception("[horseback] run failed id=%s", run_id)
         _update_run(run_id, status="FAILED", error=str(exc), message="扫描失败", completed_at=_now_shanghai())
@@ -687,9 +753,13 @@ def _refresh_realtime_quotes(run_id: str, cancel_event: threading.Event) -> dict
         bars_map = _bars_by_symbol(db, [row.ts_code for row in rows], run.as_of_date)
         selected = 0
         observations = 0
+        gate_options = GateOptions(
+            live_rise_pct_min=run.live_rise_pct_min if run.live_rise_pct_min is not None else 3.0,
+            live_volume_ratio_min=run.live_volume_ratio_min if run.live_volume_ratio_min is not None else 1.2,
+        )
         for row in rows:
             context = _gate_context(row, bars_map.get(row.ts_code, []), run.as_of_date, snapshot_at)
-            gated = apply_realtime_entry_gate(context, quotes.get(row.ts_code), snapshot_at)
+            gated = apply_realtime_entry_gate(context, quotes.get(row.ts_code), snapshot_at, gate_options)
             _write_realtime_result(row, gated)
             if row.status == "SELECTED":
                 selected += 1
@@ -732,7 +802,9 @@ def refresh_quotes(run_id: str) -> dict | None:
         if not run:
             return None
         if run.strategy_version != STRATEGY_VERSION:
-            raise ValueError("仅支持刷新 v1.1.5 当天实时任务")
+            raise ValueError("仅支持刷新当前版本任务")
+        if not _uses_realtime_confirmation(run.mode):
+            raise ValueError("旧版仅形态回放任务不能刷新实时行情")
         if run.status in ACTIVE_STATUSES:
             raise ActiveRunError(run.id)
         if not db.query(HorsebackResult.id).filter(HorsebackResult.run_id == run_id).first():
@@ -873,7 +945,9 @@ def export_csv(run_id: str) -> tuple[str, str] | None:
         if safe_name[:1] in ("=", "+", "-", "@"):
             safe_name = "'" + safe_name
         writer.writerow([
-            "入选" if item["status"] == "SELECTED" else ("数据无效" if item["status"] == "INVALID" else "观察池"),
+            "入选" if item["status"] == "SELECTED" else (
+                "待触发" if item["status"] == "WATCHING" else ("数据无效" if item["status"] == "INVALID" else "观察池")
+            ),
             item["score"], item["ts_code"], safe_name, "龙头候选" if item["leader"] else "",
             item["last_limit_date"], item["days_since_limit"], item["close"],
             item["realtime_price"], item["realtime_change_pct"], item["realtime_volume_ratio"],

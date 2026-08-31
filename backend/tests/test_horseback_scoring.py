@@ -160,8 +160,21 @@ def test_v115_live_gate_requires_all_three_realtime_conditions():
     assert "形态达标" in result["realtime_gate"]
 
 
-def test_missing_realtime_quote_keeps_structure_candidate_in_observation_pool():
+def test_missing_realtime_quote_keeps_structure_candidate_waiting_for_trigger():
     result = apply_realtime_entry_gate(_structure_result(), None, datetime(2026, 8, 28, 10, 30))
 
-    assert result["status"] == "NOT_SELECTED"
+    # v1.1.6：形态达标但无实时行情 → 待触发（WATCHING），而不是直接打入观察池
+    assert result["status"] == "WATCHING"
     assert result["realtime_gate"] == "实时行情未返回"
+
+
+def test_structure_eligible_without_full_gate_becomes_watching():
+    result = apply_realtime_entry_gate(
+        _structure_result(),
+        {"price": 10.5, "change_pct": 1.0, "volume": 20.0, "open": 10.1, "high": 10.6, "low": 10.0, "at": "2026-08-28 10:30:00"},
+        datetime(2026, 8, 28, 10, 30),
+    )
+
+    # 形态达标但涨幅未超阈值 → WATCHING（待触发），不再混入观察池
+    assert result["status"] == "WATCHING"
+    assert "形态达标" in result["realtime_gate"]

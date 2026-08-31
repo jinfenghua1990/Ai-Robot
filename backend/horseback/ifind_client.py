@@ -153,8 +153,8 @@ def _candidate_rows(payload):
             yield from _structured_rows(node)
 
 
-def parse_candidates(payload) -> list[dict]:
-    """解析 JSON/Markdown/CSV，并只保留非 ST 的 A 股主板股票。"""
+def parse_candidates(payload, board_filter=None) -> list[dict]:
+    """解析 JSON/Markdown/CSV，并只保留非 ST 的 A 股主板股票（可传入更宽的板块过滤）。"""
 
     candidates = []
     seen = set()
@@ -164,7 +164,7 @@ def parse_candidates(payload) -> list[dict]:
         raw_code = _lookup(row, _CODE_KEYS)
         name = str(_lookup(row, _NAME_KEYS) or "").strip()
         symbol = normalize_symbol(raw_code)
-        if not symbol or symbol in seen or not is_main_board_candidate(symbol, name):
+        if not symbol or symbol in seen or not (board_filter or is_main_board_candidate)(symbol, name):
             continue
         seen.add(symbol)
         candidates.append({
@@ -340,20 +340,25 @@ def _payload_text(value) -> str:
         return ""
 
 
-def _candidates_from_result(client: IfindMCPClient, result) -> list[dict]:
-    candidates = parse_candidates(result)
+def _candidates_from_result(client: IfindMCPClient, result, board_filter=None) -> list[dict]:
+    candidates = parse_candidates(result, board_filter)
     if candidates:
         return candidates
     for url in re.findall(r"https://[^\s<>\]\[\"']+", _payload_text(result)):
         if ".csv" not in url.lower():
             continue
-        candidates = parse_candidates(client.fetch_export(url.rstrip(".,)")))
+        candidates = parse_candidates(client.fetch_export(url.rstrip(".,)")), board_filter)
         if candidates:
             return candidates
     return []
 
 
-def collect_daily_limit_up_candidates(token: str, trade_dates: list[date], attempts_per_day: int = 3) -> tuple[list[dict], list[dict]]:
+def collect_daily_limit_up_candidates(
+    token: str,
+    trade_dates: list[date],
+    attempts_per_day: int = 3,
+    board_filter=None,
+) -> tuple[list[dict], list[dict]]:
     """按交易日读取涨停池，保留最近涨停日期与十日出现次数。
 
     iFinD MCP 单日查询偶发返回空或失败时原地重试。十日窗口必须完整，
@@ -375,7 +380,7 @@ def collect_daily_limit_up_candidates(token: str, trade_dates: list[date], attem
             for attempt in range(attempt_count):
                 try:
                     result = client.call_tool("search_stocks", {"query": build_daily_limit_up_query(trade_date)})
-                    rows = _candidates_from_result(client, result)
+                    rows = _candidates_from_result(client, result, board_filter)
                     raw_payloads.append({"trade_date": trade_date.isoformat(), "result": result})
                     if rows:
                         break

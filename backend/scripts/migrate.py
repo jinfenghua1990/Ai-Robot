@@ -178,9 +178,27 @@ def _ensure_strategy_track_tables():
     ])
 
 
+def _ensure_horseback_v116_columns():
+    """回马枪 v1.1.6：任务级实时门槛、板块开关与回放模式列。"""
+    from db.connection import engine
+
+    with engine.begin() as conn:
+        for column_name, column_type in [
+            ("mode", "VARCHAR(16) NOT NULL DEFAULT 'live'"),
+            ("live_rise_pct_min", "DOUBLE PRECISION NOT NULL DEFAULT 3.0"),
+            ("live_volume_ratio_min", "DOUBLE PRECISION NOT NULL DEFAULT 1.2"),
+            ("allow_gem", "BOOLEAN NOT NULL DEFAULT FALSE"),
+            ("allow_star", "BOOLEAN NOT NULL DEFAULT FALSE"),
+        ]:
+            conn.execute(text(
+                f"ALTER TABLE horseback_runs ADD COLUMN IF NOT EXISTS {column_name} {column_type}"
+            ))
+
+
 def run_migrations():
     """执行所有轻量级数据库迁移（创建表/添加列）"""
     _ensure_bs_strategy_columns()
+    _ensure_horseback_v116_columns()
     _ensure_analysis_tables()
     _ensure_stock_tracker_tables()
     _ensure_strategy_track_tables()

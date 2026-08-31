@@ -37,6 +37,10 @@ class RunRequest(BaseModel):
     max_limit_count: int = Field(default=3, ge=1, le=10)
     min_score: int = Field(default=75, ge=50, le=100)
     max_candidates: int = Field(default=100, ge=0, le=1000)
+    live_rise_pct_min: float = Field(default=3.0, ge=0.0, le=20.0)
+    live_volume_ratio_min: float = Field(default=1.2, ge=0.0, le=20.0)
+    allow_gem: bool = False
+    allow_star: bool = False
 
     @model_validator(mode="after")
     def validate_ranges(self):
@@ -99,6 +103,10 @@ def create_run(payload: RunRequest):
             max_limit_count=payload.max_limit_count,
             min_score=payload.min_score,
             max_candidates=payload.max_candidates,
+            live_rise_pct_min=payload.live_rise_pct_min,
+            live_volume_ratio_min=payload.live_volume_ratio_min,
+            allow_gem=payload.allow_gem,
+            allow_star=payload.allow_star,
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=409, detail="请先在本页配置 iFinD 密钥") from exc

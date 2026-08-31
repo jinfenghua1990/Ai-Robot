@@ -5,12 +5,12 @@ const ACTIVE = new Set(['QUEUED', 'COLLECTING', 'SCORING', 'QUOTING', 'CANCEL_RE
 const STATUS_LABEL = {
   QUEUED: '排队中', COLLECTING: '采集候选', SCORING: '日线结构', QUOTING: '读取实时行情', CANCEL_REQUESTED: '正在取消',
   COMPLETED: '已完成', FAILED: '失败', CANCELLED: '已取消',
-  SELECTED: '入选', NOT_SELECTED: '观察池', INVALID: '数据无效',
+  SELECTED: '入选', WATCHING: '待触发', NOT_SELECTED: '观察池', INVALID: '数据无效',
 };
 
 const SHANGHAI_TODAY = new Intl.DateTimeFormat('en-CA', {
   timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit',
-}).format(new Date());  // 本机今日 YYYY-MM-DD，1.1.5 实时版只支持当天
+}).format(new Date());  // 本机今日 YYYY-MM-DD；过去日期按 v1.1.5 使用历史结构 + 当前实时行情
 
 const num = (value, digits = 2) => value == null ? '—' : Number(value).toFixed(digits);
 const pct = (value) => value == null ? '—' : `${Number(value) >= 0 ? '+' : ''}${Number(value).toFixed(2)}%`;
@@ -27,11 +27,13 @@ const sessionLabel = (iso) => {
 function StatusBadge({ status }) {
   const color = status === 'SELECTED' || status === 'COMPLETED'
     ? 'var(--flow-up)'
-    : status === 'FAILED' || status === 'INVALID'
-      ? 'var(--accent-red)'
-      : status === 'SCORING' || status === 'COLLECTING' || status === 'QUOTING'
-        ? 'var(--accent-blue)'
-        : 'var(--text-secondary)';
+    : status === 'WATCHING'
+      ? '#f59e0b'
+      : status === 'FAILED' || status === 'INVALID'
+        ? 'var(--accent-red)'
+        : status === 'SCORING' || status === 'COLLECTING' || status === 'QUOTING'
+          ? 'var(--accent-blue)'
+          : 'var(--text-secondary)';
   return (
     <span className="inline-flex whitespace-nowrap rounded-full border px-2 py-0.5 text-[11px] font-semibold" style={{ color, borderColor: color }}>
       {STATUS_LABEL[status] || status}
@@ -164,6 +166,11 @@ export default function HorsebackScreenerPage() {
     max_limit_count: 3,
     min_score: 75,
     max_candidates: 100,
+    live_rise_pct_min: 3,
+    live_volume_ratio_min: 1.2,
+    allow_gem: false,
+    allow_star: false,
+    end_date: '',
   });
 
   const loadRun = useCallback(async (runId) => {
@@ -216,7 +223,8 @@ export default function HorsebackScreenerPage() {
 
   const start = async () => {
     setError('');
-    const res = await apiFetch('/api/horseback/runs', { method: 'POST', body: JSON.stringify(options) }, 15000, 0);
+    const { end_date, ...params } = options;
+    const res = await apiFetch('/api/horseback/runs', { method: 'POST', body: JSON.stringify({ ...params, end_date: end_date || undefined }) }, 15000, 0);
     if (!res.ok) {
       setError(formatApiError(res.error, '启动失败'));
       return;
@@ -245,6 +253,7 @@ export default function HorsebackScreenerPage() {
   }, [run?.results, filter]);
   const progress = run?.progress || {};
   const progressPct = progress.total ? Math.round((progress.processed / progress.total) * 100) : 0;
+  const watchingCount = useMemo(() => (run?.results || []).filter((item) => item.status === 'WATCHING').length, [run?.results]);
   const running = Boolean(run && ACTIVE.has(run.status));
   const openAnalysis = (row) => {
     const child = window.open(`/stock-analysis?code=${encodeURIComponent(row.code)}`, '_blank', 'noopener,noreferrer');
@@ -262,8 +271,14 @@ export default function HorsebackScreenerPage() {
       <header className="flex shrink-0 flex-wrap items-center gap-3 border-b pb-2" style={{ borderColor: 'var(--border-color)' }}>
         <div className="flex items-baseline gap-2">
           <h1 className="text-lg font-bold">回马枪选股器</h1>
-          <span className="text-[11px]" style={{ color: 'var(--text-secondary)' }}>Windows v1.1.5 实时版</span>
+          <span className="text-[11px]" style={{ color: 'var(--text-secondary)' }}>v1.1.6 · 兼容 v1.1.5 历史扫描</span>
           {run && <StatusBadge status={run.status} />}
+          {run?.mode === 'historical_live' && (
+            <span className="rounded-full border px-2 py-0.5 text-[11px] font-semibold" style={{ color: '#f59e0b', borderColor: '#f59e0b' }}>历史结构 · 当前行情</span>
+          )}
+          {run?.mode === 'replay' && (
+            <span className="rounded-full border px-2 py-0.5 text-[11px] font-semibold" style={{ color: '#f59e0b', borderColor: '#f59e0b' }}>旧版仅形态回放</span>
+          )}
         </div>
         <div className="ml-auto flex items-center gap-2">
           <span className="text-[11px]" style={{ color: config?.configured ? 'var(--flow-up)' : 'var(--accent-red)' }}>
@@ -281,8 +296,17 @@ export default function HorsebackScreenerPage() {
       <div className="flex shrink-0 flex-wrap items-center gap-2 rounded border px-3 py-2 text-[11px]" style={{ borderColor: 'var(--border-color)' }}>
         <span className="flex items-center gap-1">
           <span style={{ color: 'var(--text-muted)' }}>筛选日期</span>
-          <b>{SHANGHAI_TODAY}</b>
-          <span style={{ color: 'var(--text-muted)' }}>（当日实时）</span>
+          <input
+            type="date"
+            max={SHANGHAI_TODAY}
+            value={options.end_date}
+            onChange={(event) => setOptions({ ...options, end_date: event.target.value })}
+            className="w-[112px] rounded border px-1 py-0.5 text-[11px]"
+            style={input}
+          />
+          <span style={{ color: 'var(--text-muted)' }}>
+            {options.end_date && options.end_date < SHANGHAI_TODAY ? '（历史结构 + 当前实时确认）' : '（当日实时）'}
+          </span>
         </span>
         <span className="hidden h-3 w-px sm:inline-block" style={{ background: 'var(--border-color)' }} />
         <label className="flex items-center gap-1">整理
@@ -303,6 +327,21 @@ export default function HorsebackScreenerPage() {
         <label className="flex items-center gap-1">上限
           <input type="number" min="0" max="1000" value={options.max_candidates} onChange={(event) => setOptions({ ...options, max_candidates: Number(event.target.value) })} className="w-14 rounded border px-1 py-0.5 text-[11px]" style={input} />
         </label>
+        <label className="flex items-center gap-1">涨幅≥
+          <input type="number" min="0" max="20" step="0.5" value={options.live_rise_pct_min} onChange={(event) => setOptions({ ...options, live_rise_pct_min: Number(event.target.value) })} className="w-12 rounded border px-1 py-0.5 text-[11px]" style={input} />
+          %
+        </label>
+        <label className="flex items-center gap-1">量比≥
+          <input type="number" min="0" max="20" step="0.1" value={options.live_volume_ratio_min} onChange={(event) => setOptions({ ...options, live_volume_ratio_min: Number(event.target.value) })} className="w-12 rounded border px-1 py-0.5 text-[11px]" style={input} />
+        </label>
+        <label className="flex items-center gap-1">
+          <input type="checkbox" checked={options.allow_gem} onChange={(event) => setOptions({ ...options, allow_gem: event.target.checked })} />
+          创业板
+        </label>
+        <label className="flex items-center gap-1">
+          <input type="checkbox" checked={options.allow_star} onChange={(event) => setOptions({ ...options, allow_star: event.target.checked })} />
+          科创板
+        </label>
         <div className="ml-auto flex flex-wrap items-center gap-2">
           {run?.as_of_date && <span style={{ color: 'var(--text-muted)' }}>日线截至 {run.as_of_date}</span>}
           {run?.realtime_at && (
@@ -310,7 +349,7 @@ export default function HorsebackScreenerPage() {
               行情 {run.realtime_at.slice(11, 16)} {sessionLabel(run.realtime_at)}
             </span>
           )}
-          <button onClick={start} disabled={running || !config?.configured} className="rounded px-3 py-1 text-[11px] font-semibold text-white disabled:opacity-40" style={{ background: 'var(--accent-blue)' }}>{running ? '扫描中…' : '启动实时扫描'}</button>
+          <button onClick={start} disabled={running || !config?.configured} className="rounded px-3 py-1 text-[11px] font-semibold text-white disabled:opacity-40" style={{ background: 'var(--accent-blue)' }}>{running ? '扫描中…' : options.end_date && options.end_date < SHANGHAI_TODAY ? '启动历史扫描' : '启动实时扫描'}</button>
           {running && <button onClick={cancel} className="rounded border px-2 py-1 text-[11px]" style={{ borderColor: 'var(--accent-red)', color: 'var(--accent-red)' }}>取消</button>}
           {run?.id && (run.results || []).length > 0 && <button onClick={refreshQuotes} disabled={running || !config?.configured} className="rounded border px-2 py-1 text-[11px] disabled:opacity-40" style={{ borderColor: 'var(--border-color)' }}>↻ 刷新实时行情</button>}
           {run?.id && (run.results || []).length > 0 && <a href={`/api/horseback/runs/${run.id}/export.csv`} className="rounded border px-2 py-1 text-[11px] no-underline" style={{ borderColor: 'var(--border-color)', color: 'var(--text-primary)' }}>导出 CSV</a>}
@@ -325,6 +364,7 @@ export default function HorsebackScreenerPage() {
           <span style={{ color: 'var(--text-muted)' }}>已评分 {progress.processed || 0}/{progress.total || 0}</span>
           {progress.quote_total > 0 && <span style={{ color: 'var(--text-muted)' }}>行情 {progress.quote_processed || 0}/{progress.quote_total}</span>}
           <span style={{ color: 'var(--flow-up)' }}>入选 {progress.selected || 0}</span>
+          {watchingCount > 0 && <span style={{ color: '#f59e0b' }}>待触发 {watchingCount}</span>}
           <div className="ml-2 h-1.5 w-32 overflow-hidden rounded-full" style={{ background: 'var(--bg-hover)' }}>
             <div className="h-full transition-all" style={{ width: `${progressPct}%`, background: 'var(--accent-blue)' }} />
           </div>
@@ -335,13 +375,13 @@ export default function HorsebackScreenerPage() {
       <section className="flex min-h-0 flex-1 flex-col rounded-xl border" style={panel}>
         <div className="flex shrink-0 flex-wrap items-center gap-2 border-b px-3 py-2" style={{ borderColor: 'var(--border-color)' }}>
           <b>入选池与观察池</b>
-          {['ALL', 'SELECTED', 'NOT_SELECTED', 'INVALID'].map((value) => (
+          {['ALL', 'SELECTED', 'WATCHING', 'NOT_SELECTED', 'INVALID'].map((value) => (
             <button key={value} onClick={() => setFilter(value)} className="rounded border px-2 py-0.5 text-[11px]" style={{ borderColor: filter === value ? 'var(--accent-blue)' : 'var(--border-color)', color: filter === value ? 'var(--accent-blue)' : 'var(--text-secondary)' }}>
               {value === 'ALL' ? '全部' : STATUS_LABEL[value]}
             </button>
           ))}
           <span className="ml-auto text-[11px]" style={{ color: 'var(--text-muted)' }}>
-            入选须形态达标、实时涨幅&gt;3%、实时量比≥1.20，且当日首次站上 MA5
+            入选须形态达标、实时涨幅&gt;{options.live_rise_pct_min}%、实时量比≥{options.live_volume_ratio_min}，且当日首次站上 MA5；<b style={{ color: '#f59e0b' }}>待触发</b>=形态达标等待盘中确认
           </span>
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto">
@@ -371,7 +411,7 @@ export default function HorsebackScreenerPage() {
           </table>
         </div>
         <div className="shrink-0 border-t px-3 py-1.5 text-[11px]" style={{ borderColor: 'var(--border-color)', color: 'var(--text-muted)' }}>
-          数据口径：仅支持当天实时筛选；涨停候选与实时行情来自 iFinD，结构评分读取本地 stock_daily_kline；十日涨停池任一交易日缺失会使本次扫描失败，盘后当日日线覆盖不足会回退上一完整交易日，少于 63 根日线标为“数据无效”，实时行情缺失留在“观察池”，不用默认值补齐。
+          数据口径：选择过去日期时，涨停池与结构评分严格截止到该日，但最终入选使用启动或刷新时的当前实时行情，属于 v1.1.5 历史扫描兼容模式，不是历史回测；涨停候选与实时行情来自 iFinD，结构评分读取本地 stock_daily_kline；默认仅沪深主板，可勾选纳入创业板/科创板（20cm 回撤下限自适应放宽）；十日涨停池任一交易日缺失会使本次扫描失败，盘后当日日线覆盖不足会回退上一完整交易日，少于 63 根日线标为“数据无效”，实时行情缺失留在“待触发/观察池”，不用默认值补齐。
         </div>
       </section>
 

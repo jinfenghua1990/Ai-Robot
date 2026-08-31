@@ -19,8 +19,13 @@ LOOKBACK_DAYS = 10
 LIMIT_UP_THRESHOLD_PCT = 9.7
 LIVE_RISE_PCT_MIN = 3.0
 LIVE_VOLUME_RATIO_MIN = 1.2
+# v1.1.6：回撤下限按板型区分——20cm 板单日振幅天然更大，允许更深的整理回撤
+PULLBACK_FLOOR_MAIN = -22.0
+PULLBACK_FLOOR_20CM = -32.0
 
 _MAIN_BOARD_PREFIXES = ("000", "001", "002", "003", "600", "601", "603", "605")
+_GEM_PREFIXES = ("300", "301", "302")
+_STAR_PREFIXES = ("688", "689")
 
 
 @dataclass(frozen=True)
@@ -28,6 +33,8 @@ class ScoreOptions:
     min_score: int = 75
     min_consolidation_days: int = 3
     max_consolidation_days: int = 12
+    allow_gem: bool = False
+    allow_star: bool = False
 
     def __post_init__(self):
         if not 1 <= self.min_consolidation_days <= 15:
@@ -38,6 +45,20 @@ class ScoreOptions:
             raise ValueError("整理最少天数必须小于整理最多天数")
         if not 50 <= self.min_score <= 100:
             raise ValueError("预选阈值必须在 50–100 之间")
+
+
+@dataclass(frozen=True)
+class GateOptions:
+    """v1.1.6：实时入选门槛可按任务配置（默认与 v1.1.5 固定值一致）。"""
+
+    live_rise_pct_min: float = LIVE_RISE_PCT_MIN
+    live_volume_ratio_min: float = LIVE_VOLUME_RATIO_MIN
+
+    def __post_init__(self):
+        if not 0 <= self.live_rise_pct_min <= 20:
+            raise ValueError("实时涨幅阈值必须在 0–20 之间")
+        if not 0 <= self.live_volume_ratio_min <= 20:
+            raise ValueError("实时量比阈值必须在 0–20 之间")
 
 
 @dataclass(frozen=True)
@@ -52,6 +73,7 @@ class ScoreMetrics:
     ma_convergence_pct: float
     support_distance_pct: float
     close_strength: bool
+    pullback_floor: float = PULLBACK_FLOOR_MAIN
 
 
 def normalize_symbol(value: str) -> str:
@@ -65,16 +87,29 @@ def normalize_symbol(value: str) -> str:
     return f"{code}.{suffix}"
 
 
-def is_main_board_candidate(symbol: str, name: str = "") -> bool:
+def is_board_candidate(symbol: str, name: str = "", allow_gem: bool = False, allow_star: bool = False) -> bool:
+    """默认仅沪深主板；allow_gem/allow_star 分别放开创业板与科创板；统一剔除 ST/退市。"""
     normalized = normalize_symbol(symbol)
     if not normalized:
         return False
     code, suffix = normalized.split(".", 1)
     expected_suffix = "SH" if code.startswith("6") else "SZ"
-    if suffix != expected_suffix or not code.startswith(_MAIN_BOARD_PREFIXES):
+    if suffix != expected_suffix:
+        return False
+    board_ok = (
+        code.startswith(_MAIN_BOARD_PREFIXES)
+        or (allow_gem and code.startswith(_GEM_PREFIXES))
+        or (allow_star and code.startswith(_STAR_PREFIXES))
+    )
+    if not board_ok:
         return False
     upper_name = str(name or "").upper()
     return "ST" not in upper_name and "退" not in upper_name
+
+
+def is_main_board_candidate(symbol: str, name: str = "") -> bool:
+    """兼容 v1.1.5 口径：仅沪深主板。"""
+    return is_board_candidate(symbol, name)
 
 
 def _component(key: str, label: str, points: int, maximum: int, passed: bool, actual) -> dict:
@@ -98,7 +133,7 @@ def score_metrics(metrics: ScoreMetrics) -> tuple[int, list[dict]]:
         _component("ma60_rising", "长期均线向上", 12, 12, metrics.ma60 > metrics.ma60_prior, round(metrics.ma60 - metrics.ma60_prior, 4)),
         _component("close_holds_ma20", "收盘守住20日支撑", 10, 10, metrics.close >= metrics.ma20 * 0.98, round((metrics.close / metrics.ma20 - 1) * 100, 2)),
         _component("pre_limit_momentum", "涨停前已有趋势动能", 10, 10, metrics.pre_limit_rise_pct >= 15, round(metrics.pre_limit_rise_pct, 2)),
-        _component("pullback", "涨停后回撤幅度合适", 15, 15, -22 <= metrics.pullback_pct <= -4, round(metrics.pullback_pct, 2)),
+        _component("pullback", "涨停后回撤幅度合适", 15, 15, metrics.pullback_floor <= metrics.pullback_pct <= -4, round(metrics.pullback_pct, 2)),
         _component("volume_contraction", "整理阶段缩量", 15 if metrics.volume_ratio_5_5 <= 0.85 else 8, 15, metrics.volume_ratio_5_5 <= 1, round(metrics.volume_ratio_5_5, 3)),
         _component("ma_convergence", "5/10/20日线粘合", 12 if metrics.ma_convergence_pct <= 6 else 6, 12, metrics.ma_convergence_pct <= 9, round(metrics.ma_convergence_pct, 2)),
         _component("near_ma20", "价格贴近均线平台", 5, 5, -2 <= metrics.support_distance_pct <= 7, round(metrics.support_distance_pct, 2)),
@@ -178,8 +213,8 @@ def evaluate_candidate(
     if cutoff is None:
         raise ValueError("as_of_date 无效")
     bars = _normalize_bars(rows, cutoff)
-    if not is_main_board_candidate(symbol, name):
-        return _base_result(symbol, name, cutoff, bars, "INVALID", "非 A 股主板或名称包含 ST/退市标记")
+    if not is_board_candidate(symbol, name, options.allow_gem, options.allow_star):
+        return _base_result(symbol, name, cutoff, bars, "INVALID", "非允许板块（主板/未开放的创业板科创板）或名称包含 ST/退市标记")
     if len(bars) < MIN_HISTORY_BARS:
         return _base_result(symbol, name, cutoff, bars, "INVALID", f"历史日线不足：至少 {MIN_HISTORY_BARS} 根，实际 {len(bars)} 根")
 
@@ -194,7 +229,10 @@ def evaluate_candidate(
     ma60 = ma(60)
     ma60_prior = ma(60, 3)
 
-    threshold = _limit_up_threshold_pct(symbol) / 100
+    limit_threshold_pct = _limit_up_threshold_pct(symbol)
+    threshold = limit_threshold_pct / 100
+    # 20cm 板（创业板/科创板）回撤下限放宽，其余沿用主板区间
+    pullback_floor = PULLBACK_FLOOR_20CM if limit_threshold_pct >= 19.5 else PULLBACK_FLOOR_MAIN
     limit_indexes = [
         index for index in range(1, len(bars))
         if bars[index - 1]["close"] > 0 and bars[index]["close"] / bars[index - 1]["close"] - 1 >= threshold
@@ -233,6 +271,7 @@ def evaluate_candidate(
         close=last["close"],
         pre_limit_rise_pct=pre_limit_rise,
         pullback_pct=pullback_pct,
+        pullback_floor=pullback_floor,
         volume_ratio_5_5=volume_ratio,
         ma_convergence_pct=ma_convergence,
         support_distance_pct=support_distance,
@@ -246,7 +285,7 @@ def evaluate_candidate(
         failures.append("长期均线走平或向下")
     if not last["close"] >= ma20 * 0.98:
         failures.append("收盘跌破20日支撑")
-    if not -22 <= pullback_pct <= -4:
+    if not pullback_floor <= pullback_pct <= -4:
         failures.append("回撤幅度不合适")
     if not volume_ratio <= 1:
         failures.append("整理阶段未缩量")
@@ -307,9 +346,19 @@ def _quote_state(result: dict, price: float) -> str:
     return "实时观察"
 
 
-def apply_realtime_entry_gate(result: dict, quote: dict | None, snapshot_at: datetime) -> dict:
-    """将 iFinD 行情快照应用到日线结构结果，返回最终入选/观察池状态。"""
+def apply_realtime_entry_gate(
+    result: dict,
+    quote: dict | None,
+    snapshot_at: datetime,
+    gate_options: GateOptions | None = None,
+) -> dict:
+    """将 iFinD 行情快照应用到日线结构结果，返回最终入选/观察池状态。
 
+    v1.1.6 状态分层：SELECTED=形态达标且盘中触发；WATCHING=形态达标、
+    等待盘中触发（对标外部选股器的"预选"层）；NOT_SELECTED=形态未达标。
+    """
+
+    options = gate_options or GateOptions()
     updated = dict(result)
     if updated.get("status") == "INVALID":
         updated.update({
@@ -327,7 +376,7 @@ def apply_realtime_entry_gate(result: dict, quote: dict | None, snapshot_at: dat
     price = _number((quote or {}).get("price"))
     if price is None:
         updated.update({
-            "status": "NOT_SELECTED",
+            "status": "WATCHING" if updated.get("structure_eligible") else "NOT_SELECTED",
             "realtime_price": None,
             "realtime_change_pct": None,
             "realtime_volume_ratio": None,
@@ -361,16 +410,20 @@ def apply_realtime_entry_gate(result: dict, quote: dict | None, snapshot_at: dat
         and previous_close <= previous_ma5 and price > today_ma5
     )
     structure_eligible = bool(updated.get("structure_eligible"))
-    rise_qualified = change_pct is not None and change_pct > LIVE_RISE_PCT_MIN
-    volume_qualified = volume_ratio is not None and volume_ratio >= LIVE_VOLUME_RATIO_MIN
+    rise_qualified = change_pct is not None and change_pct > options.live_rise_pct_min
+    volume_qualified = volume_ratio is not None and volume_ratio >= options.live_volume_ratio_min
     gate_parts = [
         "形态达标" if structure_eligible else "形态未达标",
-        f"涨幅 {change_pct:.2f}%" if rise_qualified else f"涨幅未超 {LIVE_RISE_PCT_MIN:.0f}%",
+        f"涨幅 {change_pct:.2f}%" if rise_qualified else f"涨幅未超 {options.live_rise_pct_min:g}%",
         f"放量 {volume_ratio:.2f} 倍" if volume_qualified else (f"未放量 {volume_ratio:.2f} 倍" if volume_ratio is not None else "实时量比未就绪"),
         f"首次站上 MA5 {today_ma5:.4f}" if first_ma5_break else "未首次站上 MA5",
     ]
     updated.update({
-        "status": "SELECTED" if structure_eligible and rise_qualified and volume_qualified and first_ma5_break else "NOT_SELECTED",
+        "status": (
+            "SELECTED" if structure_eligible and rise_qualified and volume_qualified and first_ma5_break
+            else "WATCHING" if structure_eligible
+            else "NOT_SELECTED"
+        ),
         "realtime_price": round(price, 4),
         "realtime_change_pct": round(change_pct, 4) if change_pct is not None else None,
         "realtime_volume_ratio": round(volume_ratio, 4) if volume_ratio is not None else None,

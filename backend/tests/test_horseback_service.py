@@ -3,10 +3,15 @@ from types import SimpleNamespace
 
 from horseback.scoring import apply_realtime_entry_gate
 from horseback.service import (
+    MODE_HISTORICAL_LIVE,
+    MODE_LEGACY_REPLAY,
+    MODE_LIVE,
     _apply_candidate_limit,
     _gate_context,
     _has_required_daily_coverage,
     _quote_coverage,
+    _run_mode,
+    _uses_realtime_confirmation,
 )
 
 
@@ -15,6 +20,16 @@ def test_scan_limit_zero_keeps_all_eligible_candidates():
 
     assert _apply_candidate_limit(candidates, 0) == candidates
     assert _apply_candidate_limit(candidates, 2) == candidates[:2]
+
+
+def test_past_date_uses_v115_historical_structure_with_current_realtime_confirmation():
+    today = date(2026, 8, 31)
+
+    assert _run_mode(None, today) == MODE_LIVE
+    assert _run_mode(today, today) == MODE_LIVE
+    assert _run_mode(date(2026, 8, 28), today) == MODE_HISTORICAL_LIVE
+    assert _uses_realtime_confirmation(MODE_HISTORICAL_LIVE)
+    assert not _uses_realtime_confirmation(MODE_LEGACY_REPLAY)
 
 
 def test_daily_coverage_requires_95_percent_of_previous_complete_day():
