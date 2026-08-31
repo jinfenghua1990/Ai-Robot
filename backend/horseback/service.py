@@ -44,6 +44,7 @@ MODE_LEGACY_REPLAY = "replay"
 DATA_CONTRACT = {
     "mode": "当天与历史截止日均按 v1.1.5 执行实时确认；历史扫描为历史结构 + 当前行情，不是历史回测",
     "candidate_source": "iFinD MCP search_stocks，逐交易日涨停池先落库",
+    "candidate_limit": "涨停次数与整理日条件通过后全池读取本地日线；扫描上限仅限制形态达标后的实时行情确认数量",
     "kline_source": "stock_daily_kline / Tushare daily",
     "adjustment": "不复权（沿用 stock_daily_kline 当前口径）",
     "cutoff": "结构评分严格截止到所选日期；实时行情使用扫描或刷新时的当前快照，不写入历史日线",
@@ -95,6 +96,27 @@ def _loads(value: str | None, fallback):
 
 def _apply_candidate_limit(candidates: list[dict], max_candidates: int) -> list[dict]:
     return candidates if max_candidates == 0 else candidates[:max_candidates]
+
+
+def _select_structure_candidates(pool: list[dict], min_days: int, max_days: int) -> list[dict]:
+    """保留全部符合整理日区间的候选；实时确认上限不在本阶段生效。"""
+
+    chosen = []
+    for item in pool:
+        days = item["days_since_limit"]
+        if days is not None and min_days <= days <= max_days:
+            chosen.append(item)
+        else:
+            item["exclusion"] = "涨停后整理天数不在设定区间"
+    return chosen
+
+
+def _select_realtime_rows(rows: list[HorsebackResult], max_candidates: int) -> list[HorsebackResult]:
+    """只为形态达标结果读取行情，并按结构分数应用实时确认上限。"""
+
+    eligible = [row for row in rows if row.status != "INVALID" and bool(row.structure_eligible)]
+    eligible.sort(key=lambda row: (-(row.score if row.score is not None else -1), row.ts_code))
+    return _apply_candidate_limit(eligible, max_candidates)
 
 
 def _run_mode(requested_end_date: date | None, today: date) -> str:
@@ -260,6 +282,9 @@ def _run_dict(run: HorsebackRun, include_results: bool = False, db=None) -> dict
         results = [_result_dict(row) for row in rows]
         results.sort(key=_result_sort_key)
         payload["results"] = results
+        structure_eligible = sum(bool(row.structure_eligible) for row in rows)
+        payload["progress"]["structure_eligible"] = structure_eligible
+        payload["progress"]["quote_skipped"] = max(structure_eligible - (run.quote_total or 0), 0)
     return payload
 
 
@@ -568,20 +593,13 @@ def _execute_run(run_id: str, cancel_event: threading.Event) -> None:
 
             pool = [item for item in prepared if not item["exclusion"]]
             pool.sort(key=lambda item: (-item["effective_count"], item["ts_code"]))
-            requested = _apply_candidate_limit(pool, run.max_candidates)
-            chosen = []
-            for item in requested:
-                days = item["days_since_limit"]
-                if days is not None and run.min_consolidation_days <= days <= run.max_consolidation_days:
-                    chosen.append(item)
-                else:
-                    item["exclusion"] = "涨停后整理天数不在设定区间"
+            chosen = _select_structure_candidates(
+                pool,
+                run.min_consolidation_days,
+                run.max_consolidation_days,
+            )
             chosen_symbols = {item["ts_code"] for item in chosen}
-            requested_symbols = {item["ts_code"] for item in requested}
             for item in prepared:
-                exclusion = item["exclusion"]
-                if not exclusion and item["ts_code"] not in requested_symbols:
-                    exclusion = f"超过本次最多 {run.max_candidates} 只的候选上限"
                 db.add(HorsebackCandidate(
                     run_id=run_id,
                     ts_code=item["ts_code"],
@@ -592,16 +610,16 @@ def _execute_run(run_id: str, cancel_event: threading.Event) -> None:
                     effective_limit_count=item["effective_count"],
                     last_limit_date=item["last_limit_date"],
                     admitted=item["ts_code"] in chosen_symbols,
-                    exclusion_reason=exclusion,
+                    exclusion_reason=item["exclusion"],
                     source_json=json.dumps(item.get("raw", []), ensure_ascii=False, default=str),
                 ))
             run.source_payload_sha256 = payload_hash
             run.source_count = len(source_candidates)
             run.pool_count = len(pool)
-            run.prefiltered_count = len(requested) - len(chosen)
+            run.prefiltered_count = len(pool) - len(chosen)
             run.total_count = len(chosen)
             run.status = "SCORING"
-            run.message = f"候选池已落库，正在读取日线结构 0/{len(chosen)}"
+            run.message = f"候选池已落库，正在全池读取日线结构 0/{len(chosen)}"
             db.commit()
             as_of_date = run.as_of_date
             score_options = ScoreOptions(
@@ -718,6 +736,24 @@ def _write_realtime_result(row: HorsebackResult, result: dict) -> None:
     row.realtime_at = result.get("realtime_at")
 
 
+def _mark_realtime_not_requested(row: HorsebackResult, snapshot_at: datetime, max_candidates: int) -> None:
+    """形态达标但超出实时确认上限时，保留为待触发并明确未请求原因。"""
+
+    row.status = "WATCHING"
+    row.realtime_price = None
+    row.realtime_change_pct = None
+    row.realtime_volume_ratio = None
+    row.realtime_open = None
+    row.realtime_high = None
+    row.realtime_low = None
+    row.realtime_volume = None
+    row.today_ma5 = None
+    row.first_ma5_break = False
+    row.realtime_gate = f"形态达标 · 超过实时确认上限 {max_candidates}，未请求行情"
+    row.realtime_state = "未请求实时行情"
+    row.realtime_at = snapshot_at
+
+
 def _quote_coverage(quote_symbols: list[str], quotes: dict[str, dict]) -> tuple[int, int]:
     requested = set(quote_symbols)
     processed = sum(symbol in quotes for symbol in requested)
@@ -728,7 +764,8 @@ def _refresh_realtime_quotes(run_id: str, cancel_event: threading.Event) -> dict
     with get_db_session() as db:
         run = db.query(HorsebackRun).filter(HorsebackRun.id == run_id).one()
         rows = db.query(HorsebackResult).filter(HorsebackResult.run_id == run_id).all()
-        quote_symbols = [row.ts_code for row in rows if row.status != "INVALID"]
+        quote_rows = _select_realtime_rows(rows, run.max_candidates)
+        quote_symbols = [row.ts_code for row in quote_rows]
         run.status = "QUOTING"
         run.quote_total = len(quote_symbols)
         run.quote_processed = 0
@@ -738,31 +775,46 @@ def _refresh_realtime_quotes(run_id: str, cancel_event: threading.Event) -> dict
         return {"selected": 0, "observations": 0, "error": None}
 
     quote_error = None
-    try:
-        quotes, _ = collect_realtime_quotes(TokenStore().load(), quote_symbols)
-    except Exception as exc:  # A missing snapshot must produce observation rows, not synthetic prices.
-        logger.warning("[horseback] realtime quotes unavailable run=%s: %s", run_id, exc)
+    if quote_symbols:
+        try:
+            quotes, _ = collect_realtime_quotes(TokenStore().load(), quote_symbols)
+        except Exception as exc:  # A missing snapshot must produce observation rows, not synthetic prices.
+            logger.warning("[horseback] realtime quotes unavailable run=%s: %s", run_id, exc)
+            quotes = {}
+            quote_error = str(exc)
+    else:
         quotes = {}
-        quote_error = str(exc)
 
     snapshot_at = _now_shanghai()
     quote_processed, quote_missing = _quote_coverage(quote_symbols, quotes)
     with get_db_session() as db:
         run = db.query(HorsebackRun).filter(HorsebackRun.id == run_id).one()
         rows = db.query(HorsebackResult).filter(HorsebackResult.run_id == run_id).all()
-        bars_map = _bars_by_symbol(db, [row.ts_code for row in rows], run.as_of_date)
+        quote_rows = _select_realtime_rows(rows, run.max_candidates)
+        quote_symbol_set = {row.ts_code for row in quote_rows}
+        bars_map = _bars_by_symbol(db, list(quote_symbol_set), run.as_of_date)
         selected = 0
+        watching = 0
         observations = 0
         gate_options = GateOptions(
             live_rise_pct_min=run.live_rise_pct_min if run.live_rise_pct_min is not None else 3.0,
             live_volume_ratio_min=run.live_volume_ratio_min if run.live_volume_ratio_min is not None else 1.2,
         )
         for row in rows:
-            context = _gate_context(row, bars_map.get(row.ts_code, []), run.as_of_date, snapshot_at)
-            gated = apply_realtime_entry_gate(context, quotes.get(row.ts_code), snapshot_at, gate_options)
-            _write_realtime_result(row, gated)
+            if row.status == "INVALID":
+                continue
+            if not bool(row.structure_eligible):
+                row.status = "NOT_SELECTED"
+            elif row.ts_code not in quote_symbol_set:
+                _mark_realtime_not_requested(row, snapshot_at, run.max_candidates)
+            else:
+                context = _gate_context(row, bars_map.get(row.ts_code, []), run.as_of_date, snapshot_at)
+                gated = apply_realtime_entry_gate(context, quotes.get(row.ts_code), snapshot_at, gate_options)
+                _write_realtime_result(row, gated)
             if row.status == "SELECTED":
                 selected += 1
+            elif row.status == "WATCHING":
+                watching += 1
             elif row.status != "INVALID":
                 observations += 1
         run.selected_count = selected
@@ -778,6 +830,7 @@ def _refresh_realtime_quotes(run_id: str, cancel_event: threading.Event) -> dict
         db.commit()
     return {
         "selected": selected,
+        "watching": watching,
         "observations": observations,
         "error": quote_error,
         "quote_missing": quote_missing,
@@ -785,7 +838,10 @@ def _refresh_realtime_quotes(run_id: str, cancel_event: threading.Event) -> dict
 
 
 def _complete_run(run_id: str, outcome: dict, prefix: str) -> None:
-    suffix = f"：入选 {outcome['selected']} 只，观察池 {outcome['observations']} 只"
+    suffix = (
+        f"：入选 {outcome['selected']} 只，待触发 {outcome.get('watching', 0)} 只，"
+        f"观察池 {outcome['observations']} 只"
+    )
     if outcome.get("error"):
         suffix += "（实时行情未返回）"
     elif outcome.get("quote_missing"):

@@ -11,15 +11,43 @@ from horseback.service import (
     _has_required_daily_coverage,
     _quote_coverage,
     _run_mode,
+    _select_realtime_rows,
+    _select_structure_candidates,
     _uses_realtime_confirmation,
 )
 
 
-def test_scan_limit_zero_keeps_all_eligible_candidates():
+def test_realtime_limit_zero_keeps_all_eligible_candidates():
     candidates = [{"ts_code": f"60000{index}.SH"} for index in range(3)]
 
     assert _apply_candidate_limit(candidates, 0) == candidates
     assert _apply_candidate_limit(candidates, 2) == candidates[:2]
+
+
+def test_structure_scoring_uses_full_pool_before_realtime_limit():
+    candidates = [
+        {"ts_code": f"600{index:03d}.SH", "days_since_limit": 5, "exclusion": None}
+        for index in range(150)
+    ]
+
+    chosen = _select_structure_candidates(candidates, 3, 12)
+
+    assert len(chosen) == 150
+    assert all(item["exclusion"] is None for item in chosen)
+
+
+def test_realtime_limit_filters_structure_then_ranks_by_score():
+    rows = [
+        SimpleNamespace(ts_code="600001.SH", status="NOT_SELECTED", structure_eligible=False, score=100),
+        SimpleNamespace(ts_code="600002.SH", status="SELECTED", structure_eligible=True, score=82),
+        SimpleNamespace(ts_code="600003.SH", status="SELECTED", structure_eligible=True, score=97),
+        SimpleNamespace(ts_code="600004.SH", status="INVALID", structure_eligible=True, score=99),
+    ]
+
+    selected = _select_realtime_rows(rows, 1)
+
+    assert [row.ts_code for row in selected] == ["600003.SH"]
+    assert [row.ts_code for row in _select_realtime_rows(rows, 0)] == ["600003.SH", "600002.SH"]
 
 
 def test_past_date_uses_v115_historical_structure_with_current_realtime_confirmation():

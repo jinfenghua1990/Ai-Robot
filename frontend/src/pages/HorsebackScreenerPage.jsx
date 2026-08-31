@@ -271,7 +271,7 @@ export default function HorsebackScreenerPage() {
       <header className="flex shrink-0 flex-wrap items-center gap-3 border-b pb-2" style={{ borderColor: 'var(--border-color)' }}>
         <div className="flex items-baseline gap-2">
           <h1 className="text-lg font-bold">回马枪选股器</h1>
-          <span className="text-[11px]" style={{ color: 'var(--text-secondary)' }}>v1.1.6 · 兼容 v1.1.5 历史扫描</span>
+          <span className="text-[11px]" style={{ color: 'var(--text-secondary)' }}>v1.1.6 live.2 · 全池结构评分</span>
           {run && <StatusBadge status={run.status} />}
           {run?.mode === 'historical_live' && (
             <span className="rounded-full border px-2 py-0.5 text-[11px] font-semibold" style={{ color: '#f59e0b', borderColor: '#f59e0b' }}>历史结构 · 当前行情</span>
@@ -324,7 +324,7 @@ export default function HorsebackScreenerPage() {
         <label className="flex items-center gap-1">分数≥
           <input type="number" min="50" max="100" value={options.min_score} onChange={(event) => setOptions({ ...options, min_score: Number(event.target.value) })} className="w-12 rounded border px-1 py-0.5 text-[11px]" style={input} />
         </label>
-        <label className="flex items-center gap-1">上限
+        <label className="flex items-center gap-1" title="先完成全池本地结构评分，再按分数限制需要读取实时行情的形态候选数">实时上限
           <input type="number" min="0" max="1000" value={options.max_candidates} onChange={(event) => setOptions({ ...options, max_candidates: Number(event.target.value) })} className="w-14 rounded border px-1 py-0.5 text-[11px]" style={input} />
         </label>
         <label className="flex items-center gap-1">涨幅≥
@@ -360,8 +360,9 @@ export default function HorsebackScreenerPage() {
       {run && (
         <div className="flex shrink-0 flex-wrap items-center gap-3 text-[11px]">
           <span style={{ color: 'var(--text-secondary)' }}>{run.message || '—'}</span>
-          <span style={{ color: 'var(--text-muted)' }}>涨停 {progress.source_count || 0} → 池 {progress.pool_count || 0} → 整理 {progress.prefiltered_count || 0}</span>
+          <span style={{ color: 'var(--text-muted)' }}>涨停 {progress.source_count || 0} → 池 {progress.pool_count || 0} → 整理淘汰 {progress.prefiltered_count || 0}</span>
           <span style={{ color: 'var(--text-muted)' }}>已评分 {progress.processed || 0}/{progress.total || 0}</span>
+          {progress.structure_eligible > 0 && <span style={{ color: '#f59e0b' }}>形态 {progress.structure_eligible}</span>}
           {progress.quote_total > 0 && <span style={{ color: 'var(--text-muted)' }}>行情 {progress.quote_processed || 0}/{progress.quote_total}</span>}
           <span style={{ color: 'var(--flow-up)' }}>入选 {progress.selected || 0}</span>
           {watchingCount > 0 && <span style={{ color: '#f59e0b' }}>待触发 {watchingCount}</span>}
@@ -411,7 +412,7 @@ export default function HorsebackScreenerPage() {
           </table>
         </div>
         <div className="shrink-0 border-t px-3 py-1.5 text-[11px]" style={{ borderColor: 'var(--border-color)', color: 'var(--text-muted)' }}>
-          数据口径：选择过去日期时，涨停池与结构评分严格截止到该日，但最终入选使用启动或刷新时的当前实时行情，属于 v1.1.5 历史扫描兼容模式，不是历史回测；涨停候选与实时行情来自 iFinD，结构评分读取本地 stock_daily_kline；默认仅沪深主板，可勾选纳入创业板/科创板（20cm 回撤下限自适应放宽）；十日涨停池任一交易日缺失会使本次扫描失败，盘后当日日线覆盖不足会回退上一完整交易日，少于 63 根日线标为“数据无效”，实时行情缺失留在“待触发/观察池”，不用默认值补齐。
+          数据口径：先对符合涨停次数与整理日条件的全池读取本地日线并评分，“实时上限”仅限制形态达标后需要向 iFinD 请求行情的数量；选择过去日期时，涨停池与结构评分严格截止到该日，但最终入选使用启动或刷新时的当前实时行情，属于 v1.1.5 历史扫描兼容模式，不是历史回测；默认仅沪深主板，可勾选纳入创业板/科创板（20cm 回撤下限自适应放宽）；十日涨停池任一交易日缺失会使本次扫描失败，盘后当日日线覆盖不足会回退上一完整交易日，少于 63 根日线标为“数据无效”，实时行情缺失留在“待触发/观察池”，不用默认值补齐。
         </div>
       </section>
 
