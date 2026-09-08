@@ -5,13 +5,18 @@ legacy execution only checked the global switch.  This module wraps the existing
 executor and guards the actual external order call, so an unconfigured/off stock
 can never reach the broker/simulation API.
 
-Current execution backend is Eastmoney ``mockTrading`` only.  Therefore ``live``
+Current execution backend is Eastmoney ``mockTrading`` only. Therefore ``live``
 is deliberately rejected until a real broker execution connector is wired.
+
+The order guard is context-local: manual /api/mx-trading calls remain untouched,
+while scheduled/manual *automatic* execution carries an authorization context.
+This avoids permission leakage if two async requests overlap.
 """
 from __future__ import annotations
 
 import json
 import logging
+from contextvars import ContextVar
 from datetime import date, datetime
 from typing import Any
 
@@ -21,6 +26,10 @@ from db.models import AutoTradeStockConfig
 
 logger = logging.getLogger(__name__)
 _ACTIVE_STATUSES = {"MONITORING", "SIGNAL_READY", "ORDER_WORKING"}
+
+_AUTO_CONTEXT: ContextVar[bool] = ContextVar("airobot_auto_trade_context", default=False)
+_AUTO_CONTROLS: ContextVar[dict[str, dict] | None] = ContextVar("airobot_auto_trade_controls", default=None)
+_AUTO_ENVIRONMENT: ContextVar[str] = ContextVar("airobot_auto_trade_environment", default="paper")
 
 
 def _code6(value: str) -> str:
@@ -52,12 +61,7 @@ def load_stock_controls(db) -> dict[str, dict]:
 
 
 def authorization_reason(control: dict | None, action: str, global_environment: str) -> str | None:
-    """Return None when an order is authorised; otherwise the blocking reason.
-
-    action is ``buy`` or ``sell``.  Missing/invalid configuration is always
-    treated as OFF.  This function is intentionally pure so it can be regression
-    tested without a database or external API.
-    """
+    """Return None when an automatic order is authorised, else a block reason."""
     if not isinstance(control, dict):
         return "个股未配置自动交易，默认OFF"
 
@@ -82,8 +86,8 @@ def authorization_reason(control: dict | None, action: str, global_environment: 
     if expires_at is not None and expires_at <= datetime.now():
         return "个股自动交易授权已过期"
 
-    # AIROBOT 当前下单实现明确调用 Eastmoney mockTrading；任何 live 标记都
-    # fail closed，避免界面写着实盘但实际上仍调用模拟组合。
+    # 当前执行端明确是 Eastmoney mockTrading。任何 live 标记都 fail closed，
+    # 避免 UI 显示“实盘”但实际上仍操作模拟组合。
     if global_environment != "paper" or stock_environment != "paper":
         return "当前仅接入东财模拟盘，live模式已安全阻断"
 
@@ -104,53 +108,69 @@ def authorization_reason(control: dict | None, action: str, global_environment: 
     return None
 
 
-def install_auto_trade_guard(engine_module) -> None:
-    """Wrap ``engine_module.execute_auto_trade`` once.
+def _ensure_context_order_guard() -> None:
+    """Patch mx_trading.trade once; enforce only inside auto-trade ContextVar."""
+    from api import mx_trading
 
-    The existing executor remains the single owner of signal generation,
-    positions, T+1, sizing and audit logging.  We only replace the external
-    order function during that invocation and restore it afterwards.
-    """
+    if getattr(mx_trading, "_AIROBOT_AUTO_CONTEXT_GUARD", False):
+        return
+
+    original_trade = mx_trading.trade
+
+    async def context_guarded_trade(req):
+        if not _AUTO_CONTEXT.get():
+            # Manual trade endpoint or another direct caller: preserve existing behaviour.
+            return await original_trade(req)
+
+        controls = _AUTO_CONTROLS.get() or {}
+        environment = _AUTO_ENVIRONMENT.get()
+        code = _code6(getattr(req, "stockCode", ""))
+        action = str(getattr(req, "type", "") or "").lower()
+        reason = authorization_reason(controls.get(code), action, environment)
+        if reason:
+            logger.warning("[auto_trade_guard] blocked %s %s: %s", action, code, reason)
+            raise HTTPException(status_code=403, detail=reason)
+        return await original_trade(req)
+
+    context_guarded_trade.__name__ = getattr(original_trade, "__name__", "trade")
+    context_guarded_trade.__doc__ = getattr(original_trade, "__doc__", None)
+    mx_trading.trade = context_guarded_trade
+    mx_trading._AIROBOT_AUTO_CONTEXT_GUARD = True
+    mx_trading._AIROBOT_AUTO_CONTEXT_ORIGINAL_TRADE = original_trade
+
+
+def install_auto_trade_guard(engine_module) -> None:
+    """Wrap ``engine_module.execute_auto_trade`` once with durable permissions."""
     if getattr(engine_module, "_PER_STOCK_AUTH_GUARD_INSTALLED", False):
         return
 
     original_execute = engine_module.execute_auto_trade
 
     async def guarded_execute_auto_trade(db, dry_run: bool = False):
-        # Dry runs never call the external order function, so preserve the
-        # original preview behaviour.  Real scheduled/manual execution is gated.
+        # Dry runs never submit an order, so they remain useful for previewing signals.
         if dry_run:
             return await original_execute(db, dry_run=True)
 
         global_config = db.query(engine_module.AutoTradeConfig).filter_by(id=1).first()
         global_environment = str(getattr(global_config, "run_environment", "paper") or "paper")
-        controls = load_stock_controls(db)
-
-        # Global live must also fail closed even before an individual symbol is reached.
         if global_environment != "paper":
             return [{
                 "status": "skipped",
                 "reason": "当前自动交易执行器仅接入东财模拟盘；global live模式已安全阻断",
             }]
 
-        from api import mx_trading
+        controls = load_stock_controls(db)
+        _ensure_context_order_guard()
 
-        original_trade = mx_trading.trade
-
-        async def guarded_trade(req):
-            code = _code6(getattr(req, "stockCode", ""))
-            action = str(getattr(req, "type", "") or "").lower()
-            reason = authorization_reason(controls.get(code), action, global_environment)
-            if reason:
-                logger.warning("[auto_trade_guard] blocked %s %s: %s", action, code, reason)
-                raise HTTPException(status_code=403, detail=reason)
-            return await original_trade(req)
-
-        mx_trading.trade = guarded_trade
+        token_active = _AUTO_CONTEXT.set(True)
+        token_controls = _AUTO_CONTROLS.set(controls)
+        token_env = _AUTO_ENVIRONMENT.set(global_environment)
         try:
             return await original_execute(db, dry_run=False)
         finally:
-            mx_trading.trade = original_trade
+            _AUTO_ENVIRONMENT.reset(token_env)
+            _AUTO_CONTROLS.reset(token_controls)
+            _AUTO_CONTEXT.reset(token_active)
 
     guarded_execute_auto_trade.__name__ = "execute_auto_trade"
     guarded_execute_auto_trade.__doc__ = (
