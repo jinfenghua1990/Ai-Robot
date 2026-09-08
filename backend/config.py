@@ -14,7 +14,7 @@ WRITE_AUTH_TRUSTED_HOSTS = frozenset(
     for host in os.getenv("WRITE_AUTH_TRUSTED_HOSTS", "").split(",")
     if host.strip()
 )
-CORS_ORIGINS = [o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost:9000,http://127.0.0.1:9000,http://localhost:5173,http://127.0.0.1:5173,http://localhost:9001,http://127.0.0.1:9001").split(",") if o.strip()]
+CORS_ORIGINS = [o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost:9000,http://127.0.0.1:9000,http://localhost:5173,http://127.0.0.1:5173").split(",") if o.strip()]
 RATE_LIMIT_MAX_REQUESTS = int(os.getenv("RATE_LIMIT_MAX_REQUESTS", "1000"))
 RATE_LIMIT_WINDOW_SECONDS = int(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "60"))
 RATE_LIMIT_MAX_CONNECTIONS_PER_IP = int(os.getenv("RATE_LIMIT_MAX_CONNECTIONS_PER_IP", "50"))
