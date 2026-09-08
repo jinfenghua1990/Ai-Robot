@@ -86,16 +86,18 @@ def apply_extended_collector_fixes() -> None:
     def fixed_baostock_daily_kline(ts_code, days=5):
         """Parse baostock close correctly and always release the session."""
         try:
-            import baostock as bs
-
             code = ext._ts_to_code(ts_code)
             if ts_code.endswith(".SH"):
                 bs_code = f"sh.{code}"
             elif ts_code.endswith(".SZ"):
                 bs_code = f"sz.{code}"
             else:
+                # baostock does not provide a safe BJ mapping; never send a
+                # Beijing symbol to Shenzhen by mistake.
                 ext._record_call("baostock", False, f"unsupported market: {ts_code}")
                 return None
+
+            import baostock as bs
 
             end_date = datetime.now().strftime("%Y-%m-%d")
             start_date = (datetime.now() - timedelta(days=days * 2)).strftime("%Y-%m-%d")
