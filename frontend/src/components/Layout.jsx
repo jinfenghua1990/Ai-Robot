@@ -6,70 +6,38 @@ import SystemCheckBanner from './SystemCheckBanner';
 import GlobalWatchlistSearch from './GlobalWatchlistSearch';
 import TradeActivityTicker from './trading/TradeActivityTicker';
 
-// 顶部只负责切换全局上下文；业务功能进入对应上下文的左侧菜单。
+// 顶部只负责切换全局市场；A股默认进入二波作战，不再先进入功能堆叠页。
 const topNav = [
-  { key: 'a-stock', path: '/panorama', label: 'A股', icon: '🇨🇳' },
+  { key: 'a-stock', path: '/second-wave', label: 'A股', icon: '🇨🇳' },
   { key: 'hk', path: '/hk-market', label: '港股', icon: '🇭🇰' },
   { key: 'us', path: '/us-market', label: '美股', icon: '🇺🇸' },
   { key: 'ipo', path: '/cxmt-ipo', label: 'IPO', icon: '🧾' },
   { key: 'llm', path: '/llm-gateway', label: 'LLM', icon: '🤖' },
-  ];
+];
 
+// A股导航做减法：日常只保留真正形成交易闭环的入口。
+// 旧策略/研究代码仍保留，统一下沉到低频工具，避免每天被十几个入口分散注意力。
 const mainSections = [
-  { section: '策略研究', items: [
-    { path: '/strategy-center', label: '选股策略中心', icon: '🎯' },
-    { path: '/a-ladder', label: '连板梯队', icon: '🪜' },
-    { path: '/a-strategy-scan', label: 'TSP 选股策略', icon: '🎛️' },
-    { path: '/a-horseback', label: '回马枪选股器', icon: '🐎' },
-    { path: '/a-factor-backtest', label: '因子回测评估', icon: '📊' },
-    { path: '/quant-vnext', label: '量化中心', icon: '🧮' },
-    { path: '/yuzi-center', label: '游资', icon: '🐉' },
-  ]},
-  { section: '市场研究', items: [
-    { path: '/panorama', label: '市场中心', icon: '📊' },
-    { path: '/stock-analysis', label: '个股分析（含扩展）', icon: '🔍' },
-    { path: '/research-center', label: '研报中心', icon: '📚' },
-    { path: '/research/intel', label: '市场情报', icon: '📡' },
-    { path: '/research/sectors', label: '板块研究', icon: '🔲' },
-    { path: '/research/reports', label: '研究工作区', icon: '📁' },
-    { path: '/fund-weather', label: '资金气象', icon: '🌦️' },
-  ]},
-  { section: '交易管理', items: [
-    { path: '/watchlist', label: '自选', icon: '⭐' },
-    { path: '/trading/sector-rotation', label: '行业轮动池', icon: '🔄' },
-    { path: '/trading/industry-stage', label: '阶段强势池', icon: '🧭' },
+  { section: '核心作战', items: [
+    { path: '/second-wave', label: '二波作战', icon: '②' },
     { path: '/portfolio', label: '持仓管理', icon: '💼' },
+    { path: '/watchlist', label: '自选观察', icon: '⭐' },
+    { path: '/stock-analysis', label: '个股分析', icon: '🔍' },
+    { path: '/panorama', label: '市场中心', icon: '📊' },
   ]},
-  { section: '跟踪与复盘', items: [
-    { path: '/a-horseback-track', label: '回马枪 20 天跟踪', icon: '🐎' },
-    { path: '/strategy-track', label: '策略 20 天跟踪', icon: '📊' },
-    { path: '/stock-tracker', label: 'BS 跟踪池', icon: '📈' },
+  { section: '低频工具', items: [
+    { path: '/trading/sector-rotation', label: '完整板块研究', icon: '🔄' },
+    { path: '/strategy-center', label: '旧选股策略', icon: '🎯' },
+    { path: '/quant-vnext', label: '量化 / 因子研究', icon: '🧮' },
+    { path: '/a-factor-backtest', label: '因子回测', icon: '📉' },
+    { path: '/research-center', label: '研报中心', icon: '📚' },
+    { path: '/yuzi-center', label: '游资研究', icon: '🐉' },
   ]},
 ];
 
-// 各项目子菜单（仅在 AIROBOT 布局内切换用）
+// 各市场子菜单。量化 VNext / 游资不再拥有重复的独立侧栏体系，统一归入 A股低频工具。
 const projectMenus = {
   'a-stock': { title: 'A股', icon: '🇨🇳', sections: mainSections },
-  'quant-vnext': {
-    title: '量化 VNext',
-    icon: '🧬',
-    sections: [
-      { section: '新系统', items: [
-        { path: '/quant-vnext', label: '量化总览', icon: '🧬' },
-        { path: '/quant-vnext?tab=factors', label: '因子注册', icon: '🧮' },
-        { path: '/quant-vnext?tab=research', label: '研究验证', icon: '🔬' },
-        { path: '/quant-vnext?tab=outcomes', label: '信号结果', icon: '📈' },
-      ]},
-    ],
-  },
-  yuzi: {
-    title: '游资主题',
-    icon: '🐉',
-    items: [
-      { path: '/yuzi-center', label: '游资中心', icon: '🐉' },
-      { path: '/yuzi-center?tab=tracker', label: '20天跟踪', icon: '🧬' },
-    ],
-  },
   hk: {
     title: '港股量化', icon: '🇭🇰', sections: [
       { section: '核心工作台', items: [
@@ -109,7 +77,6 @@ const projectMenus = {
     icon: '🧾',
     sections: [
       { section: 'IPO 专栏', items: [
-        // 后续新增 IPO 项目统一追加到此处，保持独立于 A 股业务菜单。
         { path: '/cxmt-ipo', label: '长鑫 IPO', icon: '🔬' },
         { path: '/unitree-ipo', label: '宇树机器人', icon: '🤖' },
       ]},
@@ -118,27 +85,21 @@ const projectMenus = {
 };
 
 function detectProject(pathname) {
-  if (pathname === '/' || pathname.startsWith('/research-center')) return 'a-stock';
+  if (pathname === '/' || pathname.startsWith('/second-wave') || pathname.startsWith('/research-center')) return 'a-stock';
   if (pathname.startsWith('/llm-gateway')) return 'llm';
   if (pathname.startsWith('/quality')) return 'system';
   if (pathname.startsWith('/cxmt-ipo')) return 'ipo';
   if (pathname.startsWith('/unitree-ipo')) return 'ipo';
   if (pathname.startsWith('/hk-market') || pathname.startsWith('/hk-strategy')) return 'hk';
-  // TSP 移植模块：us 前缀归美股，a 前缀归 A股
   if (pathname.startsWith('/us-')) return 'us';
   if (pathname.startsWith('/a-ladder') || pathname.startsWith('/a-strategy-scan') || pathname.startsWith('/a-factor-backtest') || pathname.startsWith('/a-horizontal') || pathname.startsWith('/a-horseback')) return 'a-stock';
   if (pathname.startsWith('/us-market') || pathname.startsWith('/market-dashboard') || pathname.startsWith('/us-stock-analysis') || pathname.startsWith('/us-bs-strategy') || pathname.startsWith('/us-premarket')) return 'us';
-  if (pathname.startsWith('/v2') || pathname.startsWith('/a-stock/v2') || pathname.startsWith('/panorama') || pathname.startsWith('/fund-weather') || pathname.startsWith('/wave-analysis') || pathname.startsWith('/strategy-center') || pathname.startsWith('/yuzi-center') || pathname.startsWith('/quant-vnext') || pathname.startsWith('/watchlist') || pathname.startsWith('/portfolio') || pathname.startsWith('/stock-analysis') || pathname.startsWith('/research/')) return 'a-stock';
-  if (pathname.startsWith('/quant-vnext')) return 'quant-vnext';
-  // 游资一级
-  if (pathname.startsWith('/yuzi-center')) return 'yuzi';
-  if (pathname === '/research') return 'a-stock';
+  if (pathname.startsWith('/v2') || pathname.startsWith('/a-stock/v2') || pathname.startsWith('/panorama') || pathname.startsWith('/fund-weather') || pathname.startsWith('/wave-analysis') || pathname.startsWith('/strategy-center') || pathname.startsWith('/yuzi-center') || pathname.startsWith('/quant-vnext') || pathname.startsWith('/watchlist') || pathname.startsWith('/portfolio') || pathname.startsWith('/stock-analysis') || pathname.startsWith('/research/') || pathname.startsWith('/trading/')) return 'a-stock';
   return 'main';
 }
 
 /** 将侧边栏内部路径转为外部独立页URL(新标签页),返回null表示内部路由 */
 function externalPageUrl(path) {
-  // 研究工作区已迁移到 9000 原生页面，不再打开独立 iframe。
   if (path.startsWith('/research')) return null;
   return null;
 }
@@ -146,29 +107,23 @@ function externalPageUrl(path) {
 /** 侧边栏子项是否高亮：同时比较 pathname 与 ?tab= 参数（默认 tab 视为 market） */
 function itemActive(path, loc) {
   const [p, q] = path.split('?');
-  // 每日决策工作台合并了旧的四个入口；旧 URL 仍可访问时也保持菜单高亮。
   if (p === '/us-daily-decision' && (
     loc.pathname === '/market-dashboard'
     || loc.pathname === '/us-premarket'
     || (loc.pathname === '/us-market' && ['dashboard', 'sectors'].includes(new URLSearchParams(loc.search).get('tab')))
   )) return true;
   if (loc.pathname !== p) return false;
-  // 工作台内部用 view 参数切换页签；进入任一视图都应保持“每日决策”高亮。
   if (p === '/us-daily-decision') return true;
   if (!q) return true;
   const tab = new URLSearchParams(q).get('tab');
   const cur = new URLSearchParams(loc.search).get('tab');
   if (tab === cur) return true;
-  // 裸链（无 tab 参数）时，命中各项目默认 tab（与路由默认 tab 对齐）
   if (cur == null) {
     const DEFAULT_TABS = { '/us-market': 'dashboard', '/hk-market': 'market' };
     if (DEFAULT_TABS[p] === tab) return true;
   }
   return false;
 }
-
-/** 顶部菜单统一走内部路由（点击在当前页内切换到对应模块，左侧栏随之切换） */
-
 
 export default function Layout() {
   const [theme, setTheme] = useState('light');
@@ -179,7 +134,6 @@ export default function Layout() {
   const location = useLocation();
   const activeProject = detectProject(location.pathname);
   const isStockAnalysisPage = location.pathname === '/stock-analysis';
-  // 系统中心已在页面顶部提供市场与功能切换，不再重复显示左侧系统菜单。
   const isStandalonePage = location.pathname.startsWith('/quality') || location.pathname.startsWith('/llm-gateway');
 
   useEffect(() => {
@@ -189,7 +143,6 @@ export default function Layout() {
     setCurrentDate(new Date().toLocaleDateString('zh-CN'));
   }, []);
 
-  // 研报通知轮询（每30秒检查新报告）
   const [reportNotifCount, setReportNotifCount] = useState(0);
   useEffect(() => {
     const check = async () => {
@@ -326,7 +279,7 @@ export default function Layout() {
           <span className="mr-1">{project.icon}</span>{project.title}
         </div>
         <div className="space-y-0.5">
-          {project.items.map(sub => {
+          {(project.items || []).map(sub => {
             const active = itemActive(sub.path, location);
             const ext = externalPageUrl(sub.path);
             if (ext) {
@@ -364,7 +317,6 @@ export default function Layout() {
   return (
     <div className="h-screen flex flex-col md:flex-row overflow-hidden" style={{ background: 'var(--bg-primary)' }}>
       {!isStandalonePage && (<>
-      {/* 移动端顶栏 hamburger */}
       <button
         onClick={() => setNavOpen(!navOpen)}
         className="md:hidden fixed top-2 left-2 z-50 px-2 py-1 rounded-md border"
@@ -373,29 +325,25 @@ export default function Layout() {
         {navOpen ? '✕' : '☰'}
       </button>
 
-      {/* 左侧导航 */}
       <nav
         className={`w-48 border-r flex-col ${navOpen ? 'flex' : 'hidden'} md:flex fixed md:relative top-0 left-0 z-40 h-full shrink-0`}
         style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}
       >
         <div className="px-3 py-2.5 border-b" style={{ borderColor: 'var(--border-color)' }}>
           <h1 className="text-base font-bold" style={{ color: 'var(--accent-blue)' }}>AIROBOT</h1>
-          <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>市场指挥舱</p>
+          <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>二波龙头作战系统</p>
         </div>
         <div className="flex-1 px-1.5 py-2 space-y-0.5 overflow-auto">
           {renderSidebarContent()}
         </div>
       </nav>
 
-      {/* 移动端遮罩 */}
       {navOpen && (
         <div onClick={() => setNavOpen(false)} className="md:hidden fixed inset-0 z-30" style={{ background: 'rgba(0,0,0,0.4)' }} />
       )}
       </>)}
 
-      {/* 右侧内容区 */}
       <div className="flex-1 flex flex-col w-full min-w-0 h-full overflow-hidden">
-        {/* 顶栏 */}
         <header className={`shrink-0 z-50 h-10 border-b flex items-center justify-between ${isStandalonePage ? 'pl-4' : 'pl-12'} md:pl-4 pr-2 md:pr-4`}
           style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
           <div className="flex items-center gap-1 flex-1 min-w-0">
@@ -426,9 +374,7 @@ export default function Layout() {
             </div>
             <TradeActivityTicker />
           </div>
-          {/* 共享数据只保留状态提示，避免与核心导航重复 */}
           <div className="flex items-center gap-1 ml-2">
-            {/* 全局自选搜索框 */}
             <GlobalWatchlistSearch />
             <NavLink to="/research-center" className="relative flex items-center gap-1 px-1.5 py-1 rounded-md text-xs hover:opacity-80 no-underline"
               style={{ color: reportNotifCount > 0 ? '#ef4444' : 'var(--text-secondary)' }}>
@@ -487,7 +433,6 @@ export default function Layout() {
           </div>
         </header>
 
-        {/* 页面内容 */}
         <SystemCheckBanner />
         <main className={`flex-1 overflow-auto ${isStockAnalysisPage ? 'p-0' : 'p-3 md:p-4'}`} style={{ background: 'var(--bg-primary)' }}>
           <Outlet />
