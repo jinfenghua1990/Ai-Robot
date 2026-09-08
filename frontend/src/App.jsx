@@ -4,6 +4,7 @@ import Layout from './components/Layout';
 import ErrorBoundary from './components/ErrorBoundary';
 import { TradingProvider } from './context/TradingContext';
 
+const SecondWavePage = lazy(() => import('./pages/SecondWavePage'));
 const MarketCenterPage = lazy(() => import('./pages/MarketCenterPage'));
 const MarketDashboardPage = lazy(() => import('./pages/MarketDashboardPage'));
 const UsStockAnalysisPage = lazy(() => import('./pages/UsStockAnalysisPage'));
@@ -21,26 +22,19 @@ const UnitreeIpoPage = lazy(() => import('./pages/UnitreeIpoPage'));
 const ResearchCenterPage = lazy(() => import('./pages/ResearchCenterPage'));
 const StockAnalysisPage = lazy(() => import('./pages/StockAnalysisPage'));
 const ReportDetailPage = lazy(() => import('./pages/ReportDetailPage'));
-const OverviewPage = lazy(() => import('./pages/OverviewPage'));
 const TradingOverviewDetailPage = lazy(() => import('./pages/TradingOverviewDetailPage'));
 const QuantVNextPage = lazy(() => import('./pages/QuantVNextPage'));
 const USQuantPage = lazy(() => import('./pages/USQuantPage'));
 const USDailyDecisionPage = lazy(() => import('./pages/USDailyDecisionPage'));
 const UsPremarketPage = lazy(() => import('./pages/UsPremarketPage'));
 
-// 右侧多因子 V2（9001 原汁原味迁移）
+// 已内嵌到 9000 的 V2 研究子系统；作为低频研究工具保留。
 const V2Shell = lazy(() => import('./pages/v2/V2Shell'));
 const V2OverviewPage = lazy(() => import('./pages/v2/V2OverviewPage'));
 const V2SectorsPage = lazy(() => import('./pages/v2/V2SectorsPage'));
 const V2PlaceholderPage = lazy(() => import('./pages/v2/V2PlaceholderPage'));
 
-// 9000 原生研究工作区
-const ResearchDailyReviewPage = lazy(() => import('./pages/research/ResearchDailyReviewPage'));
-const ResearchIntelPage = lazy(() => import('./pages/research/ResearchIntelPage'));
-const ResearchSectorsPage = lazy(() => import('./pages/research/ResearchSectorsPage'));
-const ResearchRadarPage = lazy(() => import('./pages/research/ResearchRadarPage'));
-const ResearchReportsPage = lazy(() => import('./pages/research/ResearchReportsPage'));
-const ResearchNotesPage = lazy(() => import('./pages/research/ResearchNotesPage'));
+// 9000 原生研究工作区：多个旧二级页面已收敛到三个 Hub，删除无路由引用的重复 lazy 声明。
 const ResearchSettingsPage = lazy(() => import('./pages/research/ResearchSettingsPage'));
 const MarketIntelHub = lazy(() => import('./pages/MarketIntelHub'));
 const SectorResearchHub = lazy(() => import('./pages/SectorResearchHub'));
@@ -52,12 +46,10 @@ const SectorRotationPage = lazy(() => import('./pages/SectorRotationPage'));
 const IndustryStagePage = lazy(() => import('./pages/IndustryStagePage'));
 const WaveAnalysisPage = lazy(() => import('./pages/WaveAnalysisPage'));
 
-// TSP 移植模块（tickflow-stock-panel）
+// 低频研究工具（保留旧 URL，不再占用核心导航）
 const StrategyScanPage = lazy(() => import('./pages/StrategyScanPage'));
 const FactorBacktestPage = lazy(() => import('./pages/FactorBacktestPage'));
 const LadderPage = lazy(() => import('./pages/LadderPage'));
-
-// 横盘蓄势策略（A股 · 盘后圈股）
 const AHorizontalPage = lazy(() => import('./pages/AHorizontalPage'));
 const HorsebackScreenerPage = lazy(() => import('./pages/HorsebackScreenerPage'));
 const HorsebackTrackPage = lazy(() => import('./pages/HorsebackTrackPage'));
@@ -78,7 +70,9 @@ export default function App() {
         <Routes>
         <Route element={<Layout />}>
 
-          {/* TSP 移植模块（tickflow-stock-panel）*/}
+          <Route path="/second-wave" element={<SecondWavePage />} />
+
+          {/* 低频/历史策略工具：保留路由用于研究和回溯，但不再作为日常主入口。 */}
           <Route path="/a-strategy-scan" element={<StrategyScanPage market="a" />} />
           <Route path="/us-strategy-scan" element={<Navigate to="/us-market?tab=scanner&view=tsp" replace />} />
           <Route path="/a-factor-backtest" element={<FactorBacktestPage market="a" />} />
@@ -120,8 +114,6 @@ export default function App() {
           <Route path="/stock/:code" element={<StockCodeRedirect />} />
           <Route path="/wave-analysis" element={<WaveAnalysisPage />} />
 
-          {/* 研究工作区二级页面 */}
-          {/* 9000 原生研究工作区 */}
           <Route path="/research/daily-review" element={<MarketIntelHub />} />
           <Route path="/research/intel" element={<MarketIntelHub />} />
           <Route path="/research/sectors" element={<SectorResearchHub />} />
@@ -136,7 +128,6 @@ export default function App() {
           <Route path="/trading-overview/:section" element={<TradingOverviewDetailPage />} />
           <Route path="/dsa/alerts" element={<Navigate to="/trading-overview/alerts" replace />} />
 
-          {/* 右侧多因子 V2（9001 原汁原味迁移） */}
           <Route path="/v2" element={<V2Shell />}>
             <Route index element={<Navigate to="/v2/overview" replace />} />
             <Route path="overview" element={<V2OverviewPage />} />
@@ -152,10 +143,9 @@ export default function App() {
             <Route path="collection" element={<V2PlaceholderPage />} />
           </Route>
 
-          <Route path="/" element={<OverviewPage />} />
+          <Route path="/" element={<Navigate to="/second-wave" replace />} />
           <Route path="/watchlist/flow" element={<Navigate to="/watchlist" replace />} />
-          <Route path="/portfolio" element={<PortfolioPage />} />
-          <Route path="*" element={<Navigate to="/panorama" />} />
+          <Route path="*" element={<Navigate to="/second-wave" replace />} />
         </Route>
         </Routes>
         </Suspense>
