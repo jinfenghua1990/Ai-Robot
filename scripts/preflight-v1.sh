@@ -3,7 +3,7 @@
 # 用法: scripts/preflight-v1.sh <sha>
 # 规格: 原子脚本 / 绝对路径 / git 官方 exe / 接受 SHA 参数 /
 #       JSON report 写到仓库之外 / exit 0 = 全绿 = 唯一允许 --force 的凭证
-#       包含核心系统回归测试(语法编译 + FastAPI app 导入 + 内嵌 V2 路由 + 自动交易门禁 + pytest 全套 + 前端真实构建 + 备份 anchor 远端存在性)
+#       包含核心系统回归测试(语法编译 + FastAPI app 导入 + 内嵌 V2 路由 + 二波作战 + 自动交易门禁 + pytest 全套 + 前端真实构建 + 备份 anchor 远端存在性)
 set -u
 
 REPO="/Users/gino/Projects/AIROBOT"
@@ -59,10 +59,11 @@ chk_backend_syntax(){ cd "$REPO" && "$PY" -m compileall -q backend/api backend/s
 chk_app_import()   { cd "$REPO" && "$PY" -c "import backend.main as m; assert 'AIROBOT' in m.app.title, m.app.title"; }
 chk_v2_embed()     { cd "$REPO" && "$PY" -c 'from v2_app.main import app; paths={getattr(r,"path","") for r in app.routes}; required={"/api/v2/health","/api/v2/dashboard","/api/v2/candidates","/api/v2/sectors","/api/v2/actions","/api/v2/yuzi","/api/v2/watchlist","/api/v2/watchlist/{code}","/api/v2/holdings","/api/v2/orders","/api/v2/trade/preview","/api/v2/stock/{code}","/api/v2/stock/{code}/research","/api/v2/factor-lifecycle","/api/v2/validation","/api/v2/registry","/api/v2/system/quality","/api/v2/collection/status","/api/v2/system/quality-dashboard","/api/v2/system/check","/api/v2/snapshot/persist","/api/v2/research/snapshot/persist","/api/v2/config"}; missing=sorted(required-paths); assert not missing, f"missing V2 routes: {missing}"; print(f"embedded V2 routes OK ({len(required)} required)")'; }
 chk_v2_attached()  { cd "$REPO" && "$PY" -c 'import backend.main as m; url=getattr(m,"V2_BACKEND_URL",None); assert url=="", f"legacy V2 backend still enabled: {url!r}"; routes=list(m.app.router.routes); embedded=[i for i,r in enumerate(routes) if getattr(r,"path","")=="/api/v2/health" and getattr(getattr(r,"endpoint",None),"__module__","").startswith("v2_app.")]; proxy=[i for i,r in enumerate(routes) if getattr(r,"path","")=="/api/v2/{full_path:path}"]; assert embedded, "9000 main app missing embedded /api/v2/health"; assert not proxy or embedded[0] < proxy[0], f"legacy V2 proxy precedes embedded routes: embedded={embedded[0]} proxy={proxy[0]}"; print(f"9000 embedded V2 attached at route {embedded[0]}; 9001 backend disabled")'; }
+chk_second_wave()  { cd "$REPO" && "$PY" -c 'import backend.main as m; paths={getattr(r,"path","") for r in m.app.routes}; assert "/api/quant/second-wave" in paths, "second-wave API not mounted"; from backend.api.quant_embedded import _board_stage; s={"rank":1,"score":70,"qualification":{"event_count":3,"days_since_trigger":15},"metrics":{"ret_5d":4,"ret_20d":12,"ret_60d":30,"day_change_pct":2.5,"drawdown":-6,"above_ma20":True,"above_ma60":True,"ma20_slope":3,"volume_ratio":.9}}; b=_board_stage("测试","主题",[s,s,s]); assert b["eligible"], b; print("second-wave API and hard gate ready")'; }
 chk_auto_trade_guard(){ cd "$REPO/backend" && "$PY" -c 'import services.auto_trade_engine as e; from services.auto_trade_guard import authorization_reason; assert getattr(e,"_PER_STOCK_AUTH_GUARD_INSTALLED",False), "per-stock guard not installed"; assert authorization_reason(None,"buy","paper"); assert authorization_reason({"mode":"risk_only","status":"MONITORING","run_environment":"paper","enabled_at":"2000-01-01T00:00:00","authorization_expiry_type":"persistent","actions":{"allow_exit":True}},"buy","paper"); print("auto-trade per-stock fail-closed guard installed")'; }
 chk_core_import()  { cd "$REPO/backend" && "$PY" -c "import api.watchlist, api.us_quant, api.hk_strategy, services.trading_system"; }
 chk_pytest()       { cd "$REPO" && "$PY" -m pytest "$REPO/tests" -q --no-header 2>&1 | tail -1 | grep -qE '^[0-9]+ passed'; }
-chk_frontend_files(){ test -f "$REPO/frontend/package.json" && test -f "$REPO/frontend/vite.config.js" && test -f "$REPO/frontend/src/main.jsx" && test -f "$REPO/frontend/src/App.jsx"; }
+chk_frontend_files(){ test -f "$REPO/frontend/package.json" && test -f "$REPO/frontend/vite.config.js" && test -f "$REPO/frontend/src/main.jsx" && test -f "$REPO/frontend/src/App.jsx" && test -f "$REPO/frontend/src/pages/SecondWavePage.jsx"; }
 chk_frontend_build(){ cd "$REPO/frontend" && "$NPM_BIN" run build >/dev/null; }
 
 run_check git_bin          "git 官方 exe 存在且可执行 ($GIT_BIN)"        chk_git_bin
@@ -75,10 +76,11 @@ run_check backend_syntax   "核心 Python + v2_app 语法编译零错误"       
 run_check app_import       "FastAPI app (backend.main) 导入成功"          chk_app_import
 run_check v2_embed         "V2 子应用必需 API 路由完整"                    chk_v2_embed
 run_check v2_attached      "9000 挂载内嵌 V2、优先命中且禁用 9001"         chk_v2_attached
+run_check second_wave      "二波作战 API 已挂载且硬门槛可执行"             chk_second_wave
 run_check auto_trade_guard "自动交易个股授权 fail-closed 门禁已安装"       chk_auto_trade_guard
 run_check core_import      "核心模块导入 (watchlist/us_quant/hk_strategy/trading_system)" chk_core_import
 run_check pytest_suite     "pytest 全套通过"                             chk_pytest
-run_check frontend_files   "前端关键文件齐全 (package.json/vite/main/App)" chk_frontend_files
+run_check frontend_files   "前端关键文件 + 二波作战页齐全"                 chk_frontend_files
 run_check frontend_build   "前端 npm run build 真实构建通过"              chk_frontend_build
 
 TARGET_SHA="$("$GIT_BIN" -C "$REPO" rev-parse "$SHA_ARG^{commit}" 2>/dev/null || echo "unresolvable")"
