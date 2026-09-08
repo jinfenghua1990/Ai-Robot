@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import ReactECharts from 'echarts-for-react/lib/core';
+import ReactECharts from 'echarts-for-react/esm/core';
 import echarts from '../../lib/echarts';
 import { tooltipStyle } from '../../utils/chartConfig';
 import { getSectorColorHex } from '../../utils/sectorColors';
@@ -16,7 +16,7 @@ export default function TrendLineChart({ data, topSectors, selectedSector, onSec
       valueMap.set(`${v[0]}_${v[1]}`, v[2]);
     }
 
-    return topSectors.slice(0, 10).map((s, i) => {
+    return topSectors.slice(0, 10).map((s) => {
       const sectorIdx = data.sectors.indexOf(s.sector);
       const trendData = data.dates.map((_, dateIdx) => {
         const val = valueMap.get(`${dateIdx}_${sectorIdx}`);

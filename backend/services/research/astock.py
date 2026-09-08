@@ -559,6 +559,8 @@ def _is_empty_payload(d) -> bool:
         return False
     if "result" in d:                      # 数据中心接口（龙虎榜/融资融券/解禁/分红…）
         return not (d.get("result") and d["result"].get("data"))
+    if "QuotationCodeTable" in d:          # searchapi suggest（代码搜索）
+        return not (d.get("QuotationCodeTable") or {}).get("Data")
     data = d.get("data")
     if data is None:
         return True

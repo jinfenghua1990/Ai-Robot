@@ -8,10 +8,10 @@ import './index.css'
 // 浏览器若仍持有旧 bundle，懒加载旧 chunk 会 404 导致页面崩溃。
 // 这里捕获动态导入失败并自动硬刷新一次，拉取最新构建。
 function trySelfRecover() {
-  let n = 0
-  try { n = parseInt(sessionStorage.getItem('airobot_recover') || '0', 10) } catch (e) {}
+  let n
+  try { n = parseInt(sessionStorage.getItem('airobot_recover') || '0', 10) } catch { n = 0 }
   if (n >= 3) return // 防止极端情况下死循环
-  try { sessionStorage.setItem('airobot_recover', String(n + 1)) } catch (e) {}
+  try { sessionStorage.setItem('airobot_recover', String(n + 1)) } catch { /* storage 不可用时忽略 */ }
   window.location.replace(window.location.href)
 }
 window.addEventListener('unhandledrejection', (event) => {
@@ -30,4 +30,4 @@ ReactDOM.createRoot(document.getElementById('root')).render(
 
 // 标记已成功挂载，供 index.html 看门狗判断是否空白；并清除自愈计数器
 window.__AIROBOT_BOOTED = true
-try { sessionStorage.removeItem('airobot_recover') } catch (e) {}
+try { sessionStorage.removeItem('airobot_recover') } catch { /* storage 不可用时忽略 */ }

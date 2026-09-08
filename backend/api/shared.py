@@ -37,21 +37,41 @@ def _write_json(path, data):
 # ─── 自选股 ───────────────────────────────────────────────
 
 def get_watchlist():
-    return _read_json(WATCHLIST_PATH, {"stocks": []})
+    """从数据库返回统一自选股；JSON 不参与读取。"""
+    from db.session import get_db_session
+    from db.models import Watchlist
+    with get_db_session() as db:
+        rows = db.query(Watchlist).order_by(
+            Watchlist.sort_order, Watchlist.created_at
+        ).all()
+        return {
+            "stocks": [{
+                "code": row.stock_code,
+                "name": row.stock_name or "",
+                "note": row.note or "",
+                "group": row.group_name or "默认",
+                "sort_order": int(row.sort_order or 0),
+                "quality_status": row.quality_status or "普通",
+            } for row in rows],
+            "source": "database",
+            "status": "READY",
+        }
 
 
 def save_watchlist(data):
-    _write_json(WATCHLIST_PATH, data)
+    """兼容旧调用：数据库已写入后导出 JSON，不把 JSON 反写数据库。"""
+    from api.watchlist.watchlist_local import export_db_to_local
+    return export_db_to_local()
 
 
 @router.get("/api/shared/watchlist")
-async def shared_watchlist():
+def shared_watchlist():
     """返回统一自选股列表"""
     return get_watchlist()
 
 
 @router.get("/api/shared/watchlist/codes")
-async def shared_watchlist_codes():
+def shared_watchlist_codes():
     """返回自选股代码列表（简洁模式，供研究与交易页面使用）"""
     wl = get_watchlist()
     return {"codes": [s["code"] for s in wl.get("stocks", [])]}
@@ -64,8 +84,8 @@ class AddCodesRequest(BaseModel):
 
 
 @router.post("/api/shared/watchlist/add")
-async def shared_watchlist_add(req: AddCodesRequest):
-    """批量添加自选股代码：写 JSON → 写 DB → 重置缓存 → 触发云同步"""
+def shared_watchlist_add(req: AddCodesRequest):
+    """批量写数据库，再导出兼容 JSON 并触发云同步。"""
     from db.session import get_db_session
     from db.models import Watchlist
     from api.watchlist._shared import reset_watchlist_cache
@@ -74,18 +94,9 @@ async def shared_watchlist_add(req: AddCodesRequest):
     if not codes:
         return {"status": "ok", "added": 0}
 
-    # 1. 写 JSON（唯一真相源）
-    data = get_watchlist()
-    stocks = data.setdefault("stocks", [])
-    existing_codes = {s["code"] for s in stocks}
-
-    # 2. 同步到 DB
     with get_db_session() as db:
         existing_map = {item.stock_code: item for item in db.query(Watchlist).all()}
         for code in codes:
-            if code not in existing_codes:
-                stocks.append({"code": code, "name": "", "note": req.note, "group": req.group})
-                existing_codes.add(code)
             item = existing_map.get(code)
             if item:
                 if req.note:
@@ -102,7 +113,7 @@ async def shared_watchlist_add(req: AddCodesRequest):
                 existing_map[code] = None
         db.commit()
 
-    save_watchlist(data)
+    save_watchlist(None)
 
     # 3. 重置缓存
     reset_watchlist_cache()
@@ -123,20 +134,14 @@ class RemoveCodeRequest(BaseModel):
 
 
 @router.post("/api/shared/watchlist/remove")
-async def shared_watchlist_remove(req: RemoveCodeRequest):
-    """删除自选股：写 JSON → 写 DB → 重置缓存 → 触发云删除"""
+def shared_watchlist_remove(req: RemoveCodeRequest):
+    """从数据库删除自选股，再导出兼容 JSON。"""
     from db.session import get_db_session
     from db.models import Watchlist
     from api.watchlist._shared import reset_watchlist_cache
 
     code = req.code
 
-    # 1. 从 JSON 删除
-    data = get_watchlist()
-    data["stocks"] = [s for s in data.get("stocks", []) if s["code"] != code]
-    save_watchlist(data)
-
-    # 2. 从 DB 删除
     stock_name = code
     with get_db_session() as db:
         item = db.query(Watchlist).filter_by(stock_code=code).first()
@@ -144,6 +149,8 @@ async def shared_watchlist_remove(req: RemoveCodeRequest):
             stock_name = item.stock_name or code
             db.delete(item)
             db.commit()
+
+    save_watchlist(None)
 
     # 3. 重置缓存
     reset_watchlist_cache()
@@ -161,8 +168,58 @@ async def shared_watchlist_remove(req: RemoveCodeRequest):
 # ─── 持仓 ─────────────────────────────────────────────────
 
 def get_portfolio():
-    """从缓存文件读取持仓"""
-    return _read_json(PORTFOLIO_PATH, {"positions": [], "count": 0, "total_market_value": 0})
+    """只从数据库读取当前妙想账户快照。"""
+    try:
+        from api.trading import read_balance_from_db, read_positions_from_db
+        balance = read_balance_from_db()
+        positions_data = read_positions_from_db()
+    except Exception as exc:
+        logger.warning("数据库持仓快照读取失败: %s", exc)
+        return {
+            "positions": [], "count": 0, "total_market_value": 0,
+            "total_unrealized_pnl": 0, "total_assets": 0, "available_cash": 0,
+            "source": "database", "status": "MISSING", "data_as_of": None,
+            "data_quality": "数据库持仓快照读取失败",
+        }
+
+    items = [{
+        "symbol": p.get("secCode", ""),
+        "name": p.get("secName", ""),
+        "market": "cn",
+        "quantity": float(p.get("count", 0) or 0),
+        "avg_cost": float(p.get("costPrice", 0) or 0),
+        "last_price": float(p.get("price", 0) or 0),
+        "market_value": float(p.get("value", 0) or 0),
+        "unrealized_pnl": float(p.get("profit", 0) or 0),
+        "profit_ratio": round(float(p.get("profitPct", 0) or 0), 2),
+        "day_pnl": float(p.get("dayProfit", 0) or 0),
+        "day_pnl_pct": round(float(p.get("dayProfitPct", 0) or 0), 2),
+        "pos_pct": round(float(p.get("posPct", 0) or 0), 2),
+        "sector": p.get("sector", ""),
+        "source": "database",
+    } for p in positions_data.get("positions", []) if float(p.get("count", 0) or 0) > 0]
+    total_mv = sum(item["market_value"] for item in items)
+    total_upnl = sum(item["unrealized_pnl"] for item in items)
+    total_cost = sum(item["avg_cost"] * item["quantity"] for item in items)
+    total_day_pnl = sum(item["day_pnl"] for item in items)
+    status = positions_data.get("status") or balance.get("status") or "MISSING"
+    return {
+        "as_of": positions_data.get("data_as_of") or balance.get("data_as_of"),
+        "data_as_of": positions_data.get("data_as_of") or balance.get("data_as_of"),
+        "source": "database",
+        "upstream_source": positions_data.get("upstream_source", "miaoxiang"),
+        "status": status,
+        "total_market_value": round(float(positions_data.get("totalPosValue") or total_mv), 2),
+        "total_unrealized_pnl": round(total_upnl, 2),
+        "total_assets": round(float(balance.get("totalAssets") or positions_data.get("totalAssets") or 0), 2),
+        "available_cash": round(float(balance.get("availBalance") or positions_data.get("availBalance") or 0), 2),
+        "total_cost": round(total_cost, 2),
+        "total_day_pnl": round(total_day_pnl, 2),
+        "positions": items,
+        "count": len(items),
+        "data_sources": {"database": len(items), "miaoxiang": len(items)},
+        "data_quality": None if status == "READY" else "数据库暂无妙想持仓快照，请等待自动同步",
+    }
 
 
 # ─── 持仓自动同步到自选 ─────────────────────────────────
@@ -175,37 +232,24 @@ def _sync_portfolio_to_watchlist(items: list[dict]) -> dict:
     if not codes:
         return {"added": 0, "skipped": 0}
 
-    data = get_watchlist()
-    stocks = data.setdefault("stocks", [])
-    existing_codes = {s.get("code") for s in stocks}
-    missing = [c for c in codes if c not in existing_codes]
-    if not missing:
-        return {"added": 0, "skipped": len(codes)}
-
     name_map = {str(it.get("symbol", "")).strip(): (it.get("name") or "") for it in items}
-
-    # 1. 写 JSON（唯一真相源）
-    for c in missing:
-        stocks.append({"code": c, "name": name_map.get(c, ""), "note": "持仓自动同步", "group": "持仓同步"})
-        existing_codes.add(c)
-    save_watchlist(data)
-
-    # 2. 同步到 DB + 重置缓存
+    missing = []
     try:
         from db.session import get_db_session
         from db.models import Watchlist
         from api.watchlist._shared import reset_watchlist_cache
         with get_db_session() as db:
             existing_map = {item.stock_code: item for item in db.query(Watchlist).all()}
-            for c in missing:
-                if c not in existing_map:
-                    db.add(Watchlist(
-                        stock_code=c,
-                        stock_name=name_map.get(c, ""),
-                        note="持仓自动同步",
-                        group_name="持仓同步",
-                    ))
+            missing = [code for code in codes if code not in existing_map]
+            for code in missing:
+                db.add(Watchlist(
+                    stock_code=code,
+                    stock_name=name_map.get(code, ""),
+                    note="持仓自动同步",
+                    group_name="持仓同步",
+                ))
             db.commit()
+        save_watchlist(None)
         reset_watchlist_cache()
     except Exception as e:
         logger.warning("持仓同步到自选 DB 失败: %s", e)
@@ -223,65 +267,19 @@ def _sync_portfolio_to_watchlist(items: list[dict]) -> dict:
 
 
 async def _refresh_portfolio(force=False):
-    """刷新本地妙想模拟盘持仓到统一缓存；不再依赖 DSA。
-    
-    数据源说明：
-    - 妙想 (miaoxiang): 用户在模拟账户中交易的实时持仓，为唯一持仓来源
-    - 获取失败时保留 portfolio.json 中上一次成功快照
-    """
-    from api.trading import get_positions, get_balance
+    """自动采集妙想账户并先落库；JSON 仅保留为兼容导出，不再供接口读取。"""
+    from api.trading import collect_trading_snapshot
 
-    # 1. 拉妙想模拟交易持仓
-    mx_items: list[dict] = []
-    positions_ok = False
     try:
-        pos_data = await get_positions(force=force)
-        positions_ok = True
-        for p in pos_data.get("positions", []):
-            qty = p.get("count", 0) or 0
-            if qty <= 0:
-                continue
-            mx_items.append({
-                "symbol": p.get("secCode", ""),
-                "name": p.get("secName", ""),
-                "market": "cn",
-                "quantity": float(qty),
-                "avg_cost": float(p.get("costPrice", 0) or 0),
-                "last_price": float(p.get("price", 0) or 0),
-                "market_value": float(p.get("value", 0) or 0),
-                "unrealized_pnl": float(p.get("profit", 0) or 0),
-                "profit_ratio": round(float(p.get("profitPct", 0) or 0), 2),
-                "day_pnl": float(p.get("dayProfit", 0) or 0),
-                "day_pnl_pct": round(float(p.get("dayProfitPct", 0) or 0), 2),
-                "pos_pct": round(float(p.get("posPct", 0) or 0), 2),
-                "source": "miaoxiang",
-            })
-    except Exception as e:
-        logger.warning("妙想模拟交易持仓拉取失败: %s", e)
-
-    if not positions_ok:
+        await collect_trading_snapshot(force=force)
+    except Exception as exc:
+        logger.warning("妙想账户自动采集失败，保留数据库上次成功快照: %s", exc)
         previous = get_portfolio()
-        previous["data_quality"] = "持仓源暂时不可用，保留上次成功快照"
+        previous["data_quality"] = "妙想源暂时不可用，保留数据库上次成功快照"
         return previous
 
-    items = list(mx_items)
-    total_mv = sum(it["market_value"] for it in items)
-    total_upnl = sum(it["unrealized_pnl"] for it in items)
-    total_cost = sum((it.get("avg_cost", 0) or 0) * (it.get("quantity", 0) or 0) for it in items)
-    total_day_pnl = sum(it.get("day_pnl", 0) or 0 for it in items)
-
-    # 妙想模拟盘可用资金（现金余额），API 失败时回退到上次缓存值
-    available_cash = 0.0
-    try:
-        bal = await get_balance(force=force)
-        available_cash = float(bal.get("availBalance", 0) or 0)
-    except Exception as e:
-        prev = _read_json(PORTFOLIO_PATH)
-        prev_cash = float(prev.get("available_cash", 0) or 0) if prev else 0
-        available_cash = prev_cash
-        logger.warning("查询妙想账户资金失败，回退到上次缓存值 %.2f: %s", prev_cash, e)
-
-    total_assets = round(total_mv + available_cash, 2)
+    cache = get_portfolio()
+    items = cache.get("positions", [])
 
     # 持仓自动同步到自选（只加不减、去重；仅在真正新增时写盘）
     try:
@@ -290,31 +288,14 @@ async def _refresh_portfolio(force=False):
         logger.warning("持仓自动同步到自选失败: %s", e)
         sync_info = {"added": 0, "skipped": 0}
 
-    cache = {
-        "as_of": date.today().isoformat(),
-        "watchlist_sync": sync_info,
-        "total_market_value": round(total_mv, 2),
-        "total_unrealized_pnl": round(total_upnl, 2),
-        "total_assets": total_assets,
-        "available_cash": round(available_cash, 2),
-        "total_cost": round(total_cost, 2),
-        "total_day_pnl": round(total_day_pnl, 2),
-        "positions": items,
-        "count": len(items),
-        "data_sources": {
-            "miaoxiang": len([p for p in items if p.get("source") == "miaoxiang"]),
-            "dsa": 0,
-        },
-    }
+    cache["watchlist_sync"] = sync_info
     _write_json(PORTFOLIO_PATH, cache)
     return cache
 
 
 @router.get("/api/shared/portfolio")
 async def shared_portfolio(force: int = Query(0, description="1=强制刷新缓存")):
-    """返回统一持仓数据"""
-    if force:
-        await _refresh_portfolio(force=True)
+    """只返回数据库中的统一持仓；force 参数保留兼容但不触发外采。"""
     return get_portfolio()
 
 
@@ -333,7 +314,7 @@ def get_stock_notes():
 
 
 @router.get("/api/shared/stock-notes")
-async def shared_stock_notes():
+def shared_stock_notes():
     """返回所有个股备注"""
     return get_stock_notes()
 
@@ -384,13 +365,13 @@ def _export_focus_stocks():
 
 
 @router.get("/api/shared/focus-stocks")
-async def shared_focus_stocks():
+def shared_focus_stocks():
     """返回统一重点关注数据"""
     return get_focus_stocks()
 
 
 @router.post("/api/shared/focus-stocks/refresh")
-async def shared_focus_stocks_refresh():
+def shared_focus_stocks_refresh():
     """强制刷新重点关注缓存"""
     _export_focus_stocks()
     return {"status": "ok", "message": "重点关注已刷新"}

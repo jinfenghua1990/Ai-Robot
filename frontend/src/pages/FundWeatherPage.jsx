@@ -1,11 +1,10 @@
 import { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { apiFetch } from '../utils/request';
+import { openStockAnalysis } from '../utils/openStockAnalysis';
 
-const WEATHER_ORDER = ['storm', 'cloudy_to_sunny', 'typhoon', 'sunny', 'cloudy'];
+const WEATHER_ORDER = ['insufficient', 'storm', 'cloudy_to_sunny', 'typhoon', 'sunny', 'cloudy'];
 
 export default function FundWeatherPage() {
-  const navigate = useNavigate();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -64,6 +63,12 @@ export default function FundWeatherPage() {
         将自选股按机构/游资双轨资金博弈翻译成天气形态。技术破位 + 游资砸盘 = 雷暴；机构逆市吸筹 = 阴转晴；游资狂拉 + 机构出货 = 台风；双轨共振 = 艳阳。
       </div>
 
+      {data?.status && data.status !== 'READY' && (
+        <div className="px-3 py-2 rounded-lg text-xs" style={{ background: 'rgba(245,158,11,0.1)', color: '#b45309', border: '1px solid rgba(245,158,11,0.3)' }}>
+          数据状态 {data.status}：{data.message || '部分数据库字段尚未补齐'}；可分类 {data.coverage?.classification_ready ?? 0}/{data.coverage?.total ?? 0}，日线截至 {data.data_as_of || '—'}。
+        </div>
+      )}
+
       {ordered.length === 0 ? (
         <div className="p-8 text-center rounded-lg" style={{ background: 'var(--bg-card)', color: 'var(--text-muted)' }}>
           暂无数据，请先添加自选股
@@ -106,7 +111,7 @@ export default function FundWeatherPage() {
                       key={stock.code}
                       className="px-4 py-3 cursor-pointer hover:opacity-80 transition-opacity"
                       style={{ color: 'var(--text-primary)' }}
-                      onClick={() => navigate(`/stock/${stock.code}`)}
+                      onClick={() => openStockAnalysis(stock.code, 'A')}
                     >
                       <div className="flex items-center justify-between mb-1">
                         <div className="flex items-center gap-2">
@@ -116,8 +121,8 @@ export default function FundWeatherPage() {
                             {stock.sector || '—'}
                           </span>
                         </div>
-                        <div className="text-sm font-mono" style={{ color: stock.change_pct >= 0 ? 'var(--flow-up)' : 'var(--flow-down)' }}>
-                          {stock.change_pct >= 0 ? '+' : ''}{stock.change_pct}%
+                        <div className="text-sm font-mono" style={{ color: stock.change_pct == null ? 'var(--text-muted)' : stock.change_pct >= 0 ? 'var(--flow-up)' : 'var(--flow-down)' }}>
+                          {stock.change_pct == null ? '—' : `${stock.change_pct >= 0 ? '+' : ''}${stock.change_pct}%`}
                         </div>
                       </div>
 
@@ -140,6 +145,11 @@ export default function FundWeatherPage() {
                         <span style={{ color: 'var(--text-muted)' }}>技术形态: {stock.technical_stage || '—'}</span>
                         <span style={{ color: 'var(--text-muted)' }}>动作: {stock.action}</span>
                       </div>
+                      {stock.classification_status !== 'READY' && (
+                        <div className="mt-1 text-[11px]" style={{ color: '#b45309' }}>
+                          缺少：{(stock.missing_inputs || []).join('、') || '分类输入'}
+                        </div>
+                      )}
                     </div>
                   ))
                 )}

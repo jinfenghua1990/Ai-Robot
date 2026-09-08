@@ -12,7 +12,6 @@ from analyzers.sector_engine import get_sector_ranking
 from db.connection import get_db
 from db.session import get_db_session
 from db.models import WatchlistSignalDaily, StockFeaturesDaily, StockFlow
-from services.leader_history_service import save_daily_leader
 from services.signal_builder import build_signal_for_stock, build_signal_from_precomputed
 
 router = APIRouter()
@@ -235,7 +234,7 @@ async def leader_system(target_date: str = Query(None, description="目标日期
             and _time.time() - _leader_cache['ts'] < _LEADER_CACHE_TTL):
         return _leader_cache['data']
 
-    result = await run_in_threadpool(run_leader_engine, d)
+    result = await run_in_threadpool(run_leader_engine, d, False)
 
     # 切换预警：如果有候选且候选评分接近主龙
     switch_warning = None
@@ -253,15 +252,7 @@ async def leader_system(target_date: str = Query(None, description="目标日期
                     }
                     break
 
-    # 自动写入龙头历史（主龙选出后记录）
     leader_raw = result.get('leader')
-    trade_date = result.get('date')
-    if leader_raw and trade_date:
-        try:
-            with get_db_session() as db:
-                save_daily_leader(db, trade_date, leader_raw['sector'], leader_raw)
-        except Exception as e:
-            logger.warning(f'龙头历史写入失败: {e}')
 
     # 构造完整 signal 数据
     import asyncio

@@ -24,6 +24,11 @@ def _parse(s):
         return None
 
 
+def _load_json(path):
+    with open(path, encoding="utf-8") as file_obj:
+        return json.load(file_obj)
+
+
 def main():
     base = os.path.join(BACKEND, "analysis_reports")
     req_dir = os.path.join(base, "requests")
@@ -37,7 +42,7 @@ def main():
             for fn in os.listdir(req_dir):
                 if not fn.endswith(".json"):
                     continue
-                d = json.load(open(os.path.join(req_dir, fn), encoding="utf-8"))
+                d = _load_json(os.path.join(req_dir, fn))
                 db.merge(AnalysisRequest(
                     id=d["id"], stock_code=d.get("stock_code", ""),
                     stock_name=d.get("stock_name", ""), source=d.get("source", "tdx"),
@@ -51,7 +56,7 @@ def main():
             for fn in os.listdir(res_dir):
                 if not fn.endswith(".json"):
                     continue
-                d = json.load(open(os.path.join(res_dir, fn), encoding="utf-8"))
+                d = _load_json(os.path.join(res_dir, fn))
                 rid = d.get("id") or fn[:-5]
                 summ = d.get("summary", {})
                 db.merge(AnalysisReport(
@@ -69,7 +74,7 @@ def main():
             for fn in os.listdir(notif_dir):
                 if not fn.endswith(".json"):
                     continue
-                d = json.load(open(os.path.join(notif_dir, fn), encoding="utf-8"))
+                d = _load_json(os.path.join(notif_dir, fn))
                 db.merge(Notification(
                     id=d["id"], source=d.get("source", ""), stock_code=d.get("stock_code", ""),
                     stock_name=d.get("stock_name", ""), title=d.get("title", ""),

@@ -1,13 +1,13 @@
 """Watchlist 实时数据 SSE 推送
 
-- 复用 REALTIME_STATE 内存态（scheduler 每 5 秒更新）
+- 每帧读取采集器已经落库的统一行情快照
 - 订阅：客户端 GET 时传 watchlist ts_code 列表，服务端每 5 秒推送一次
 - 格式：SSE data 字段为 JSON {ts_code: {current_price, pct_chg, ...}}
 - 自动清理：客户端断开后停止推送
 
 设计权衡：
 - 用 SSE 而非 WebSocket：浏览器原生 EventSource，自动重连，单向推送够用
-- 5 秒推送周期匹配 scheduler 采集频率，避免重复刷新
+- 5 秒推送周期匹配采集频率，避免重复刷新
 - 单连接支持任意数量的 watchlist 股票
 """
 import asyncio
@@ -21,7 +21,7 @@ from fastapi.responses import StreamingResponse
 
 from db.session import get_db_session
 from db.models import Watchlist
-from collectors.realtime_aggregator import REALTIME_STATE, serialize_state
+from api.watchlist._shared import _read_quotes_from_db, normalize_ts_code
 
 logger = logging.getLogger(__name__)
 
@@ -32,21 +32,13 @@ def _resolve_watchlist_ts_codes() -> List[str]:
     """从 DB 读取自选股 ts_code 列表"""
     with get_db_session() as db:
         rows = db.query(Watchlist.stock_code).all()
-        result = []
-        for r in rows:
-            code = r[0]
-            if code.startswith(('6', '9')):
-                result.append(f'{code}.SH')
-            elif code.startswith(('8', '4')):
-                result.append(f'{code}.BJ')
-            else:
-                result.append(f'{code}.SZ')
-        return result
+        return list(dict.fromkeys(
+            normalize_ts_code(row[0]) for row in rows if normalize_ts_code(row[0])
+        ))
 
 
 def _build_snapshot(ts_codes: List[str]) -> dict:
     """构建单帧推送数据：{ts_code: {price, pct_chg, ...}, server_time, count}"""
-    from datetime import date
     from sqlalchemy import text
 
     snap = {
@@ -54,12 +46,37 @@ def _build_snapshot(ts_codes: List[str]) -> dict:
         'data': {},
     }
 
-    # 1. 从 REALTIME_STATE 取基础行情
+    # 1. 基础行情直接读取数据库最新整批快照。
+    quote_map = _read_quotes_from_db([code.split('.')[0] for code in ts_codes])
     for ts_code in ts_codes:
-        st = REALTIME_STATE.get(ts_code)
-        if not st:
+        quote = quote_map.get(ts_code.split('.')[0])
+        if not quote:
             continue
-        snap['data'][ts_code] = serialize_state(ts_code)
+        snap['data'][ts_code] = {
+            'current_price': quote.get('price') or 0,
+            'pct_chg': quote.get('changePct') or 0,
+            'last_close': quote.get('yesterdayClose') or 0,
+            'volume': quote.get('volume') or 0,
+            'amount': quote.get('amount') or 0,
+            'bid_price_1': None,
+            'bid_vol_1': None,
+            'ask_price_1': None,
+            'ask_vol_1': None,
+            'turnover_rate': None,
+            'main_force_inflow': None,
+            'large_order_active_ratio': None,
+            'large_buy_count_3s': None,
+            'large_sell_count_3s': None,
+            'thousand_order_count_per_min': None,
+            'total_large_buy_today': None,
+            'total_large_sell_today': None,
+            'total_thousand_today': None,
+            'support_level_eval': '⚪ 数据库快照',
+            'snapshot_time': quote.get('dataAsOf'),
+            'source': 'database',
+            'upstream_source': quote.get('upstreamSource'),
+            'status': 'PARTIAL',
+        }
 
     # 2. 从 realtime_stock_flow 补充实时资金流（多源交叉验证，统一数据源）
     if snap['data']:
@@ -73,9 +90,12 @@ def _build_snapshot(ts_codes: List[str]) -> dict:
                             main_force_inflow, retail_flow,
                             price, price_chg
                         FROM realtime_stock_flow
-                        WHERE ts_code = ANY(:codes) AND trade_date = :td
+                        WHERE ts_code = ANY(:codes)
+                          -- 全局最新批次对齐会丢掉采集时间略有参差的股票，
+                          -- 改为以全局最新时间往前 10 分钟为窗口，按 ts_code 各取最新一条
+                          AND snapshot_time >= (SELECT MAX(snapshot_time) FROM realtime_stock_flow) - interval '10 minutes'
                         ORDER BY ts_code, snapshot_time DESC
-                    """), {"codes": codes, "td": date.today()}).fetchall()
+                    """), {"codes": codes}).fetchall()
                     for r in rows:
                         ts = r.ts_code
                         if ts in snap['data']:
@@ -106,14 +126,16 @@ async def _event_stream(ts_codes: List[str]):
     frame_count = 0
     try:
         # 首次立即推送一帧
-        yield f"data: {json.dumps(_build_snapshot(ts_codes), ensure_ascii=False)}\n\n"
+        snapshot = await asyncio.to_thread(_build_snapshot, ts_codes)
+        yield f"data: {json.dumps(snapshot, ensure_ascii=False)}\n\n"
         while True:
             await asyncio.sleep(interval)
             frame_count += 1
             # 每 3 帧插入一次心跳注释，保持连接活跃
             if frame_count % 3 == 0:
                 yield f": heartbeat\n\n"
-            yield f"data: {json.dumps(_build_snapshot(ts_codes), ensure_ascii=False)}\n\n"
+            snapshot = await asyncio.to_thread(_build_snapshot, ts_codes)
+            yield f"data: {json.dumps(snapshot, ensure_ascii=False)}\n\n"
     except asyncio.CancelledError:
         logger.debug(f'[watchlist-sse] client disconnected, ts_codes={len(ts_codes)}')
         raise
@@ -147,7 +169,7 @@ async def stream_realtime():
 
 
 @router.get('/api/watchlist/realtime/snapshot')
-async def snapshot_realtime():
+def snapshot_realtime():
     """REST 端点：一次性返回 watchlist 当前实时态（用于非 SSE 客户端或回退）
 
     适合场景：手机端不支持 SSE、首次加载补全、调试

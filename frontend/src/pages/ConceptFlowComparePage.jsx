@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from 'react';
+import { useCallback, useEffect, useState, useMemo } from 'react';
 import MoneyFlowChart from '../components/charts/MoneyFlowChart';
 import { apiFetch } from '../utils/request';
 import { POLL_INTERVAL } from '../utils/constants';
@@ -44,7 +44,7 @@ export default function ConceptFlowComparePage() {
   const [bottomN, setBottomN] = useState(10);
   const [showAll, setShowAll] = useState(false);
 
-  const fetchData = async () => {
+  const fetchData = useCallback(async () => {
     setLoading(true);
     setError(null);
 
@@ -58,13 +58,13 @@ export default function ConceptFlowComparePage() {
 
     if (!rankRes.ok && !flowRes.ok) setError('获取数据失败');
     setLoading(false);
-  };
+  }, [topN, bottomN]);
 
   useEffect(() => {
     fetchData();
     const timer = setInterval(fetchData, POLL_INTERVAL);
     return () => clearInterval(timer);
-  }, [topN, bottomN]);
+  }, [fetchData]);
 
   // 分时数据拆分：净流入 vs 净流出
   const { inflowSeries, outflowSeries } = useMemo(() => {
@@ -170,6 +170,12 @@ export default function ConceptFlowComparePage() {
           </button>
         </div>
       </div>
+
+      {error && (
+        <div className="rounded-lg border px-3 py-2 text-xs" style={{ borderColor: 'rgba(239,68,68,0.35)', background: 'rgba(239,68,68,0.08)', color: '#ef4444' }}>
+          {error}
+        </div>
+      )}
 
       {/* 统计卡片 */}
       {stats && (

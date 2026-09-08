@@ -42,7 +42,7 @@ def risk_exit_check(kline, day_index=-1):
         ma10 = sum(closes[-10:]) / 10 if len(closes) >= 10 else None
 
         # 计算 RSI6
-        from strategies.baihu_v30 import calc_rsi
+        from ._shared import calc_rsi
         rsi6 = calc_rsi(closes, period=6)
 
         # 当日涨幅
@@ -112,7 +112,7 @@ def run_risk_exit_screen(stock_list, trade_date=None):
     返回:
         有风险信号的股票结果列表
     """
-    from strategies.baihu_v30 import get_kline_from_tdx
+    from .data_feed import get_kline_from_tdx
     results = []
     for ts_code in stock_list:
         kline = get_kline_from_tdx(ts_code, days=30)

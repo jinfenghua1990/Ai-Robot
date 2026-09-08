@@ -25,6 +25,9 @@ backups/
 backend/backend/
 backend/api/backend/
 frontend/vite.config.js.timestamp-*.mjs
+frontend/dist_locked/
+frontend/dist_old_*/
+frontend/.shotcache/
 *.bak.*
 backend/reports/daily/
 backend/api/data/
@@ -38,6 +41,7 @@ backend/skills/a-stock-data/
 stock-tools/ai-hedge-fund/
 stock-tools/go-stock/
 stock-tools/trading-agents/
+research/external/
 # 运行时缓存
 backend/api/vibe/.cache/
 

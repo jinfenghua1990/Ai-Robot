@@ -24,33 +24,9 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
 import logging
+from ._shared import calc_ema, calc_macd
+
 logger = logging.getLogger(__name__)
-
-
-def calc_ema(series, period):
-    """计算 EMA（指数移动平均）"""
-    if len(series) < period:
-        return []
-    ema = [sum(series[:period]) / period]
-    multiplier = 2 / (period + 1)
-    for price in series[period:]:
-        ema.append((price - ema[-1]) * multiplier + ema[-1])
-    return ema
-
-
-def calc_macd(closes, short=12, long_=26, signal=9):
-    """计算 MACD（DIF, DEA, HIST）"""
-    if len(closes) < long_ + signal:
-        return None, None, None
-    ema_short = calc_ema(closes, short)
-    ema_long = calc_ema(closes, long_)
-    # 对齐到 ema_long 的索引
-    offset = len(ema_short) - len(ema_long)
-    dif = [ema_short[i + offset] - ema_long[i] for i in range(len(ema_long))]
-    dea = calc_ema(dif, signal)
-    offset2 = len(dif) - len(dea)
-    hist = [(dif[i + offset2] - dea[i]) * 2 for i in range(len(dea))]
-    return dif, dea, hist
 
 
 def macd_golden_cross_strategy(kline, day_index=-1):
@@ -151,7 +127,7 @@ def macd_golden_cross_strategy(kline, day_index=-1):
 
 
 def run_macd_golden_cross_screen(stock_list, trade_date=None):
-    from .baihu_v30 import get_kline_from_tdx
+    from .data_feed import get_kline_from_tdx
     results = []
     for ts_code in stock_list:
         kline = get_kline_from_tdx(ts_code)

@@ -38,8 +38,8 @@ def get_universe_definitions() -> list[dict]:
         return []
     try:
         rows = s.execute(text("""
-            SELECT universe_code, name, target_count, rebalance_frequency, tier, rules
-            FROM universe_definitions WHERE is_active ORDER BY sort_order NULLS LAST, universe_code
+            SELECT universe_code, name, target_count, rebalance_frequency, rules
+            FROM universe_definitions WHERE is_active ORDER BY universe_code
         """)).fetchall()
         result = []
         for r in rows:
@@ -47,9 +47,10 @@ def get_universe_definitions() -> list[dict]:
                 text("SELECT COUNT(*) FROM universe_memberships WHERE universe_code=:c AND effective_to IS NULL"),
                 {"c": r[0]}
             ).scalar()
+            tier = "core" if "CORE" in (r[0] or "") else "research" if "RESEARCH" in (r[0] or "") else "other"
             result.append({
                 "code": r[0], "name": r[1], "target_count": r[2],
-                "rebalance_frequency": r[3], "tier": r[4], "rules": r[5] or {},
+                "rebalance_frequency": r[3], "tier": tier, "rules": r[4] or {},
                 "current_count": cnt or 0,
             })
         return result
@@ -61,21 +62,20 @@ def get_universe_definitions() -> list[dict]:
 
 
 def get_all_us_instruments() -> list[dict]:
-    """获取所有活跃美股（按市值降序）"""
+    """获取所有活跃美股"""
     s, close = _db_conn()
     if not s:
         return []
     try:
         rows = s.execute(text("""
-            SELECT id, symbol, name, market_cap, sector, industry
+            SELECT id, symbol, name, sector, industry
             FROM instruments
             WHERE market = 'US' AND is_active = true
-            ORDER BY market_cap DESC NULLS LAST
+            ORDER BY symbol
         """)).fetchall()
         return [
             {"id": r[0], "symbol": r[1], "name": r[2],
-             "market_cap": float(r[3]) if r[3] else 0,
-             "sector": r[4], "industry": r[5]}
+             "sector": r[3], "industry": r[4]}
             for r in rows
         ]
     except Exception as e:
@@ -85,14 +85,14 @@ def get_all_us_instruments() -> list[dict]:
         close()
 
 
-def get_current_members(code: str) -> set[int]:
-    """获取池当前成员（instrument_id 集合）"""
+def get_current_members(code: str) -> set[str]:
+    """获取池当前成员（instrument_id 的 UUID 字符串集合）"""
     s, close = _db_conn()
     if not s:
         return set()
     try:
         rows = s.execute(
-            text("SELECT instrument_id FROM universe_memberships WHERE universe_code=:c AND effective_to IS NULL"),
+            text("SELECT instrument_id::text FROM universe_memberships WHERE universe_code=:c AND effective_to IS NULL"),
             {"c": code}
         ).fetchall()
         return {r[0] for r in rows}
@@ -105,18 +105,18 @@ def get_current_members(code: str) -> set[int]:
 
 def assign_pools(
     instruments: list[dict],
-    existing: dict[str, set[int]],
+    existing: dict[str, set[str]],
     definitions: list[dict],
-) -> dict[str, list[int]]:
+) -> dict[str, list[str]]:
     """按配置分配股票到各池
 
     Args:
-        instruments: 所有美股（按市值降序）
-        existing: 各池现有成员 {pool_code: set(instrument_ids)}
+        instruments: 所有美股
+        existing: 各池现有成员 {pool_code: set(instrument_id_text)}
         definitions: 池定义列表
 
     Returns:
-        {pool_code: [instrument_ids to add]}
+        {pool_code: [instrument_id_text to add]}
     """
     # 构建池层级
     tiers = {"core_a": [], "core_b": [], "research": [], "other": []}
@@ -130,22 +130,23 @@ def assign_pools(
         else:
             tiers["other"].append(d)
 
-    # 按市值分配到各池
-    used_ids: set[int] = set()
-    result: dict[str, list[int]] = {}
+    # 简单分配：按字母序分配到各池
+    used_ids: set[str] = set()
+    result: dict[str, list[str]] = {}
 
     for pool_list in [tiers["core_a"], tiers["core_b"], tiers["research"], tiers["other"]]:
         for d in pool_list:
             target = d["target_count"]
             if target is None:
                 continue
+            target = int(target)
             existing_ids = existing.get(d["code"], set())
             current = len(existing_ids)
             need = max(0, target - current)
 
             # 从未分配且未使用的股票中选取
-            available = [inst for inst in instruments if inst["id"] not in used_ids]
-            to_add = [inst["id"] for inst in available[:need]]
+            available = [inst for inst in instruments if str(inst["id"]) not in used_ids]
+            to_add = [str(inst["id"]) for inst in available[:need]]
 
             result[d["code"]] = to_add
             used_ids.update(to_add)
@@ -154,14 +155,14 @@ def assign_pools(
 
 
 def apply_rebalance(
-    assignments: dict[str, list[int]],
+    assignments: dict[str, list[str]],
     definitions: list[dict],
     dry_run: bool = True,
 ) -> dict:
     """执行再平衡
 
     Args:
-        assignments: {pool_code: [instrument_ids to add]}
+        assignments: {pool_code: [instrument_id_text to add]}
         definitions: 池定义列表
         dry_run: True = 只预览，False = 写入数据库
 
@@ -194,15 +195,15 @@ def apply_rebalance(
 
             if not dry_run:
                 rank_start = d["current_count"] + 1
-                for i, inst_id in enumerate(to_add):
+                for i, inst_id_text in enumerate(to_add):
                     s.execute(
                         text("""
                             INSERT INTO universe_memberships (universe_code, instrument_id, rank, effective_from, created_at)
-                            VALUES (:code, :inst_id, :rank, :eff_date, NOW())
+                            VALUES (:code, :inst_id::uuid, :rank, :eff_date, NOW())
                             ON CONFLICT (universe_code, instrument_id, effective_to) DO NOTHING
                         """),
                         {
-                            "code": code, "inst_id": inst_id,
+                            "code": code, "inst_id": inst_id_text,
                             "rank": rank_start + i,
                             "eff_date": date.today(),
                         }

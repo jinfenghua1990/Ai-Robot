@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AI 系统聚合中心</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧭</text></svg>">
+<style>
+:root{
+  --bg:#f4f7fb; --card:#fff; --border:#e1e7f0; --text:#172033; --muted:#758198;
+  --accent:#2563eb; --ok:#16a34a; --bad:#ef4444; --warn:#f59e0b; --shadow:0 5px 20px #1720330b;
+}
+@media (prefers-color-scheme: dark){
+  :root{--bg:#0f1420; --card:#161c2b; --border:#243049; --text:#e6ebf5; --muted:#8b97ad; --shadow:0 5px 20px #00000033}
+}
+*{box-sizing:border-box}
+body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:var(--text);background:var(--bg)}
+.wrap{max-width:1080px;margin:auto;padding:34px 22px}
+.hero,.card,.chip{background:var(--card);border:1px solid var(--border);border-radius:14px;box-shadow:var(--shadow)}
+.hero{padding:25px 28px}
+.eyebrow{font-size:11px;letter-spacing:.16em;color:var(--accent);font-weight:700}
+.hero h1{margin:7px 0;font-size:25px}
+.hero p{margin:0;color:var(--muted);font-size:13px}
+.meta{margin-top:14px;display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.meta span{padding:5px 9px;border-radius:6px;background:#f1f5fb;color:#66748a;font-size:11px}
+@media (prefers-color-scheme: dark){.meta span{background:#1d2740;color:#9fb0cc}}
+.toolbar{margin-top:14px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.btn{padding:6px 12px;border:1px solid var(--border);background:var(--card);color:var(--text);border-radius:8px;font-size:12px;cursor:pointer;transition:.15s}
+.btn:hover{border-color:var(--accent);color:var(--accent)}
+.section-title{margin:22px 0 10px;font-size:13px;font-weight:700;color:var(--muted);letter-spacing:.04em}
+.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:13px}
+.grid.quick{grid-template-columns:repeat(6,1fr)}
+.card{padding:18px;text-decoration:none;color:inherit;transition:.15s;display:block;position:relative}
+.card:hover{transform:translateY(-2px);border-color:var(--accent);box-shadow:0 8px 24px #2563eb1c}
+.icon{font-size:25px}
+.card h2{margin:10px 0 5px;font-size:16px}
+.card p{margin:0 0 13px;color:var(--muted);font-size:12px;line-height:1.6}
+.card.quick{padding:14px;text-align:center}
+.card.quick h2{font-size:13px;margin:6px 0 0}
+.go{color:var(--accent);font-size:12px;font-weight:600}
+.port{position:absolute;top:16px;right:34px;font-size:11px;color:var(--muted)}
+.dot{position:absolute;top:16px;right:16px;width:9px;height:9px;border-radius:50%;background:#cbd5e1;box-shadow:0 0 0 3px #cbd5e133;transition:.2s}
+.dot.ok{background:var(--ok);box-shadow:0 0 0 3px #16a34a22}
+.dot.bad{background:var(--bad);box-shadow:0 0 0 3px #ef444422}
+.dot.loading{background:var(--warn);animation:pulse 1s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+.sub{margin-top:2px;font-size:11px;color:var(--muted)}
+.sub .ext{color:#9aa6ba}
+.chips{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+.chip{padding:6px 12px;font-size:12px;text-decoration:none;color:var(--text);cursor:pointer}
+.chip:hover{border-color:var(--accent);color:var(--accent)}
+.foot{text-align:center;margin-top:18px;color:#929caf;font-size:11px}
+@media(max-width:900px){.grid.quick{grid-template-columns:repeat(3,1fr)}}
+@media(max-width:700px){.wrap{padding:16px 12px}.grid{grid-template-columns:1fr}.grid.quick{grid-template-columns:repeat(2,1fr)}}
+</style>
+</head>
+<body>
+<main class="wrap">
+  <header class="hero">
+    <div class="eyebrow">LOCAL SYSTEM HUB</div>
+    <h1>AI 系统聚合中心</h1>
+    <p>一个入口，聚合本地所有 AI 系统服务与常用页面</p>
+    <div class="meta">
+      <span>访问主机：<b id="host"></b></span>
+      <span id="status-summary">状态检测中…</span>
+    </div>
+    <div class="toolbar">
+      <button class="btn" id="refresh">↻ 重新检测</button>
+      <button class="btn" id="open-all">在新窗口打开全部服务</button>
+      <span id="recent-label" class="meta" style="display:none"><span>最近访问：</span></span>
+    </div>
+    <div class="chips" id="recent"></div>
+  </header>
+
+  <div class="section-title">本地服务</div>
+  <section class="grid" id="services"></section>
+
+  <div class="section-title">快捷入口（AIROBOT 交易系统）</div>
+  <section class="grid quick" id="quick"></section>
+
+  <div class="foot">局域网访问时自动沿用当前主机名或 IP；状态点表示服务可达性，绿色副标题为真实健康度（每 30 秒自动刷新）。</div>
+</main>
+<script>
+const HOST = location.hostname || '127.0.0.1';
+const BASE = p => `http://${HOST}:${p}`;
+
+// 本地服务清单：加入口只改这里。health 为跨域可读的健康接口（需后端放开 CORS）。
+const SERVICES = [
+  {id:'trading', icon:'📊', name:'AIROBOT 交易系统', desc:'A股/港股/美股、持仓、行业轮动与量化研究。', port:9000, health:'/api/health'},
+  {id:'brand',   icon:'🛒', name:'BrandPilot',       desc:'品牌软文推广工作台，AI 加工与多平台发布。',     port:5175, health:'/health'},
+  {id:'llm',     icon:'🤖', name:'LLM 网关',          desc:'模型渠道、Fallback、网关接口与调用管理。',     port:9002},
+];
+
+// 快捷入口：AIROBOT SPA 内的常用路由（统一走 9000）。
+const QUICK = [
+  {id:'panorama', name:'板块全景', path:'/panorama'},
+  {id:'research', name:'研究中枢', path:'/research-center'},
+  {id:'screener', name:'智能选股', path:'/screener'},
+  {id:'usmarket', name:'美股市场', path:'/us-market'},
+  {id:'portfolio',name:'我的持仓', path:'/portfolio'},
+  {id:'concept',  name:'概念资金', path:'/concept-flow'},
+];
+
+const RECENT_KEY = 'hub_recent_v1';
+document.getElementById('host').textContent = HOST;
+
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const fmtUptime = sec => { if(sec==null) return ''; const h=Math.floor(sec/3600), m=Math.floor(sec%3600/60); return `${h}h${m}m`; };
+
+function healthExtra(s, h){
+  if(s.id==='trading'){
+    const p=[];
+    if(h.uptime_sec!=null) p.push('运行 '+fmtUptime(h.uptime_sec));
+    if(h.rss_mb!=null) p.push('内存 '+h.rss_mb+'MB');
+    if(h.cpu_pct!=null) p.push('CPU '+h.cpu_pct+'%');
+    return p.join(' · ');
+  }
+  if(s.id==='quant'){
+    return `Qlib ${h.qlib_ready?'✓':'✗'} · VBT ${h.vectorbt_ready?'✓':'✗'}`;
+  }
+  return '';
+}
+
+function render(){
+  const sv = document.getElementById('services');
+  sv.innerHTML = '';
+  SERVICES.forEach(s=>{
+    const a = document.createElement('a');
+    a.className='card'; a.id='sv-'+s.id;
+    a.href=BASE(s.port)+'/'; a.target='_blank'; a.rel='noopener noreferrer';
+    a.innerHTML =
+      `<span class="dot loading" id="dot-${s.id}"></span>` +
+      `<span class="port">:${s.port}</span>` +
+      `<div class="icon">${s.icon}</div><h2>${esc(s.name)}</h2>` +
+      `<p>${esc(s.desc)}</p><div class="sub" id="sub-${s.id}">检测中…</div>`;
+    a.addEventListener('click', ()=>pushRecent(s.name, BASE(s.port)+'/'));
+    sv.appendChild(a);
+  });
+
+  const q = document.getElementById('quick');
+  q.innerHTML = '';
+  QUICK.forEach(item=>{
+    const url = BASE(9000)+item.path;
+    const a = document.createElement('a');
+    a.className='card quick'; a.href=url; a.target='_blank'; a.rel='noopener noreferrer';
+    a.innerHTML = `<div class="icon">🔗</div><h2>${esc(item.name)}</h2>`;
+    a.addEventListener('click', ()=>pushRecent(item.name, url));
+    q.appendChild(a);
+  });
+}
+
+// 第一层：no-cors 探测可达性 + 测量 RTT（所有端口通用，不受 CORS 限制）。
+async function reachability(port){
+  const t0 = performance.now();
+  try{
+    await fetch(BASE(port)+'/', {mode:'no-cors', cache:'no-store'});
+    return {ok:true, lat:Math.round(performance.now()-t0)};
+  }catch(e){ return {ok:false, lat:null}; }
+}
+
+// 第二层：跨域读取真实健康度（仅当服务放开 CORS 时成功，失败则忽略）。
+async function realHealth(s){
+  if(!s.health) return null;
+  try{
+    const r = await fetch(BASE(s.port)+s.health, {mode:'cors', cache:'no-store'});
+    if(!r.ok) return null;
+    return await r.json();
+  }catch(e){ return null; }
+}
+
+async function probe(s){
+  const dot = document.getElementById('dot-'+s.id);
+  const sub = document.getElementById('sub-'+s.id);
+  const r = await reachability(s.port);
+  if(!r.ok){
+    dot.className='dot bad';
+    sub.textContent='离线';
+    return false;
+  }
+  dot.className='dot ok';
+  const h = await realHealth(s);
+  if(h){
+    const extra = healthExtra(s, h);
+    sub.innerHTML = `${esc(h.status||'ok')} · ${r.lat}ms` + (extra ? `<br><span class="ext">${esc(extra)}</span>` : '');
+    return true;
+  }
+  sub.textContent = `可达 ${r.lat}ms`;
+  return true;
+}
+
+async function scan(){
+  const res = await Promise.all(SERVICES.map(probe));
+  const up = res.filter(Boolean).length;
+  const sum = document.getElementById('status-summary');
+  sum.textContent = `服务在线 ${up}/${SERVICES.length}`;
+  sum.style.color = up===SERVICES.length ? 'var(--ok)' : (up===0 ? 'var(--bad)' : 'var(--warn)');
+}
+
+// 最近访问（localStorage，最多保留 6 条，去重）。
+function pushRecent(name, url){
+  let list = [];
+  try{ list = JSON.parse(localStorage.getItem(RECENT_KEY) || '[]'); }catch(e){}
+  list = list.filter(i => i.url !== url);
+  list.unshift({name, url});
+  list = list.slice(0, 6);
+  try{ localStorage.setItem(RECENT_KEY, JSON.stringify(list)); }catch(e){}
+  renderRecent();
+}
+function renderRecent(){
+  let list = [];
+  try{ list = JSON.parse(localStorage.getItem(RECENT_KEY) || '[]'); }catch(e){}
+  const box = document.getElementById('recent');
+  const label = document.getElementById('recent-label');
+  if(!list.length){ box.innerHTML=''; label.style.display='none'; return; }
+  label.style.display='';
+  box.innerHTML = '';
+  list.forEach(i=>{
+    const a = document.createElement('a');
+    a.className='chip'; a.href=i.url; a.target='_blank'; a.rel='noopener noreferrer';
+    a.textContent='↦ '+i.name;
+    a.addEventListener('click', ()=>pushRecent(i.name, i.url));
+    box.appendChild(a);
+  });
+}
+
+render();
+renderRecent();
+scan();
+document.getElementById('refresh').onclick = scan;
+document.getElementById('open-all').onclick = () => SERVICES.forEach(s => window.open(BASE(s.port)+'/', '_blank', 'noopener'));
+setInterval(scan, 30000);
+</script>
+</body></html>

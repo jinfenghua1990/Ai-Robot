@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
-import ReactECharts from 'echarts-for-react/lib/core';
+import ReactECharts from 'echarts-for-react/esm/core';
 import echarts from '../../lib/echarts';
 import { tooltipStyle } from '../../utils/chartConfig';
 import { apiFetch } from '../../utils/request';

@@ -1,8 +1,7 @@
-import { createContext, useContext, useState, useCallback, useRef, useEffect, useMemo } from 'react';
+import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { apiFetch } from '../utils/request';
 import { SLOW_POLL_INTERVAL } from '../utils/constants';
-
-const TradingContext = createContext(null);
+import { TradingContext } from './tradingContextCore';
 
 /**
  * 判断是否在 A 股交易时间（9:30-11:30, 13:00-15:00）
@@ -35,7 +34,7 @@ export function TradingProvider({ children }) {
       const { ok, data } = await apiFetch(`/api/trading/balance${force ? '?force=1' : ''}`);
       if (!ok) return;
       setBalance(data);
-    } catch (e) { /* silent */ }
+    } catch { /* silent */ }
   }, []);
 
   const refreshPositions = useCallback(async (force = false) => {
@@ -43,7 +42,7 @@ export function TradingProvider({ children }) {
       const { ok, data } = await apiFetch(`/api/trading/positions${force ? '?force=1' : ''}`);
       if (!ok) return;
       setPositions(data);
-    } catch (e) { /* silent */ }
+    } catch { /* silent */ }
   }, []);
 
   const refreshAll = useCallback(async (force = false) => {
@@ -67,24 +66,29 @@ export function TradingProvider({ children }) {
   }, [refreshAll]);
 
   const executeTrade = useCallback(async (params) => {
+    const actionMeta = { type: params?.type, stockCode: params?.stockCode, quantity: params?.quantity };
+    setTradeResult({ ...actionMeta, status: 'submitting', success: null, message: '正在提交委托' });
+    let result;
     try {
-      const { ok, data, error } = await apiFetch('/api/trading/trade', {
+      result = await apiFetch('/api/trading/trade', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(params),
       });
-      if (ok) {
-        setTradeResult({ success: true, message: '委托成功', data });
-        // 交易后防抖刷新数据
-        scheduleRefresh();
-      } else {
-        setTradeResult({ success: false, message: error || '委托失败' });
-      }
-      return data;
-    } catch (e) {
-      setTradeResult({ success: false, message: '网络错误' });
-      return null;
+    } catch {
+      const message = '网络错误';
+      setTradeResult({ ...actionMeta, status: 'error', success: false, message });
+      throw new Error(message);
     }
+    if (!result.ok) {
+      const message = result.error || '委托失败';
+      setTradeResult({ ...actionMeta, status: 'error', success: false, message });
+      throw new Error(message);
+    }
+    setTradeResult({ ...actionMeta, status: 'success', success: true, message: '委托成功', data: result.data });
+    // 交易后防抖刷新数据
+    scheduleRefresh();
+    return result.data;
   }, [scheduleRefresh]);
 
   const cancelOrder = useCallback(async (params) => {
@@ -99,7 +103,7 @@ export function TradingProvider({ children }) {
         scheduleRefresh();
       }
       return data;
-    } catch (e) {
+    } catch {
       return null;
     }
   }, [scheduleRefresh]);
@@ -136,10 +140,4 @@ export function TradingProvider({ children }) {
       {children}
     </TradingContext.Provider>
   );
-}
-
-export function useTrading() {
-  const ctx = useContext(TradingContext);
-  if (!ctx) throw new Error('useTrading must be used within TradingProvider');
-  return ctx;
 }

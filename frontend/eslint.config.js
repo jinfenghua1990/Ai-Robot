@@ -16,10 +16,14 @@ export default [
     rules: {
       ...js.configs.recommended.rules,
       ...reactHooks.configs.recommended.rules,
-      'react-refresh/only-export-components': 'warn',
+      // Vite Fast Refresh can safely retain primitive/object constant exports.
+      'react-refresh/only-export-components': ['warn', { allowConstantExport: true }],
       'no-unused-vars': ['warn', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
       'no-undef': 'error',
+      'no-empty': ['error', { allowEmptyCatch: true }],
       'no-console': 'off',
+      // React 18 未启用 React Compiler；保留提示，但不让编译器专属建议阻断检查
+      'react-hooks/static-components': 'warn',
       // set-state-in-effect 是性能建议，关闭避免噪音
       'react-hooks/set-state-in-effect': 'off',
       // 允许 .map 索引 key（数据稳定时不算 anti-pattern）

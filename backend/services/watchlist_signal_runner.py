@@ -8,15 +8,18 @@ import sys
 import os
 import json
 import asyncio
+import threading
 from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from db.session import get_db_session
-from db.models import WatchlistSignalDaily, StockFlow, SectorFlow, Watchlist
+from db.models import WatchlistSignalDaily, StockDailyKline, StockFlow, SectorFlow, Watchlist
+from api.watchlist._shared import normalize_ts_code
 from quant_vnext.production import is_st_name
 import logging
 logger = logging.getLogger(__name__)
+_COMPUTE_LOCK = threading.Lock()
 
 
 def check_data_ready(target_date=None) -> bool:
@@ -78,10 +81,15 @@ def _get_candidate_stocks(db, trade_date, limit=300):
         code = r.stock_code
         if code in candidates:
             continue
-        ts_code = f"{code}.SH" if code[0] in ('6', '9') else f"{code}.SZ"
+        ts_code = normalize_ts_code(code)
         sf = db.query(StockFlow).filter(
             StockFlow.trade_date == trade_date, StockFlow.ts_code == ts_code
         ).first()
+        if sf is None and not db.query(StockDailyKline.id).filter(
+            StockDailyKline.ts_code == ts_code,
+        ).first():
+            logger.warning('[watchlist_signal_runner] skip %s: no local daily kline or stock flow', code)
+            continue
         if is_st_name((sf.name if sf else None) or r.stock_name):
             continue
         candidates[code] = {
@@ -95,6 +103,18 @@ def _get_candidate_stocks(db, trade_date, limit=300):
 
 def compute_for_date(target_date=None):
     """盘后批量计算个股信号并落库 WatchlistSignalDaily"""
+    if not _COMPUTE_LOCK.acquire(blocking=False):
+        logger.info('[watchlist_signal_runner] computation already running; skipping overlap')
+        return False
+
+    try:
+        return _compute_for_date_locked(target_date)
+    finally:
+        _COMPUTE_LOCK.release()
+
+
+def _compute_for_date_locked(target_date=None):
+    """在单实例锁内计算并幂等写入每日个股信号。"""
     if target_date is None:
         target_date = datetime.now().date()
     elif isinstance(target_date, str):
@@ -129,18 +149,25 @@ def compute_for_date(target_date=None):
             # 构建 code → main_force_inflow 映射
             inflow_map = {c['code']: c['main_force_inflow'] for c in candidates}
 
-            # 落库（upsert：query-by-(trade_date,ts_code) → setattr or db.add）
+            # 先读取当日已有记录，避免每个信号都查询一次；同时把本事务中
+            # 新建的行写回映射，防止候选池里同一 ts_code 重复时重复 INSERT。
+            existing_rows = {
+                row.ts_code: row
+                for row in db.query(WatchlistSignalDaily).filter_by(
+                    trade_date=target_date
+                ).all()
+            }
+
+            # 落库（upsert：existing_rows → setattr or db.add）
             upserted = 0
             for sig in signals:
                 code = sig.get('secCode', '')
                 if not code or len(code) != 6:
                     continue
-                ts_code = f"{code}.SH" if code[0] in ('6', '9') else f"{code}.SZ"
+                ts_code = normalize_ts_code(code)
                 quote = sig.get('quote') or {}
 
-                row = db.query(WatchlistSignalDaily).filter_by(
-                    trade_date=target_date, ts_code=ts_code
-                ).first()
+                row = existing_rows.get(ts_code)
 
                 data = {
                     'name': sig.get('secName', ''),
@@ -161,6 +188,7 @@ def compute_for_date(target_date=None):
                 else:
                     row = WatchlistSignalDaily(trade_date=target_date, ts_code=ts_code, **data)
                     db.add(row)
+                    existing_rows[ts_code] = row
                 upserted += 1
 
                 if upserted % 100 == 0:

@@ -86,6 +86,41 @@ def is_trading_time(now: datetime = None) -> bool:
     return in_pre or in_post
 
 
+def should_use_intraday_snapshot(snapshot_date: date, daily_date: date | None, now: datetime = None) -> bool:
+    """判断数据库分钟快照是否应覆盖日线收盘价。
+
+    盘中同日快照优先；收盘后若同日日线已经入库，则必须以日线收盘价为准。
+    若日线尚未入库，保留较新的分钟快照，避免盘后短暂回退到前一交易日。
+    """
+    if snapshot_date is None:
+        return False
+    if daily_date is None or snapshot_date > daily_date:
+        return True
+    if snapshot_date < daily_date:
+        return False
+    current = now or datetime.now()
+    morning, afternoon = trading_hours_window(current)
+    return snapshot_date == current.date() and is_trading_day(current.date()) and (morning or afternoon)
+
+
+def should_defer_current_daily_analysis(
+    candidate_date: date | None,
+    analysis_ready: bool,
+    now: datetime = None,
+) -> bool:
+    """当前交易日尚未形成完整日度分析时，继续使用上一份已落库结果。
+
+    盘中日线可能已经由采集器写入，但特征、日资金明细和评分仍是半成品。
+    这些半成品不能覆盖上一交易日完整分析；实时价格应由独立快照展示。
+    """
+    if candidate_date is None:
+        return False
+    current = now or datetime.now()
+    if candidate_date != current.date() or not is_trading_day(current.date()):
+        return False
+    return is_trading_time(current) or not analysis_ready
+
+
 def now_truncated(unit: str = 'minute') -> datetime:
     """返回当前时间，按分钟/小时截断（用于分钟级快照去重）"""
     now = datetime.now()

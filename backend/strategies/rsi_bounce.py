@@ -20,7 +20,8 @@
 """
 import numpy as np
 
-from .baihu_v30 import get_kline_from_tdx, calc_rsi
+from .data_feed import get_kline_from_tdx
+from ._shared import calc_rsi
 
 
 def rsi_bounce_strategy(kline, day_index=-1):

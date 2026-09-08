@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { openStockAnalysis } from '../utils/openStockAnalysis';
 import { apiFetch } from '../utils/request';
 
 /* ============ 主题感知配色（复用全局 CSS 变量，明暗双主题自适应） ============ */
@@ -198,7 +199,7 @@ export default function OverviewPage() {
                   <tbody>
                     {positions.map((p) => (
                       <tr key={p.symbol} style={{ borderTop: `1px solid ${C.borderLight}`, cursor: 'pointer' }}
-                          onClick={() => go(`/stock-analysis?code=${p.symbol}`)}>
+                          onClick={() => openStockAnalysis(p.symbol)}>
                         <td style={{ textAlign: 'left', padding: '6px', color: C.primary, fontWeight: 600 }}>{p.symbol}</td>
                         <td style={{ textAlign: 'right', padding: '6px', color: C.secondary }}>{money(p.last_price, 2)}</td>
                         <td style={{ textAlign: 'right', padding: '6px', color: C.secondary }}>{money(p.market_value_base)}</td>
@@ -213,7 +214,7 @@ export default function OverviewPage() {
         </Panel>
 
         {/* —— 实时预警 —— */}
-        <Panel title="实时预警" icon="🚨" href="/dsa/alerts" onMore={go} loading={loading}>
+        <Panel title="实时预警" icon="🚨" href="/trading-overview/alerts" onMore={go} loading={loading}>
           {errs.alerts ? <Empty text="预警数据获取失败" /> :
             alertsArr.length === 0 ? <Empty /> : (
               <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
@@ -233,8 +234,8 @@ export default function OverviewPage() {
             )}
         </Panel>
 
-        {/* —— 策略胜率 —— */}
-        <Panel title="策略胜率" icon="🎯" href="/strategy-center" onMore={go} loading={loading}>
+        {/* —— 策略运行与命中 —— */}
+        <Panel title="策略运行与命中" icon="🎯" href="/trading-overview/strategies" onMore={go} loading={loading}>
           {errs.health ? <Empty text="策略数据获取失败" /> :
             strategies.length === 0 ? <Empty /> : (
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
@@ -243,7 +244,7 @@ export default function OverviewPage() {
                     <th style={{ textAlign: 'left', padding: '4px 6px', fontWeight: 600 }}>策略</th>
                     <th style={{ padding: '4px 6px', fontWeight: 600 }}>状态</th>
                     <th style={{ padding: '4px 6px', fontWeight: 600 }}>候选/命中</th>
-                    <th style={{ padding: '4px 6px', fontWeight: 600, width: 90 }}>胜率</th>
+                    <th style={{ padding: '4px 6px', fontWeight: 600, width: 90 }}>命中比例</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -267,7 +268,7 @@ export default function OverviewPage() {
                             <div style={{ flex: 1, height: 6, background: C.surface, borderRadius: 4, overflow: 'hidden', maxWidth: 50 }}>
                               <div style={{ width: `${Math.min(100, rate)}%`, height: '100%', background: rate >= 50 ? C.down : C.amber }} />
                             </div>
-                            <span style={{ fontWeight: 700, color: rate >= 50 ? C.down : C.amber, minWidth: 38, textAlign: 'right' }}>{rate.toFixed(0)}%</span>
+                            <span title="命中数 ÷ 候选数，不代表胜率" style={{ fontWeight: 700, color: rate >= 50 ? C.down : C.amber, minWidth: 38, textAlign: 'right' }}>{rate.toFixed(0)}%</span>
                           </div>
                         </td>
                       </tr>
@@ -279,12 +280,12 @@ export default function OverviewPage() {
         </Panel>
 
         {/* —— 信号候选 —— */}
-        <Panel title="信号候选" icon="⚡" href="/strategy-center" onMore={go} loading={loading}>
+        <Panel title="信号候选" icon="⚡" href="/trading-overview/signals" onMore={go} loading={loading}>
           {errs.leader ? <Empty text="信号数据获取失败" /> :
             candidates.length === 0 ? <Empty text="今日暂无龙头信号候选" /> : (
               <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
                 {candidates.map((c) => (
-                  <li key={c.secCode} onClick={() => go(`/stock-analysis?code=${c.secCode}`)}
+                  <li key={c.secCode} onClick={() => openStockAnalysis(c.secCode)}
                       style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, padding: '8px 4px', borderTop: `1px solid ${C.borderLight}`, cursor: 'pointer' }}>
                     <div style={{ minWidth: 0 }}>
                       <div style={{ fontSize: 13, fontWeight: 700, color: C.primary }}>{c.secName} <span style={{ fontSize: 11, color: C.muted, fontWeight: 400 }}>{c.secCode}</span></div>

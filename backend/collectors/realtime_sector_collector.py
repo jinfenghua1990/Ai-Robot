@@ -1,60 +1,105 @@
+"""实时 SW2021 行业资金流聚合。
+
+盘中行业数据不再读取新浪/东方财富的旧行业标签；先落个股快照，再按
+SW2021 L2 ``sector`` 聚合，保证板块与个股使用同一套归属。
 """
-实时板块资金流向采集器
-数据源：新浪(主) → 东方财富(降级)
-"""
+
 import logging
-from datetime import datetime
+from datetime import date, datetime
+
+from sqlalchemy import case, func
+from sqlalchemy.dialects.postgresql import insert
+
+from db.models import RealtimeSectorFlow, RealtimeStockFlow
 from db.session import get_db_session
-from db.models import RealtimeSectorFlow
-from collectors.tdx_collector import get_sector_money_flow
 
 logger = logging.getLogger(__name__)
 
 
 def _now_truncated():
-    """当前时间截断到分钟（秒数归零）"""
+    """当前时间截断到分钟（秒数归零）。"""
     return datetime.now().replace(second=0, microsecond=0)
 
 
-def collect_realtime_sector_flow(trade_date):
-    """
-    采集板块实时资金流向快照
-    数据源：新浪(主) → 东方财富(降级)
-    """
-    snapshot_time = _now_truncated()
-    print(f'[realtime] Collecting sector flow snapshot at {snapshot_time}')
+def _as_trade_date(value) -> date:
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    return datetime.strptime(str(value).replace("-", ""), "%Y%m%d").date()
 
-    # 复用现有采集函数（新浪→东方财富→Tushare）
-    sector_flows = get_sector_money_flow(trade_date)
-    if not sector_flows:
-        print('[realtime] No sector flow data')
-        return 0
 
-    # 判断数据源
-    source = 'sina'  # get_sector_money_flow 优先用新浪
-    # 简单判断：如果板块数<40 可能是东方财富或Tushare
-    if len(sector_flows) < 40:
-        source = 'em'
+def collect_realtime_sector_flow(trade_date, snapshot_time=None):
+    """按指定快照的 SW2021 L2 个股数据生成实时行业快照。"""
+    target_date = _as_trade_date(trade_date)
+    snapshot_time = snapshot_time or _now_truncated()
+    print(f"[realtime] Aggregating SW2021 sector flow at {snapshot_time}")
 
     with get_db_session() as db:
-        saved = 0
-        try:
-            for sf in sector_flows:
-                record = RealtimeSectorFlow(
-                    snapshot_time=snapshot_time,
-                    trade_date=trade_date,
-                    sector=sf['sector'],
-                    money_inflow=sf.get('money_inflow'),
-                    money_outflow=sf.get('money_outflow'),
-                    net_flow=sf.get('net_flow'),
-                    rise_ratio=sf.get('rise_ratio'),
-                    source=source,
-                )
-                db.add(record)
-                saved += 1
-            db.commit()
-            logger.info(f'[realtime] Saved {saved} sector snapshots (source={source})')
-        except Exception as e:
-            db.rollback()
-            logger.warning(f'[realtime] Sector save error: {e}')
-    return saved
+        # 正常编排会传入刚写入的个股快照时间；手动调用时回退到当日最新点。
+        has_rows = db.query(RealtimeStockFlow.ts_code).filter(
+            RealtimeStockFlow.trade_date == target_date,
+            RealtimeStockFlow.snapshot_time == snapshot_time,
+            RealtimeStockFlow.sector.isnot(None),
+            RealtimeStockFlow.sector != "",
+        ).first()
+        if has_rows is None:
+            snapshot_time = db.query(func.max(RealtimeStockFlow.snapshot_time)).filter(
+                RealtimeStockFlow.trade_date == target_date,
+            ).scalar()
+        if snapshot_time is None:
+            logger.info("[realtime] no SW2021 stock snapshot for %s", target_date)
+            return 0
+
+        positive_flow = case(
+            (RealtimeStockFlow.main_force_inflow > 0, RealtimeStockFlow.main_force_inflow),
+            else_=0,
+        )
+        negative_flow = case(
+            (RealtimeStockFlow.main_force_inflow < 0, -RealtimeStockFlow.main_force_inflow),
+            else_=0,
+        )
+        rising = case((RealtimeStockFlow.price_chg > 0, 1), else_=0)
+        rows = db.query(
+            RealtimeStockFlow.sector.label("sector"),
+            func.sum(positive_flow).label("money_inflow"),
+            func.sum(negative_flow).label("money_outflow"),
+            func.sum(RealtimeStockFlow.main_force_inflow).label("net_flow"),
+            (func.sum(rising) * 100.0 / func.count(RealtimeStockFlow.ts_code)).label("rise_ratio"),
+        ).filter(
+            RealtimeStockFlow.trade_date == target_date,
+            RealtimeStockFlow.snapshot_time == snapshot_time,
+            RealtimeStockFlow.sector.isnot(None),
+            RealtimeStockFlow.sector != "",
+        ).group_by(RealtimeStockFlow.sector).all()
+        if not rows:
+            return 0
+
+        values = [{
+            "snapshot_time": snapshot_time,
+            "trade_date": target_date,
+            "sector": str(row.sector),
+            "money_inflow": row.money_inflow,
+            "money_outflow": row.money_outflow,
+            "net_flow": row.net_flow,
+            "rise_ratio": row.rise_ratio,
+            "source": "computed_sw2021",
+        } for row in rows]
+        stmt = insert(RealtimeSectorFlow).values(values)
+        db.execute(stmt.on_conflict_do_update(
+            constraint="uq_realtime_sector_time",
+            set_={
+                "trade_date": stmt.excluded.trade_date,
+                "money_inflow": stmt.excluded.money_inflow,
+                "money_outflow": stmt.excluded.money_outflow,
+                "net_flow": stmt.excluded.net_flow,
+                "rise_ratio": stmt.excluded.rise_ratio,
+                "source": stmt.excluded.source,
+            },
+        ))
+        db.commit()
+        logger.info(
+            "[realtime] saved %s SW2021 sector snapshots for %s",
+            len(values), snapshot_time,
+        )
+        return len(values)

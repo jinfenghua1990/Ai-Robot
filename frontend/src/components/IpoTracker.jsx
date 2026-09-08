@@ -1,34 +1,13 @@
 import { useState, useEffect, useMemo } from 'react';
-import { parseStageDate } from '../data/ipoProjects';
+import { computeIpoProgress } from '../utils/ipoProgress';
+
+const INITIAL_NOW = Date.now();
 
 // ─────────────────────────────────────────────────────────────────────────
 // IPO 跟踪共享组件
 //   IpoTimeline    —— 前跟踪：横向步进器 + 实时倒计时（按当前时间自动推进）
 //   IpoListingCard —— 后跟踪：上市后拉取公司自身实时行情卡
 // ─────────────────────────────────────────────────────────────────────────
-
-// 计算当前所处阶段
-export function computeIpoProgress(project, now) {
-  const enriched = project.stages.map((s) => ({ ...s, ms: parseStageDate(s.date) }));
-  let currentIdx = -1;
-  enriched.forEach((s, i) => {
-    if (s.ms != null && s.ms <= now) currentIdx = i;
-  });
-  const nextIdx = enriched.findIndex((s) => s.ms != null && s.ms > now);
-  return enriched.map((s, i) => {
-    let status;
-    if (s.ms == null) status = 'unknown';
-    else if (i < currentIdx) status = 'done';
-    else if (i === currentIdx) status = 'done';
-    else if (i === nextIdx) status = 'active';
-    else status = 'upcoming';
-    return { ...s, status };
-  }).reduce((acc, s, i) => {
-    acc.stages.push(s);
-    if (s.status === 'active') acc.nextIdx = i;
-    return acc;
-  }, { stages: [], nextIdx: -1, currentIdx });
-}
 
 const STATUS_STYLE = {
   done: { color: '#22c55e', bg: 'rgba(34,197,94,0.12)', border: 'rgba(34,197,94,0.4)', icon: '✓' },
@@ -54,7 +33,7 @@ function fmtDate(d) {
 
 // ===== 前跟踪：进程时间线 + 实时倒计时 =====
 export function IpoTimeline({ project }) {
-  const [now, setNow] = useState(Date.now());
+  const [now, setNow] = useState(INITIAL_NOW);
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 30000); // 每 30s 刷新倒计时
     return () => clearInterval(t);

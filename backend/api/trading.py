@@ -3,62 +3,112 @@
 现作为东财模拟盘 146w 账户的展示/手动交易入口，通过 MX_APIKEY 代理到东方财富妙想接口
 与东财自动化模拟盘（/api/mx-trading，MX_TRADING_APIKEY）完全独立
 """
+import asyncio
+import logging
+from datetime import datetime
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Query, Depends
 from api.auth import verify_api_key
 from pydantic import BaseModel
 from config import MX_APIKEY
-from utils import stock_code_to_sina as _stock_code_to_sina
-from api.watchlist._shared import _get_http_client
-from utils.http_constants import SINA_HEADERS_SHORT
 
 router = APIRouter()
 
-
 async def _get_realtime_price(code: str) -> dict:
-    """获取新浪实时行情，返回完整字段 {name, price, yesterday_close, open, high, low, volume, amount, change, change_pct}"""
-    sina_code = _stock_code_to_sina(code)
-    if not sina_code:
+    """只从数据库读取最新行情，供报价展示和交易限价回退复用。"""
+    import re
+    from db.session import get_db_session
+    from db.models import StockDailyKline, StockFlow, StockRealtimeTick, Watchlist
+    from utils import should_use_intraday_snapshot
+
+    match = re.search(r"\d{6}", str(code or ""))
+    if not match:
         raise HTTPException(status_code=400, detail="无效的股票代码")
+    bare = match.group(0)
+    ts_codes = [f"{bare}.SH", f"{bare}.SZ", f"{bare}.BJ"]
+    with get_db_session() as db:
+        daily = db.query(StockDailyKline).filter(
+            StockDailyKline.ts_code.in_(ts_codes),
+            StockDailyKline.close.isnot(None),
+        ).order_by(StockDailyKline.trade_date.desc()).limit(2).all()
+        # 先由已落库日线确定市场，再按精确 ts_code 查询实时表。不能用
+        # "三市场 IN + 全表时间倒序"：没有 tick 的代码会反向扫描千万级历史表。
+        resolved_ts_code = daily[0].ts_code if daily else None
+        tick = None
+        if resolved_ts_code:
+            tick = db.query(StockRealtimeTick).filter(
+                StockRealtimeTick.ts_code == resolved_ts_code,
+                StockRealtimeTick.price.isnot(None),
+            ).order_by(StockRealtimeTick.snapshot_time.desc()).first()
+        else:
+            # 极少数“已有实时、尚无日线”的新标的仍可展示；逐市场精确查，
+            # 结果在 Python 中按时间取最新，避免数据库按全表时间排序。
+            for ts_code in ts_codes:
+                candidate = db.query(StockRealtimeTick).filter(
+                    StockRealtimeTick.ts_code == ts_code,
+                    StockRealtimeTick.price.isnot(None),
+                ).order_by(StockRealtimeTick.snapshot_time.desc()).first()
+                if candidate and (tick is None or candidate.snapshot_time > tick.snapshot_time):
+                    tick = candidate
+            resolved_ts_code = tick.ts_code if tick else None
+        name_row = db.query(StockFlow.name).filter(
+            StockFlow.ts_code == resolved_ts_code if resolved_ts_code else StockFlow.ts_code.in_(ts_codes),
+            StockFlow.name.isnot(None),
+        ).first()
+        watchlist_name = db.query(Watchlist.stock_name).filter(
+            Watchlist.stock_code == bare,
+            Watchlist.stock_name.isnot(None),
+        ).scalar()
 
-    url = f"https://hq.sinajs.cn/list={sina_code}"
-    try:
-        client = _get_http_client()
-        resp = await client.get(url, headers=SINA_HEADERS_SHORT)
-        resp.encoding = 'gbk'
-        text = resp.text
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"获取行情失败: {str(e)}")
+    if tick is None and not daily:
+        raise HTTPException(status_code=404, detail=f"数据库暂无 {bare} 行情，请等待自动采集")
 
-    try:
-        parts = text.split('"')[1].split(',')
-        if len(parts) < 10:
-            raise HTTPException(status_code=500, detail="行情数据格式异常")
-        name = parts[0]
-        # 新浪格式: name, 今开盘, 昨收盘, 当前价, ...
-        yesterday_close = float(parts[2]) if parts[2] else 0.0
-        open_price = float(parts[1]) if parts[1] else 0.0
-        current_price = float(parts[3]) if parts[3] else 0.0
-        high = float(parts[4]) if parts[4] else 0.0
-        low = float(parts[5]) if parts[5] else 0.0
-        volume = int(float(parts[8])) if parts[8] else 0
-        amount = float(parts[9]) if parts[9] else 0.0
-        change = current_price - yesterday_close
-        change_pct = ((current_price - yesterday_close) / yesterday_close * 100) if yesterday_close else 0
-        return {
-            'name': name,
-            'price': current_price,
-            'yesterday_close': yesterday_close,
-            'open': open_price,
-            'high': high,
-            'low': low,
-            'volume': volume,
-            'amount': amount,
-            'change': change,
-            'change_pct': change_pct,
-        }
-    except (IndexError, ValueError) as e:
-        raise HTTPException(status_code=500, detail=f"行情解析失败: {str(e)}")
+    latest_daily = daily[0] if daily else None
+    previous_daily = daily[1] if len(daily) > 1 else None
+    use_tick = tick is not None and should_use_intraday_snapshot(
+        tick.trade_date,
+        latest_daily.trade_date if latest_daily else None,
+    )
+    if use_tick:
+        price = float(tick.price)
+        if latest_daily and latest_daily.trade_date < tick.trade_date:
+            previous_close = float(latest_daily.close) if latest_daily.close is not None else None
+        elif previous_daily and previous_daily.close is not None:
+            previous_close = float(previous_daily.close)
+        else:
+            previous_close = None
+        # Tick 表没有完整 OHLC，不能混入上一日日线字段伪装成实时值。
+        open_price = high = low = None
+        volume = int(tick.volume) if tick.volume is not None else None
+        amount = float(tick.amount) if tick.amount is not None else None
+        data_as_of = tick.snapshot_time.isoformat() if tick.snapshot_time else None
+        upstream_source = 'stock_realtime_tick'
+    else:
+        price = float(latest_daily.close)
+        previous_close = float(previous_daily.close) if previous_daily and previous_daily.close is not None else None
+        open_price = float(latest_daily.open) if latest_daily.open is not None else None
+        high = float(latest_daily.high) if latest_daily.high is not None else None
+        low = float(latest_daily.low) if latest_daily.low is not None else None
+        volume = int(latest_daily.volume) if latest_daily.volume is not None else None
+        amount = float(latest_daily.amount) if latest_daily.amount is not None else None
+        data_as_of = latest_daily.trade_date.isoformat()
+        upstream_source = 'daily_kline'
+    change = price - previous_close if previous_close is not None else None
+    return {
+        'name': (name_row[0] if name_row else None) or watchlist_name or bare,
+        'price': price,
+        'yesterday_close': previous_close,
+        'open': open_price,
+        'high': high,
+        'low': low,
+        'volume': volume,
+        'amount': amount,
+        'change': change,
+        'change_pct': change / previous_close * 100 if previous_close else None,
+        'source': 'database',
+        'upstream_source': upstream_source,
+        'data_as_of': data_as_of,
+    }
 
 
 # ========== 数据模型 ==========
@@ -77,29 +127,250 @@ class CancelRequest(BaseModel):
     stockCode: Optional[str] = None
 
 
-# ========== 账户/交易接口：代理到东财 146w 账户（MX_APIKEY） ==========
+# ========== 账户/持仓快照：采集任务写库，查询接口只读数据库 ==========
+
+def _num(value, default=0.0) -> float:
+    try:
+        return float(value if value not in (None, "") else default)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _order_time(value) -> datetime:
+    if isinstance(value, datetime):
+        return value
+    text = str(value or "").strip()
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y%m%d%H%M%S"):
+        try:
+            return datetime.strptime(text, fmt)
+        except ValueError:
+            pass
+    if text.isdigit() and len(text) <= 6:
+        try:
+            return datetime.combine(datetime.now().date(), datetime.strptime(text.zfill(6), "%H%M%S").time())
+        except ValueError:
+            pass
+    return datetime.now()
+
+
+def read_balance_from_db() -> dict:
+    from db.session import get_db_session
+    from db.models import SimAccount
+
+    with get_db_session() as db:
+        row = db.get(SimAccount, 1)
+        if row is None:
+            return {
+                "accName": "", "accID": "", "initMoney": 0, "totalAssets": 0,
+                "availBalance": 0, "frozenMoney": 0, "totalPosValue": 0,
+                "totalPosPct": 0, "nav": 0, "oprDays": 0,
+                "source": "database", "status": "MISSING", "data_as_of": None,
+            }
+        return {
+            "accName": row.acc_name or "",
+            "accID": "",
+            "initMoney": _num(row.init_money),
+            "totalAssets": _num(row.total_assets),
+            "availBalance": _num(row.avail_balance),
+            "frozenMoney": _num(row.frozen_money),
+            "totalPosValue": _num(row.total_pos_value),
+            "totalPosPct": _num(row.total_pos_pct),
+            "nav": _num(row.nav),
+            "oprDays": int(row.opr_days or 0),
+            "source": "database",
+            "upstream_source": row.source or "miaoxiang",
+            "status": "READY",
+            "data_as_of": row.updated_at.isoformat() if row.updated_at else None,
+        }
+
+
+def read_positions_from_db() -> dict:
+    from db.session import get_db_session
+    from db.models import SimAccount, SimPosition, StockFlow
+
+    with get_db_session() as db:
+        rows = db.query(SimPosition).order_by(SimPosition.sec_code).all()
+        account = db.get(SimAccount, 1)
+        codes = [str(row.sec_code or "").zfill(6) for row in rows]
+        sector_map = {}
+        if codes:
+            ts_codes = [f"{code}.{suffix}" for code in codes for suffix in ("SH", "SZ", "BJ")]
+            for ts_code, sector in db.query(StockFlow.ts_code, StockFlow.sector).filter(
+                StockFlow.ts_code.in_(ts_codes),
+            ).all():
+                sector_map[str(ts_code).split(".")[0]] = sector or ""
+
+        positions = [{
+            "secCode": str(row.sec_code or "").zfill(6),
+            "secName": row.sec_name or "",
+            "secMkt": int(row.sec_mkt or 0),
+            "count": int(row.count or 0),
+            "availCount": int(row.avail_count or 0),
+            "price": _num(row.price),
+            "costPrice": _num(row.cost_price),
+            "value": _num(row.value),
+            "dayProfit": _num(row.day_profit),
+            "dayProfitPct": _num(row.day_profit_pct),
+            "profit": _num(row.profit),
+            "profitPct": _num(row.profit_pct),
+            "posPct": _num(row.pos_pct),
+            "sector": sector_map.get(str(row.sec_code or "").zfill(6), ""),
+            "source": "database",
+            "data_as_of": row.updated_at.isoformat() if row.updated_at else None,
+        } for row in rows]
+
+    return {
+        "totalAssets": _num(account.total_assets) if account else 0,
+        "availBalance": _num(account.avail_balance) if account else 0,
+        "totalPosValue": _num(account.total_pos_value) if account else sum(p["value"] for p in positions),
+        "posCount": len(positions),
+        "totalProfit": sum(p["profit"] for p in positions),
+        "positions": positions,
+        "source": "database",
+        "upstream_source": (account.source or "miaoxiang") if account else "miaoxiang",
+        "status": "READY" if account else "MISSING",
+        "data_as_of": account.updated_at.isoformat() if account and account.updated_at else None,
+    }
+
+
+def read_orders_from_db(drt: int = 0, status: int = 0) -> dict:
+    from db.session import get_db_session
+    from db.models import SimAccount, SimOrder
+
+    with get_db_session() as db:
+        account = db.get(SimAccount, 1)
+        query = db.query(SimOrder)
+        if drt:
+            query = query.filter(SimOrder.drt == drt)
+        if status:
+            query = query.filter(SimOrder.status == status)
+        rows = query.order_by(SimOrder.time.desc(), SimOrder.id.desc()).limit(500).all()
+        orders = [{
+            "id": row.external_order_id or str(row.id),
+            "secCode": str(row.sec_code or "").zfill(6),
+            "secName": row.sec_name or "",
+            "secMkt": int(row.sec_mkt or 0),
+            "drt": int(row.drt or 0),
+            "price": _num(row.price),
+            "count": int(row.count or 0),
+            "tradeCount": int(row.trade_count or 0),
+            "tradePrice": _num(row.trade_price) if row.trade_price is not None else None,
+            "status": int(row.status or 0),
+            "time": row.time.isoformat() if row.time else None,
+            "source": "database",
+        } for row in rows]
+    return {
+        "totalNum": len(orders), "orders": orders,
+        "source": "database",
+        "upstream_source": (account.source or "miaoxiang") if account else "miaoxiang",
+        "status": "READY" if account else "MISSING",
+        "data_as_of": account.updated_at.isoformat() if account and account.updated_at else None,
+    }
+
+
+def persist_trading_snapshot(balance: dict, positions_data: dict, orders_data: dict | None = None) -> dict:
+    """原子替换妙想当前账户快照；仅供采集任务和交易写操作调用。"""
+    from db.session import get_db_session
+    from db.models import SimAccount, SimOrder, SimPosition
+
+    positions = positions_data.get("positions") or []
+    now = datetime.now()
+    with get_db_session() as db:
+        account = db.get(SimAccount, 1) or SimAccount(id=1)
+        account.acc_name = balance.get("accName") or account.acc_name or "妙想模拟盘"
+        account.init_money = _num(balance.get("initMoney"), account.init_money or 0)
+        account.total_assets = _num(balance.get("totalAssets"), positions_data.get("totalAssets", 0))
+        account.avail_balance = _num(balance.get("availBalance"), positions_data.get("availBalance", 0))
+        account.frozen_money = _num(balance.get("frozenMoney"))
+        account.total_pos_value = _num(balance.get("totalPosValue"), positions_data.get("totalPosValue", 0))
+        account.total_pos_pct = _num(balance.get("totalPosPct"))
+        account.nav = _num(balance.get("nav"), 1)
+        account.opr_days = int(balance.get("oprDays") or 0)
+        account.source = "miaoxiang"
+        account.updated_at = now
+        db.add(account)
+
+        db.query(SimPosition).delete(synchronize_session=False)
+        for item in positions:
+            if int(item.get("count") or 0) <= 0:
+                continue
+            db.add(SimPosition(
+                sec_code=str(item.get("secCode") or "").zfill(6),
+                sec_name=item.get("secName") or "",
+                sec_mkt=int(item.get("secMkt") or 0),
+                count=int(item.get("count") or 0),
+                avail_count=int(item.get("availCount") or 0),
+                cost_price=_num(item.get("costPrice")),
+                price=_num(item.get("price")),
+                value=_num(item.get("value")),
+                day_profit=_num(item.get("dayProfit")),
+                day_profit_pct=_num(item.get("dayProfitPct")),
+                profit=_num(item.get("profit")),
+                profit_pct=_num(item.get("profitPct")),
+                pos_pct=_num(item.get("posPct")),
+                source="miaoxiang",
+                updated_at=now,
+            ))
+
+        if orders_data is not None:
+            db.query(SimOrder).delete(synchronize_session=False)
+            for item in orders_data.get("orders") or []:
+                db.add(SimOrder(
+                    external_order_id=str(item.get("id") or ""),
+                    sec_code=str(item.get("secCode") or "").zfill(6),
+                    sec_name=item.get("secName") or "",
+                    sec_mkt=int(item.get("secMkt") or 0),
+                    drt=int(item.get("drt") or 0),
+                    price=_num(item.get("price")),
+                    count=int(item.get("count") or 0),
+                    trade_count=int(item.get("tradeCount") or 0),
+                    trade_price=_num(item.get("tradePrice")) if item.get("tradePrice") is not None else None,
+                    status=int(item.get("status") or 0),
+                    source="miaoxiang",
+                    time=_order_time(item.get("time")),
+                ))
+        db.commit()
+    return {"positions": len(positions), "orders": len((orders_data or {}).get("orders") or []), "data_as_of": now.isoformat()}
+
+
+async def collect_trading_snapshot(force: bool = False) -> dict:
+    """妙想自动采集入口：远端读取后先落库，页面不直接调用。"""
+    from api.mx_trading import fetch_balance, fetch_orders, fetch_positions
+
+    positions = await fetch_positions(api_key=MX_APIKEY, force=force)
+    try:
+        balance = await fetch_balance(api_key=MX_APIKEY, force=force)
+    except Exception as exc:
+        logging.getLogger("trading").warning("妙想资金采集失败，使用持仓接口账户字段: %s", exc)
+        balance = positions
+    try:
+        orders = await fetch_orders(api_key=MX_APIKEY)
+    except Exception as exc:
+        logging.getLogger("trading").warning("妙想委托采集失败，本次保留原委托快照: %s", exc)
+        orders = None
+    persisted = persist_trading_snapshot(balance, positions, orders)
+    return {"balance": balance, "positions": positions, "orders": orders, "persisted": persisted}
+
 
 async def get_balance(force: bool = False) -> dict:
-    """查询模拟盘账户资金（146w 东财账户）"""
-    from api.mx_trading import fetch_balance
-    return await fetch_balance(api_key=MX_APIKEY, force=force)
+    """只读取数据库中的妙想账户快照；force 参数仅为旧接口兼容。"""
+    return await asyncio.to_thread(read_balance_from_db)
 
 
 async def get_positions(force: bool = False) -> dict:
-    """查询模拟盘持仓明细（146w 东财账户）"""
-    from api.mx_trading import fetch_positions
-    return await fetch_positions(api_key=MX_APIKEY, force=force)
+    """只读取数据库中的妙想持仓快照；force 参数仅为旧接口兼容。"""
+    return await asyncio.to_thread(read_positions_from_db)
 
 
 @router.get("/api/trading/balance")
 async def get_balance_endpoint(force: int = Query(0, description="1=跳过缓存强制刷新")):
-    """查询模拟盘账户资金（146w 东财账户）"""
+    """读取数据库中的模拟盘账户资金。"""
     return await get_balance(force=bool(force))
 
 
 @router.get("/api/trading/positions")
 async def get_positions_endpoint(force: int = Query(0, description="1=跳过缓存强制刷新")):
-    """查询模拟盘持仓明细（146w 东财账户）"""
+    """读取数据库中的模拟盘持仓明细。"""
     return await get_positions(force=bool(force))
 
 
@@ -107,15 +378,9 @@ from datetime import date as _date
 
 @router.get("/api/trading/portfolio-snapshot")
 async def portfolio_snapshot_endpoint():
-    """返回 DSA-compatible 持仓快照（供 DSA 持仓页面使用，10s超时）"""
-    try:
-        import asyncio
-        pos_data = await asyncio.wait_for(
-            get_positions(force=False), timeout=10.0
-        )
-        pos_list = pos_data.get("positions", [])
-    except Exception:
-        return {"account_count": 0, "accounts": [], "message": "妙想API超时"}
+    """从数据库返回 DSA-compatible 持仓快照。"""
+    pos_data = await get_positions(force=False)
+    pos_list = pos_data.get("positions", [])
     
     items = []
     for p in pos_list:
@@ -128,7 +393,7 @@ async def portfolio_snapshot_endpoint():
             "last_price": float(p.get("price", 0) or 0),
             "market_value_base": float(p.get("value", 0) or 0),
             "unrealized_pnl_base": float(p.get("profit", 0) or 0),
-            "price_source": "realtime_quote", "price_available": True,
+            "price_source": "database", "price_available": True,
         })
     total_mv = sum(it["market_value_base"] for it in items)
     total_upnl = sum(it["unrealized_pnl_base"] for it in items)
@@ -156,8 +421,10 @@ async def portfolio_snapshot_endpoint():
             "总资产使用现金加持仓市值估算",
         )
     ) else "partial"
+    snapshot_as_of = pos_data.get("data_as_of") or _date.today().isoformat()
     return {
-        "as_of": _date.today().isoformat(),
+        "as_of": snapshot_as_of,
+        "source": "database",
         "cost_method": "avg", "currency": "CNY",
         "account_count": 1 if items else 0,
         "total_cash": total_cash, "total_market_value": total_mv, "total_equity": total_equity,
@@ -166,7 +433,7 @@ async def portfolio_snapshot_endpoint():
         "fx_stale": False, "data_quality": data_quality, "limitations": limitations,
         "accounts": [{
             "account_id": 1, "account_name": "模拟交易", "market": "cn",
-            "base_currency": "CNY", "as_of": _date.today().isoformat(),
+            "base_currency": "CNY", "as_of": snapshot_as_of,
             "cost_method": "avg", "total_cash": total_cash,
             "total_market_value": total_mv, "total_equity": total_equity,
             "realized_pnl": 0.0, "unrealized_pnl": total_upnl,
@@ -181,17 +448,15 @@ async def get_orders(
     drt: int = Query(0, description="0=全部, 1=买入, 2=卖出"),
     status: int = Query(0, description="0=全部, 4=已成"),
 ):
-    """查询模拟盘委托记录（146w 东财账户）"""
-    from api.mx_trading import fetch_orders
-    # 状态码映射保持与旧接口一致：前端传 4=已成，东财接口也使用 4
-    return await fetch_orders(api_key=MX_APIKEY, drt=drt, status=status)
+    """读取数据库中的妙想委托快照。"""
+    return await asyncio.to_thread(read_orders_from_db, drt, status)
 
 
 @router.post("/api/trading/trade", dependencies=[Depends(verify_api_key)])
 async def trade(req: TradeRequest):
     """模拟盘买入/卖出（146w 东财账户）"""
     from api.mx_trading import place_trade
-    return await place_trade(
+    result = await place_trade(
         api_key=MX_APIKEY,
         type=req.type,
         stock_code=req.stockCode,
@@ -199,23 +464,33 @@ async def trade(req: TradeRequest):
         use_market_price=req.useMarketPrice,
         price=req.price,
     )
+    try:
+        await collect_trading_snapshot(force=True)
+    except Exception as exc:
+        logging.getLogger("trading").warning("交易成功后账户快照刷新失败: %s", exc)
+    return result
 
 
-@router.post("/api/trading/cancel")
+@router.post("/api/trading/cancel", dependencies=[Depends(verify_api_key)])
 async def cancel(req: CancelRequest):
     """模拟盘撤单（146w 东财账户）"""
     from api.mx_trading import place_cancel
-    return await place_cancel(
+    result = await place_cancel(
         api_key=MX_APIKEY,
         type=req.type,
         order_id=req.orderId,
         stock_code=req.stockCode,
     )
+    try:
+        await collect_trading_snapshot(force=True)
+    except Exception as exc:
+        logging.getLogger("trading").warning("撤单成功后账户快照刷新失败: %s", exc)
+    return result
 
 
 @router.get("/api/trading/quote")
 async def get_realtime_quote(code: str = Query(..., description="6位股票代码")):
-    """获取新浪实时行情（完整字段：price/yesterdayClose/open/high/low/change/changePct）"""
+    """从数据库读取行情（完整字段：price/yesterdayClose/open/high/low/change/changePct）。"""
     quote = await _get_realtime_price(code)
     return {
         'code': code,
@@ -229,11 +504,14 @@ async def get_realtime_quote(code: str = Query(..., description="6位股票代�
         'changePct': quote['change_pct'],
         'volume': quote['volume'],
         'amount': quote['amount'],
+        'source': 'database',
+        'upstreamSource': quote.get('upstream_source'),
+        'dataAsOf': quote.get('data_as_of'),
     }
 
 
 @router.get("/api/trading/search")
-async def search_stock(q: str = Query(..., min_length=1, description="股票代码或名称")):
+def search_stock(q: str = Query(..., min_length=1, description="股票代码或名称")):
     """搜索股票（代码或名称模糊匹配）"""
     from db.session import get_db_session
     from db.models import StockFlow

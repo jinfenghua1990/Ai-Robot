@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useMemo, memo } from 'react';
+import  { useState, useRef, useEffect, useMemo, memo } from 'react';
 import { apiFetch } from '../../utils/request';
 import SignalCardTuned from './SignalCardTuned';
 import StockActionButtons from './StockActionButtons';
@@ -135,12 +135,12 @@ function SignalCardV4Inner({
       if (timer) clearTimeout(timer);
       if (io) io.disconnect();
     };
-  }, [code, prefetchedDash]);
+  }, [code, prefetchedDash, awaitParentPrefetch]);
 
   // v4 始终显示标识层 + v3 主体；dash 成败都不伪装成 v3
   const { action_label, action_color } = dash || {};
-  const sf = dash?.sector_flow || {};
-  const inst = dash?.institution_flow || {};
+
+
   // 操作按钮所需数据：从 signal 解构，与 SignalCardTuned 同源
   const {
     secCode: v4_secCode, secName: v4_secName,
@@ -149,17 +149,16 @@ function SignalCardV4Inner({
   const v4_isLeader = mode === 'leader';
 
   // 综合评分（盘后 / 实时）：null 安全过滤，避免 NaN 传给 conic-gradient 崩溃
-  const dimKeys = DIM_KEYS;
   const avgScore = useMemo(() => {
     if (!dash) return null;
-    const valid = dimKeys.map(k => dash[k]).filter(v => v != null && !isNaN(v));
+    const valid = DIM_KEYS.map(k => dash[k]).filter(v => v != null && !isNaN(v));
     return valid.length ? Math.round(valid.reduce((s, v) => s + v, 0) / valid.length) : null;
   }, [dash]);
   const rtData = useMemo(() => dash ? (dash.realtime || {}) : {}, [dash]);
   const rtAvailTop = !!rtData.available;
   const rtAvgScore = useMemo(() => {
     if (!rtAvailTop) return null;
-    const valid = dimKeys.map(k => rtData[k]).filter(v => v != null && !isNaN(v));
+    const valid = DIM_KEYS.map(k => rtData[k]).filter(v => v != null && !isNaN(v));
     return valid.length ? Math.round(valid.reduce((s, v) => s + v, 0) / valid.length) : null;
   }, [rtData, rtAvailTop]);
   const rtAction = useMemo(() => {

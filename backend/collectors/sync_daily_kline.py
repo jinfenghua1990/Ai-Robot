@@ -16,6 +16,78 @@ from sqlalchemy import text
 logger = logging.getLogger(__name__)
 
 
+def sync_watchlist_etf_klines(end_date: str, minimum_bars: int = 60) -> dict:
+    """将自选 ETF 的真实基金日线补入统一日K表，供后续页面和策略只读数据库。"""
+    from collectors.tdx_collector import call_tushare_mcp
+    from db.models import Watchlist
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+    target = datetime.strptime(end_date, '%Y%m%d').date()
+    with get_db_session() as db:
+        raw_codes = [row[0] for row in db.query(Watchlist.stock_code).all()]
+
+    codes = []
+    for code in raw_codes:
+        raw = str(code or '').strip()
+        if len(raw) != 6 or not raw.startswith(('5', '15', '16')):
+            continue
+        ts_code = f"{raw}.SH" if raw.startswith('5') else f"{raw}.SZ"
+        if ts_code not in codes:
+            codes.append(ts_code)
+
+    synced = {}
+    for ts_code in codes:
+        with get_db_session() as db:
+            count = db.query(StockDailyKline.id).filter(
+                StockDailyKline.ts_code == ts_code,
+            ).count()
+        start = target - timedelta(days=240 if count < minimum_bars else 14)
+        rows = call_tushare_mcp(
+            'fund_daily',
+            {'ts_code': ts_code, 'start_date': start.strftime('%Y%m%d'), 'end_date': end_date},
+            ['ts_code', 'trade_date', 'open', 'high', 'low', 'close', 'vol', 'amount', 'pct_chg'],
+        ) or []
+        values = []
+        for row in rows:
+            try:
+                values.append({
+                    'ts_code': ts_code,
+                    'trade_date': datetime.strptime(str(row['trade_date']), '%Y%m%d').date(),
+                    'open': row.get('open'),
+                    'high': row.get('high'),
+                    'low': row.get('low'),
+                    'close': row.get('close'),
+                    'volume': row.get('vol'),
+                    'amount': row.get('amount'),
+                    'pct_chg': row.get('pct_chg'),
+                })
+            except (KeyError, TypeError, ValueError):
+                continue
+        if not values:
+            synced[ts_code] = 0
+            continue
+        with get_db_session() as db:
+            stmt = pg_insert(StockDailyKline.__table__).values(values)
+            stmt = stmt.on_conflict_do_update(
+                index_elements=['ts_code', 'trade_date'],
+                set_={
+                    'open': stmt.excluded.open,
+                    'high': stmt.excluded.high,
+                    'low': stmt.excluded.low,
+                    'close': stmt.excluded.close,
+                    'volume': stmt.excluded.volume,
+                    'amount': stmt.excluded.amount,
+                    'pct_chg': stmt.excluded.pct_chg,
+                },
+            )
+            db.execute(stmt)
+            db.commit()
+        synced[ts_code] = len(values)
+
+    logger.info('[daily-kline] synced watchlist ETF kline: %s', synced)
+    return {'codes': len(codes), 'rows_synced': synced}
+
+
 def sync_daily_kline(start_date: str, end_date: str) -> dict:
     """
     拉取区间内每个交易日的全市场日线 → upsert 到 stock_daily_kline

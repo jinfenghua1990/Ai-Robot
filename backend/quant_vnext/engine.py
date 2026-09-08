@@ -58,16 +58,43 @@ def _atr_pct(bars: Sequence[DailyBar], period: int = 14) -> float | None:
     return _mean(true_ranges) / bars[-1].close
 
 
+def _rsi_series(closes: Sequence[float], period: int = 14) -> list[float]:
+    """Wilder RSI series; returns one value per close after the warm-up."""
+    if len(closes) < period + 1:
+        return []
+    gains: list[float] = []
+    losses: list[float] = []
+    for index in range(1, len(closes)):
+        change = closes[index] - closes[index - 1]
+        gains.append(max(change, 0.0))
+        losses.append(max(-change, 0.0))
+    avg_gain = mean(gains[:period])
+    avg_loss = mean(losses[:period])
+    out: list[float] = []
+    for index in range(period, len(gains)):
+        avg_gain = (avg_gain * (period - 1) + gains[index]) / period
+        avg_loss = (avg_loss * (period - 1) + losses[index]) / period
+        if avg_loss == 0:
+            out.append(100.0)
+        else:
+            out.append(100.0 - 100.0 / (1.0 + avg_gain / avg_loss))
+    return out
+
+
 def _pct_change(value: float) -> float:
     """Normalize DailyBar.pct_chg, which may be stored as 10 or 0.10."""
     return value * 100 if abs(value) <= 1 else value
 
 
-def _limit_up(bar: DailyBar) -> bool:
+def _limit_up(bar: DailyBar, market: str = "A") -> bool:
+    if market.upper() != "A":
+        return False
     return _pct_change(float(bar.pct_chg or 0)) >= 9.5
 
 
-def _limit_down(bar: DailyBar) -> bool:
+def _limit_down(bar: DailyBar, market: str = "A") -> bool:
+    if market.upper() != "A":
+        return False
     return _pct_change(float(bar.pct_chg or 0)) <= -9.5
 
 
@@ -106,7 +133,7 @@ class FactorEngine:
                 visible_by_code[ts_code] = visible
 
         market_values = self._market_values(visible_by_code, market)
-        sector_values = self._sector_values(visible_by_code)
+        sector_values = self._sector_values(visible_by_code, market.market if market else "A")
         result: list[FactorValue] = []
         for ts_code, bars in visible_by_code.items():
             values = self._stock_values(ts_code, bars, market_values, sector_values)
@@ -132,11 +159,12 @@ class FactorEngine:
         breadth = market.breadth if market is not None else (
             sum(1 for bars in visible_by_code.values() if len(bars) >= 2 and bars[-1].close > bars[-2].close) / len(latest) if latest else None
         )
-        limit_up_count = market.limit_up_count if market is not None else sum(_limit_up(bar) for bar in latest)
-        limit_down_count = market.limit_down_count if market is not None else sum(_limit_down(bar) for bar in latest)
-        if market is not None and not market.market_data_available and limit_up_count == 0 and limit_down_count == 0:
-            limit_up_count = sum(_limit_up(bar) for bar in latest)
-            limit_down_count = sum(_limit_down(bar) for bar in latest)
+        market_name = market.market.upper() if market is not None else "A"
+        limit_up_count = market.limit_up_count if market is not None else sum(_limit_up(bar, market_name) for bar in latest)
+        limit_down_count = market.limit_down_count if market is not None else sum(_limit_down(bar, market_name) for bar in latest)
+        if market_name == "A" and market is not None and not market.market_data_available and limit_up_count == 0 and limit_down_count == 0:
+            limit_up_count = sum(_limit_up(bar, market_name) for bar in latest)
+            limit_down_count = sum(_limit_down(bar, market_name) for bar in latest)
         total_limits = limit_up_count + limit_down_count
         limit_pressure = ((limit_up_count - limit_down_count) / (total_limits + 10)) if total_limits else None
         market_return = market.market_return_20d if market is not None and market.market_return_20d is not None else (_mean(returns) if returns else None)
@@ -148,7 +176,7 @@ class FactorEngine:
         }
 
     @staticmethod
-    def _sector_values(visible_by_code: Mapping[str, Sequence[DailyBar]]) -> dict[str, dict[str, float | None]]:
+    def _sector_values(visible_by_code: Mapping[str, Sequence[DailyBar]], market: str = "A") -> dict[str, dict[str, float | None]]:
         by_sector: dict[str, dict[str, dict[str, float | None]]] = defaultdict(dict)
         for ts_code, bars in visible_by_code.items():
             sector = bars[-1].sector if bars else ""
@@ -159,7 +187,7 @@ class FactorEngine:
                 "return_5d": _return(closes, 5),
                 "return_20d": _return(closes, 20),
                 "up": 1.0 if len(closes) >= 2 and closes[-1] > closes[-2] else 0.0,
-                "limit_up": 1.0 if _limit_up(bars[-1]) else 0.0,
+                "limit_up": 1.0 if _limit_up(bars[-1], market) else 0.0,
             }
         result: dict[str, dict[str, float | None]] = {}
         for sector, stocks in by_sector.items():
@@ -187,6 +215,7 @@ class FactorEngine:
         latest = bars[-1]
         closes = [bar.close for bar in bars]
         highs = [bar.high for bar in bars]
+        lows = [bar.low for bar in bars]
         volumes = [bar.volume for bar in bars]
         amounts = [bar.amount for bar in bars]
         daily_returns = [closes[i] / closes[i - 1] - 1 for i in range(1, len(closes)) if closes[i - 1]]
@@ -212,6 +241,34 @@ class FactorEngine:
             window = highs[-20:]
             breakout_days = len(window) - 1 - max(index for index, value in enumerate(window) if value == max(window))
         volume_ratio = volumes[-1] / _mean(volumes[-20:]) if len(volumes) >= 20 and _mean(volumes[-20:]) else None
+
+        # ── 新因子：RSI 斜率 / Parkinson 波动率 / VWAP 偏离 / Amihud 非流动性 ──
+        rsi_series = _rsi_series(closes, 14)
+        rsi_slope_5d = rsi_series[-1] - rsi_series[-6] if len(rsi_series) >= 6 else None
+        parkinson = None
+        if len(lows) >= 20:
+            squared = []
+            for high, low in zip(highs[-20:], lows[-20:]):
+                if high and low and high > 0 and low > 0:
+                    squared.append(math.log(high / low) ** 2)
+            if squared:
+                parkinson = (mean(squared) / (4.0 * math.log(2.0))) ** 0.5
+        vwap_bias = None
+        if len(closes) >= 20:
+            volume_sum = sum(volumes[-20:])
+            if volume_sum:
+                vwap = sum(c * v for c, v in zip(closes[-20:], volumes[-20:])) / volume_sum
+                vwap_bias = latest.close / vwap - 1 if vwap else None
+        amihud = None
+        amihud_values = []
+        for index in range(max(1, len(closes) - 20), len(closes)):
+            volume = volumes[index] if index < len(volumes) else 0
+            price = closes[index] if index < len(closes) else 0
+            previous = closes[index - 1] if index >= 1 else 0
+            if volume and price and previous:
+                amihud_values.append(abs(price / previous - 1) / (price * volume))
+        if len(amihud_values) >= 10:
+            amihud = mean(amihud_values)
         return {
             # market
             "market_up_ratio": market.get("market_up_ratio"),
@@ -253,4 +310,9 @@ class FactorEngine:
             "drawdown_60d": latest.close / close60 - 1 if close60 else None,
             "overextension_5d": returns_5,
             "liquidity_amount_20d": _mean(amounts[-20:]) if len(amounts) >= 20 else None,
+            # added factor batch (2026-08-04): momentum / volume_price / risk
+            "rsi_slope_5d": rsi_slope_5d,
+            "vwap_bias_20d": vwap_bias,
+            "parkinson_vol_20d": parkinson,
+            "amihud_illiq_20d": amihud,
         }

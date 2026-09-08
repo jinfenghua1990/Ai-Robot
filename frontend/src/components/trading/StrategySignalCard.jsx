@@ -50,11 +50,7 @@ const fmtYuan = (v) => {
   return `${(v || 0).toFixed(0)}`;
 };
 
-const fmtWanYi = (v, fromYuan = false) => {
-  const wan = fromYuan ? (v || 0) / 10000 : (v || 0);
-  if (Math.abs(wan) >= 10000) return `${(wan / 10000).toFixed(2)}亿`;
-  return `${wan.toFixed(fromYuan ? 2 : 0)}万`;
-};
+
 
 // ===== 分时图交易时段 =====
 
@@ -190,26 +186,27 @@ function StrategySignalCardInner({
     } else { start(); }
 
     return () => { active = false; if (timer) clearTimeout(timer); if (io) io.disconnect(); };
-  }, [code, prefetchedDash]);
-
-  if (!signal || !signal.secCode) return null;
+  }, [code, prefetchedDash, awaitParentPrefetch]);
 
   // ===== 数据派生 =====
-  const { secCode, secName } = signal;
+  const { secCode, secName } = signal || {};
   const rtDash = dash?.realtime;
   const bsInt = dash?.bs_interval || signal?.bsInterval;
   const sfDash = dash?.sector_flow;
   const ind = signal?.indicators;
 
   // 实时价格
-  const idArr = rtDash?.intraday || [];
+  const idArr = useMemo(() => rtDash?.intraday || [], [rtDash?.intraday]);
   const lastPt = idArr.length ? idArr[idArr.length - 1] : null;
   const curPrice = lastPt?.price ?? signal?.quote?.price ?? null;
   const dayPct = lastPt?.pct_chg ?? signal?.quote?.pct_chg ?? null;
   const priceColor = dayPct == null ? 'var(--text-muted)' : dayPct >= 0 ? '#ef4444' : '#22c55e';
 
   // 分时技术指标
-  const idPrices = idArr.map((d) => d?.price).filter((v) => typeof v === 'number' && !Number.isNaN(v));
+  const idPrices = useMemo(
+    () => idArr.map((d) => d?.price).filter((v) => typeof v === 'number' && !Number.isNaN(v)),
+    [idArr],
+  );
   const rtKdj = useMemo(() => calcIntradayKdj(idPrices), [idPrices]);
   const rtMacd = useMemo(() => calcIntradayMacd(idPrices), [idPrices]);
 
@@ -227,6 +224,8 @@ function StrategySignalCardInner({
     if (prices.length < 2) return null;
     return (Math.max(...prices) - Math.min(...prices)) / Math.min(...prices) * 100;
   }, [idArr]);
+
+  if (!signal || !secCode) return null;
 
   // ===== 公共样式 =====
   const rowH = "flex items-center gap-1.5 text-[10px] tabular-nums min-h-[18px]";

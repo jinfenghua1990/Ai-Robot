@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import TradeModal from './TradeModal';
-import { useTrading } from '../../context/TradingContext';
+import { useTrading } from '../../context/tradingContextCore';
 import { apiFetch } from '../../utils/request';
 
 /**
@@ -84,7 +84,7 @@ export default function ManualTradeBar({ children, compact = false, showLabel = 
       });
       setJustAdded(code);
       setTimeout(() => setJustAdded(''), 2000);
-    } catch (e) { /* silent */ }
+    } catch { /* silent */ }
   };
 
   return (

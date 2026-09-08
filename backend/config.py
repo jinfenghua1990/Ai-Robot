@@ -9,7 +9,12 @@ READ_ONLY_DB_URL = os.getenv("READ_ONLY_DB_URL", DATABASE_URL)
 TUSHARE_TOKEN = os.getenv("TUSHARE_TOKEN", "")
 API_PORT = int(os.getenv("API_PORT", "9000"))
 API_READ_KEY = os.getenv("API_READ_KEY", "")
-CORS_ORIGINS = [o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost:9000,http://127.0.0.1:9000").split(",") if o.strip()]
+WRITE_AUTH_TRUSTED_HOSTS = frozenset(
+    host.strip()
+    for host in os.getenv("WRITE_AUTH_TRUSTED_HOSTS", "").split(",")
+    if host.strip()
+)
+CORS_ORIGINS = [o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost:9000,http://127.0.0.1:9000,http://localhost:5173,http://127.0.0.1:5173,http://localhost:9001,http://127.0.0.1:9001").split(",") if o.strip()]
 RATE_LIMIT_MAX_REQUESTS = int(os.getenv("RATE_LIMIT_MAX_REQUESTS", "1000"))
 RATE_LIMIT_WINDOW_SECONDS = int(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "60"))
 RATE_LIMIT_MAX_CONNECTIONS_PER_IP = int(os.getenv("RATE_LIMIT_MAX_CONNECTIONS_PER_IP", "50"))
@@ -22,11 +27,13 @@ GS_API_BASE_URL = os.getenv("GS_API_BASE_URL", "https://dgzt.guosen.com.cn/skill
 QGDATA_TOKEN = os.getenv("QGDATA_TOKEN", "")
 QGDATA_BASE_URL = os.getenv("QGDATA_BASE_URL", "https://data.quantgo.ai")
 
+# 平安证券技能 API
+PINGAN_SKILL_APIKEY = os.getenv("PINGAN_SKILL_APIKEY", "")
+
 # 东方财富妙想 Skills API
-# MX_APIKEY: 妙想全量接口（资讯/选股/数据/自选股/模拟盘查询等）—— 第一套 key
+# MX_APIKEY: 唯一 key（资讯/选股/数据/自选股/模拟盘/自动化交易）
 MX_APIKEY = os.getenv("MX_APIKEY", "")
-# MX_TRADING_APIKEY: 妙想自动化交易专用（买/卖/撤/资金/持仓）—— 第二套 key
-# 若未单独配置则回退到 MX_APIKEY
+# MX_TRADING_APIKEY: 保留字段，未单独配置时统一回退到 MX_APIKEY
 MX_TRADING_APIKEY = os.getenv("MX_TRADING_APIKEY", "") or MX_APIKEY
 MX_API_URL = os.getenv("MX_API_URL", "https://mkapi2.dfcfs.com/finskillshub")
 
@@ -73,3 +80,15 @@ CACHE_TTL_MX_TRADING = int(os.getenv("CACHE_TTL_MX_TRADING", "300"))
 # 缓存最大条目数
 CACHE_MAX_QUOTE = int(os.getenv("CACHE_MAX_QUOTE", "500"))
 CACHE_MAX_KLINE = int(os.getenv("CACHE_MAX_KLINE", "300"))
+
+# Google Sheets 同步（可选；未配置时仅提供 CSV 导出，不发起 Google 请求）
+GOOGLE_SHEETS_CLIENT_ID = os.getenv("GOOGLE_SHEETS_CLIENT_ID", "")
+GOOGLE_SHEETS_CLIENT_SECRET = os.getenv("GOOGLE_SHEETS_CLIENT_SECRET", "")
+GOOGLE_SHEETS_REDIRECT_URI = os.getenv(
+    "GOOGLE_SHEETS_REDIRECT_URI",
+    "http://127.0.0.1:9000/api/google-sheets/oauth/callback",
+)
+GOOGLE_SHEETS_TOKEN_FILE = os.getenv(
+    "GOOGLE_SHEETS_TOKEN_FILE",
+    os.path.join(project_root, "data", "google_sheets_token.json"),
+)

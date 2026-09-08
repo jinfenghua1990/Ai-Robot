@@ -5,15 +5,47 @@
 - 前端可直接复用 SignalCard 组件
 - 支持一键添加到自选股
 """
+import asyncio
+import time
 from datetime import datetime
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from db.connection import get_db
-from db.session import get_db_session
-from services.signal_builder import build_signal_for_stock, build_signal_from_precomputed
+from db.session import get_db_session, run_db
+from services.signal_builder import build_signal_for_stock, build_signal_from_precomputed, _get_lifecycle_map
 from db.models import WatchlistSignalDaily
 
 router = APIRouter()
+
+# ------------------------------------------------------------
+# 重点关注列表缓存（stale-while-revalidate，与 /api/watchlist 同口径）
+# 该接口每次都要为 ~百只股票重建 signal（实测冷 7.2s / 热 4.1s），
+# 没有缓存时 WatchlistPage / FocusStocksPage 每次打开都要干等，是首屏卡顿主因。
+# ------------------------------------------------------------
+FOCUS_CACHE_TTL = 60  # 秒；盘中 60s 足够新，盘后数据本身不变
+_focus_cache: dict = {"data": None, "ts": 0.0}
+_focus_refreshing = False
+
+
+def reset_focus_cache():
+    _focus_cache["data"] = None
+    _focus_cache["ts"] = 0.0
+
+
+async def _refresh_focus_cache():
+    """后台刷新缓存，失败不影响已有旧数据。"""
+    global _focus_refreshing
+    if _focus_refreshing:
+        return
+    _focus_refreshing = True
+    try:
+        data = await _build_focus_stocks()
+        _focus_cache["data"] = data
+        _focus_cache["ts"] = time.time()
+    except Exception:
+        pass
+    finally:
+        _focus_refreshing = False
 
 # ============================================================
 # 科技赛道重点关注股票池（基于市场热点梳理）
@@ -243,19 +275,40 @@ FOCUS_STOCKS = [
 ]
 
 @router.get("/api/focus-stocks")
-async def get_focus_stocks():
-    """获取重点关注股票列表（按赛道分组，含完整 signal 数据，与自选股维度对齐）"""
+async def get_focus_stocks(force: bool = False):
+    """获取重点关注股票列表（按赛道分组，含完整 signal 数据，与自选股维度对齐）
+
+    stale-while-revalidate 缓存：
+    - 命中且未过期 → 直接返回（毫秒级）
+    - 命中但已过期 → 立即返回旧数据 + 后台异步刷新（用户无感）
+    - 未命中       → 现场构建
+    - force=true   → 跳过缓存强制重算（供刷新按钮使用）
+    """
+    if force:
+        reset_focus_cache()
+        data = await _build_focus_stocks()
+        _focus_cache["data"] = data
+        _focus_cache["ts"] = time.time()
+        return data
+
+    cached = _focus_cache["data"]
+    if cached is not None:
+        if time.time() - _focus_cache["ts"] < FOCUS_CACHE_TTL:
+            return cached
+        # 过期：先返回旧数据，后台刷新
+        asyncio.create_task(_refresh_focus_cache())
+        return cached
+
+    data = await _build_focus_stocks()
+    _focus_cache["data"] = data
+    _focus_cache["ts"] = time.time()
+    return data
+
+
+def _load_focus_precomputed(all_stocks):
+    """同步加载预计算信号 + 生命周期映射（在线程池中执行，不阻塞事件循环）。"""
     with get_db_session() as db:
-        # 展开所有股票
-        all_stocks = [
-            (s["code"], s["name"], sector_data["sector"])
-            for sector_data in FOCUS_STOCKS
-            for s in sector_data["stocks"]
-        ]
-
         # 优先从预计算表读取（毫秒级），缺失时才现场计算
-        import asyncio
-
         # 取最近一日的预计算数据
         latest_date = db.query(WatchlistSignalDaily.trade_date).order_by(
             WatchlistSignalDaily.trade_date.desc()
@@ -271,71 +324,95 @@ async def get_focus_stocks():
                 if code:
                     precomputed_map[code] = r
 
-        # 分批构造 signal：预计算命中用快速路径，未命中用现场计算
-        BATCH = 20
-        all_signals = []
-        precomputed_hits = 0
-        for i in range(0, len(all_stocks), BATCH):
-            batch = all_stocks[i:i + BATCH]
-            tasks = []
-            for code, name, sector_name in batch:
-                pre = precomputed_map.get(code)
-                if pre is not None:
-                    precomputed_hits += 1
-                    tasks.append(build_signal_from_precomputed(
-                        code, name, pre,
-                        extra_positive=[{"label": "赛道", "value": sector_name, "type": "positive"}],
-                        db=db,
-                    ))
-                else:
-                    tasks.append(build_signal_for_stock(code, name, sector_name, db))
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            for r in results:
-                if not isinstance(r, Exception) and r is not None:
-                    all_signals.append(r)
+        focus_lifecycle_map = _get_lifecycle_map(
+            db,
+            [f"{code}.SH" if code[0] in ('5', '6', '9') else f"{code}.SZ" for code, _, _ in all_stocks],
+        )
 
-        # 批量补充 moneyFlow/hitTags/actionHint（与自选股 build_watchlist 完全一致口径）
-        from services.signal_builder import _enrich_signals_with_watchlist_extras
-        await _enrich_signals_with_watchlist_extras(db, all_signals)
+        # 已经取得预计算行；实时行情/K 线请求可能等待外部源，不能占着只读事务。
+        db.expunge_all()
+        db.rollback()
+        return precomputed_map, focus_lifecycle_map
 
-        # 按赛道分组
-        signal_map = {s['secCode']: s for s in all_signals}
-        sectors_result = []
-        for sector_data in FOCUS_STOCKS:
-            sector_signals = [
-                signal_map[s["code"]]
-                for s in sector_data["stocks"]
-                if s["code"] in signal_map
-            ]
-            sectors_result.append({
-                "sector": sector_data["sector"],
-                "icon": sector_data["icon"],
-                "color": sector_data["color"],
-                "stocks": sector_signals,
-            })
 
-        # 统计
-        total_stocks = len(all_signals)
-        up_count = sum(1 for s in all_signals if s.get("quote") and s["quote"]["changePct"] > 0)
-        down_count = sum(1 for s in all_signals if s.get("quote") and s["quote"]["changePct"] < 0)
-        limit_up_count = sum(1 for s in all_signals if s.get("quote") and s["quote"]["changePct"] >= 9.8)
+async def _build_focus_stocks():
+    """真正构建重点关注列表（无缓存）。"""
+    all_stocks = [
+        (s["code"], s["name"], sector_data["sector"])
+        for sector_data in FOCUS_STOCKS
+        for s in sector_data["stocks"]
+    ]
+    precomputed_map, focus_lifecycle_map = await run_db(_load_focus_precomputed, all_stocks)
 
-        return {
-            "sectors": sectors_result,
-            "summary": {
-                "total_sectors": len(sectors_result),
-                "total_stocks": total_stocks,
-                "up_count": up_count,
-                "down_count": down_count,
-                "flat_count": total_stocks - up_count - down_count,
-                "limit_up_count": limit_up_count,
-            },
-            "generated_at": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-        }
+    # 分批构造 signal：预计算命中用快速路径，未命中用现场计算
+    BATCH = 20
+    all_signals = []
+    precomputed_hits = 0
+    for i in range(0, len(all_stocks), BATCH):
+        batch = all_stocks[i:i + BATCH]
+        tasks = []
+        for code, name, sector_name in batch:
+            pre = precomputed_map.get(code)
+            ts_code = f"{code}.SH" if code[0] in ('5', '6', '9') else f"{code}.SZ"
+            lifecycle_stage = focus_lifecycle_map.get(ts_code) or '未入选'
+            if pre is not None:
+                precomputed_hits += 1
+                tasks.append(build_signal_from_precomputed(
+                    code, name, pre,
+                    extra_positive=[{"label": "赛道", "value": sector_name, "type": "positive"}],
+                    lifecycle_stage=lifecycle_stage,
+                ))
+            else:
+                tasks.append(build_signal_for_stock(
+                    code, name, sector_name, lifecycle_stage=lifecycle_stage,
+                ))
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for r in results:
+            if not isinstance(r, Exception) and r is not None:
+                all_signals.append(r)
+
+    # 批量补充 moneyFlow/hitTags/actionHint（与自选股 build_watchlist 完全一致口径）
+    from services.signal_builder import _enrich_signals_with_watchlist_extras
+    await _enrich_signals_with_watchlist_extras(all_signals)
+
+    # 按赛道分组
+    signal_map = {s['secCode']: s for s in all_signals}
+    sectors_result = []
+    for sector_data in FOCUS_STOCKS:
+        sector_signals = [
+            signal_map[s["code"]]
+            for s in sector_data["stocks"]
+            if s["code"] in signal_map
+        ]
+        sectors_result.append({
+            "sector": sector_data["sector"],
+            "icon": sector_data["icon"],
+            "color": sector_data["color"],
+            "stocks": sector_signals,
+        })
+
+    # 统计
+    total_stocks = len(all_signals)
+    up_count = sum(1 for s in all_signals if s.get("quote") and s["quote"]["changePct"] > 0)
+    down_count = sum(1 for s in all_signals if s.get("quote") and s["quote"]["changePct"] < 0)
+    limit_up_count = sum(1 for s in all_signals if s.get("quote") and s["quote"]["changePct"] >= 9.8)
+
+    return {
+        "sectors": sectors_result,
+        "summary": {
+            "total_sectors": len(sectors_result),
+            "total_stocks": total_stocks,
+            "up_count": up_count,
+            "down_count": down_count,
+            "flat_count": total_stocks - up_count - down_count,
+            "limit_up_count": limit_up_count,
+        },
+        "generated_at": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+    }
 
 
 @router.get("/api/focus-stocks/sectors")
-async def get_focus_sectors():
+def get_focus_sectors():
     """仅获取赛道列表（不含行情，用于快速加载）"""
     return {
         "sectors": [
@@ -352,7 +429,7 @@ class AddFocusStockRequest(BaseModel):
 
 
 @router.post("/api/focus-stocks/add-to-watchlist")
-async def add_focus_to_watchlist(req: AddFocusStockRequest):
+def add_focus_to_watchlist(req: AddFocusStockRequest):
     """将重点关注股票添加到自选股"""
     from db.session import get_db_session
     from db.models import Watchlist
@@ -380,7 +457,7 @@ async def add_focus_to_watchlist(req: AddFocusStockRequest):
 
 
 @router.post("/api/focus-stocks/batch-add-to-watchlist")
-async def batch_add_to_watchlist(req: dict):
+def batch_add_to_watchlist(req: dict):
     """批量将选中的重点关注股票添加到自选股"""
     from db.session import get_db_session
     from db.models import Watchlist
@@ -422,7 +499,7 @@ async def batch_add_to_watchlist(req: dict):
 
 
 @router.post("/api/focus-stocks/batch-add")
-async def batch_add_focus_stocks(req: dict):
+def batch_add_focus_stocks(req: dict):
     """批量添加赛道内所有股票到自选股"""
     from db.session import get_db_session
     from db.models import Watchlist

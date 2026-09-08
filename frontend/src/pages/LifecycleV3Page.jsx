@@ -1,8 +1,10 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { useLifecycleData } from '../hooks/useLifecycleData';
 import DateNavigator from '../components/DateNavigator';
 import StrategySignalCard from '../components/trading/StrategySignalCard';
 import { leaderToSignal } from '../utils/format';
+import { useViewMode } from '../hooks/useViewMode';
+import StockListContainer from '../components/StockListContainer';
 
 export default function LifecycleV3Page() {
   const {
@@ -18,6 +20,10 @@ export default function LifecycleV3Page() {
   } = useLifecycleData('/api/lifecycle-v3', { sortByDefault: 'strength' });
 
   const [showHelp, setShowHelp] = useState(false);
+  const [viewMode, setViewMode] = useViewMode('lifecycle-v3', 'card');
+
+  // 表格视图数据：把生命周期 V3 龙头映射为 WatchlistTable 需要的 signal 结构
+  const tableSignals = useMemo(() => filteredLeaders.map(leaderToSignal), [filteredLeaders]);
 
   if (error) {
     return (
@@ -202,10 +208,27 @@ export default function LifecycleV3Page() {
       </div>
 
       {/* 龙头列表（卡片式进度条） */}
-      <div className="rounded-xl border p-3" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
-        {loading ? (
-          <div className="flex items-center justify-center h-96 text-sm" style={{ color: 'var(--text-muted)' }}>加载中...</div>
-        ) : pagedLeaders.length > 0 ? (
+      <StockListContainer
+        viewModeKey="lifecycle-v3"
+        viewMode={viewMode}
+        onViewModeChange={setViewMode}
+        loading={loading}
+        items={pagedLeaders}
+        tableItems={tableSignals}
+        groupBy="sector"
+        tableProps={{
+          selectedCode: null,
+          onSelect: () => {},
+          onRemove: () => {},
+          onSell: null,
+          onRefresh: retry,
+          onAnalyze: () => {},
+          batchMode: false,
+          selectedIds: [],
+          onToggleCheck: () => {},
+          strategyPicks: [],
+        }}
+        cardRenderer={() => (
           <>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               {pagedLeaders.map((leader) => (
@@ -237,12 +260,10 @@ export default function LifecycleV3Page() {
               </div>
             )}
           </>
-        ) : (
-          <div className="flex items-center justify-center h-96 text-sm" style={{ color: 'var(--text-muted)' }}>
-            {data?.leaders?.length > 0 ? '无匹配结果，请调整筛选条件' : '暂无龙头数据'}
-          </div>
         )}
-      </div>
+        emptyText={data?.leaders?.length > 0 ? '无匹配结果，请调整筛选条件' : '暂无龙头数据'}
+        loadingText="加载中..."
+      />
     </div>
   );
 }

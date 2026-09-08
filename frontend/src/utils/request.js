@@ -21,13 +21,46 @@
  *   apiFetch('/api/foo', { signal: ctrl.signal });
  *   ctrl.abort();  // 立即取消，不会等重试 backoff
  */
+
+/**
+ * 把接口返回的错误值转换成可直接展示的文本。
+ * 后端有时会返回 { detail: ... } / { message: ... }，直接拼接会显示
+ * "[object Object]"，因此所有页面统一经过这里处理。
+ */
+export function formatApiError(value, fallback = '请求失败') {
+  if (value == null || value === '') return fallback;
+  if (typeof value === 'string') {
+    const text = value.trim();
+    if (text === 'Invalid API key') return '写入会话无效，请刷新页面后重试';
+    if (text === 'API_READ_KEY 未配置，服务拒绝写操作') return '服务未配置写入密钥，请检查 API_READ_KEY';
+    return text || fallback;
+  }
+  if (value instanceof Error) return value.message || fallback;
+  if (Array.isArray(value)) {
+    const text = value.map((item) => formatApiError(item, '')).filter(Boolean).join('、');
+    return text || fallback;
+  }
+  if (typeof value === 'object') {
+    const nested = value.message ?? value.detail ?? value.error ?? value.msg ?? value.reason;
+    if (nested != null && nested !== value) return formatApiError(nested, fallback);
+    try {
+      const json = JSON.stringify(value);
+      return json && json !== '{}' ? json : fallback;
+    } catch {
+      return fallback;
+    }
+  }
+  return String(value);
+}
+
 export async function apiFetch(url, options = {}, timeout = 8000, retries = 2) {
   // 仅对 GET（幂等读）做重试，避免 POST/PUT/DELETE 等写操作因重试导致重复提交
   const method = (options.method || 'GET').toUpperCase();
-  const maxAttempts = method === 'GET' ? retries + 1 : 1;
+  let maxAttempts = method === 'GET' ? retries + 1 : 1;
   // 外部 signal（可选）：来自调用方 AbortController，用于取消请求
   const externalSignal = options.signal;
   let lastError = null;
+  let authRefreshAttempted = false;
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     // 外部已取消则立刻退出，不等 backoff
@@ -44,7 +77,13 @@ export async function apiFetch(url, options = {}, timeout = 8000, retries = 2) {
     try {
       // 注意：fetch 的 signal 用内部 ctrl.signal，而非外部 signal
       // （外部 signal 通过上面的 listener 联动到 ctrl，避免重试时复用已 aborted 的 signal）
-      const resp = await fetch(url, { ...options, signal: ctrl.signal });
+      // 若请求带 body 但未显式声明 Content-Type，自动补 application/json，
+      // 否则 FastAPI 无法解析 JSON 请求体，会返回 422（导致所有写操作静默失败）。
+      const reqHeaders = { ...(options.headers || {}) };
+      if (options.body != null && !reqHeaders['Content-Type']) {
+        reqHeaders['Content-Type'] = 'application/json';
+      }
+      const resp = await fetch(url, { ...options, headers: reqHeaders, signal: ctrl.signal });
       if (resp.ok) {
         const data = await resp.json();
         return { ok: true, data, error: null, status: resp.status };
@@ -61,11 +100,32 @@ export async function apiFetch(url, options = {}, timeout = 8000, retries = 2) {
         });
         continue;
       }
+      // 页面可能在服务重启或密钥轮换前打开，旧 HttpOnly cookie 会导致
+      // 写请求第一次返回 401。刷新根页面只更新 cookie，不把密钥暴露给 JS，
+      // 且第一次请求已被鉴权中间件拦截，不会产生重复写入。
+      if (resp.status === 401 && method !== 'GET' && !authRefreshAttempted) {
+        let body = null;
+        try { body = await resp.clone().json(); } catch { /* 非 JSON 响应体 */ }
+        const authDetail = body?.detail ?? body?.error ?? body?.message;
+        const authCode = typeof authDetail === 'object' ? authDetail?.code : body?.code;
+        const authRawMessage = typeof authDetail === 'object'
+          ? authDetail?.message ?? authDetail?.detail ?? ''
+          : String(authDetail ?? '');
+        if (authCode === 'UNAUTHORIZED' || authRawMessage.includes('Invalid API key')) {
+          authRefreshAttempted = true;
+          maxAttempts = Math.max(maxAttempts, attempt + 2);
+          try {
+            await fetch('/', { method: 'GET', credentials: 'same-origin', cache: 'no-store' });
+          } catch { /* 下一次请求会返回原始鉴权错误 */ }
+          continue;
+        }
+      }
       // 4xx（非 429）：客户端错误，不重试；解析响应体提取服务端错误信息
       if (resp.status < 500) {
         let body = null;
         try { body = await resp.json(); } catch { /* 非 JSON 响应体 */ }
-        const errMsg = body?.error || body?.message || `HTTP ${resp.status}`;
+        // FastAPI HTTPException 返回 {"detail": "..."}，兼容 error/message 两种格式
+        const errMsg = formatApiError(body?.detail ?? body?.error ?? body?.message, `HTTP ${resp.status}`);
         return { ok: false, data: null, error: errMsg, status: resp.status };
       }
       // 5xx：服务端错误，走重试

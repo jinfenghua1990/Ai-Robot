@@ -5,8 +5,8 @@
   1. 用可插拔数据源（us_quant.data_provider：Nasdaq 实时主源 → Yahoo 兜底 → 离线模拟）拉行情；
   2. 用现有策略引擎（indicators / strategies / filters / states）对 watchlist 评分；
   3. 通过 scanner.create_signal 生成信号，落库 us_signals；
-  4. 额外造一批「跨生命周期状态」的样本信号 + 样本持仓，便于演示；
-  5. 幂等：先清空 us_signals / us_positions 再写入。
+  4. 额外造一批「跨生命周期状态」的样本信号，便于演示；
+  5. 幂等：先清空 us_signals 再写入。
 
 运行（必须在 backend 目录下用后端同款解释器）：
     cd /Users/gino/Projects/AIROBOT/backend
@@ -19,11 +19,11 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import random
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta
 
 from db.session import get_db_session
-from us_quant.repository import ensure_schema, USSignal, USPosition
-from us_quant.data_provider import get_klines, get_quote
+from us_quant.repository import ensure_schema, USSignal
+from us_quant.data_provider import get_klines
 from us_quant.indicators import (
     ema, sma, rsi as calc_rsi, macd as calc_macd, kdj as calc_kdj,
 )
@@ -105,7 +105,6 @@ def main():
     with get_db_session() as db:
         # 幂等清空
         deleted_sig = db.query(USSignal).delete()
-        deleted_pos = db.query(USPosition).delete()
 
         # 1) 扫描生成信号
         scanned = 0
@@ -165,28 +164,9 @@ def main():
                 trigger_details={"sample": True},
             ))
 
-        # 3) 样本持仓（current_price 取实时行情，不再写死）
-        positions = [
-            ("TSLA", "Tesla", "pullback", 250.0, 100, "Technology", 238.0),
-            ("NVDA", "NVIDIA", "breakout", 120.0, 200, "Semiconductors", 112.0),
-            ("COIN", "Coinbase", "breakout", 220.0, 30, "Financial", 210.0),
-        ]
-        for sym, name, strat, ep, qty, sector, stop in positions:
-            q = get_quote(sym)
-            cp = float(q["price"]) if (q and q.get("price")) else ep
-            pl = (cp - ep) * qty
-            db.add(USPosition(
-                symbol=sym, name=name, strategy=strat, entry_price=ep, current_price=round(cp, 2),
-                quantity=qty, cost_basis=ep * qty, market_value=cp * qty,
-                unrealized_pl=pl, unrealized_pl_pct=round((cp - ep) / ep * 100, 2),
-                stop_price=stop, entry_date=date.today() - timedelta(days=random.randint(3, 20)),
-                holding_days=random.randint(3, 20), sector=sector,
-                risk_group="LIVE", status="ACTIVE",
-            ))
-
         db.commit()
-        print(f"OK: 清空原信号 {deleted_sig} / 持仓 {deleted_pos}；"
-              f"新写入 扫描信号 {scanned} + 样本信号 {len(samples)} + 样本持仓 {len(positions)}")
+        print(f"OK: 清空原信号 {deleted_sig}；"
+              f"新写入 扫描信号 {scanned} + 样本信号 {len(samples)}")
 
 
 if __name__ == "__main__":

@@ -1,8 +1,10 @@
 import { useState, useEffect } from 'react';
-import { NavLink, Outlet, useLocation } from 'react-router-dom';
+import { Link, NavLink, Outlet, useLocation } from 'react-router-dom';
 import { apiFetch } from '../utils/request';
 import HealthStrip from './HealthStrip';
 import SystemCheckBanner from './SystemCheckBanner';
+import GlobalWatchlistSearch from './GlobalWatchlistSearch';
+import TradeActivityTicker from './trading/TradeActivityTicker';
 
 // 顶部只负责切换全局上下文；业务功能进入对应上下文的左侧菜单。
 const topNav = [
@@ -10,62 +12,44 @@ const topNav = [
   { key: 'hk', path: '/hk-market', label: '港股', icon: '🇭🇰' },
   { key: 'us', path: '/us-market', label: '美股', icon: '🇺🇸' },
   { key: 'ipo', path: '/cxmt-ipo', label: 'IPO', icon: '🧾' },
+  { key: 'llm', path: '/llm-gateway', label: 'LLM', icon: '🤖' },
   ];
 
 const mainSections = [
-  { section: '核心工作台', items: [
-    { path: '/panorama', label: '板块流动', icon: '🔥' },
-    { path: '/today', label: '盘中实时', icon: '⚡' },
+  { section: '策略研究', items: [
     { path: '/strategy-center', label: '选股策略中心', icon: '🎯' },
-    { path: '/stock-analysis', label: '个股分析（含扩展）', icon: '🔍' },
-  ]},
-  { section: '因子研究', items: [
-    { path: '/v2', label: '右侧多因子总览', icon: '🧠' },
-    { path: '/v2/sectors', label: '因子板块评分', icon: '🔥' },
-    { path: '/quant-vnext?tab=factors', label: '因子注册', icon: '🧮' },
-    { path: '/quant-vnext?tab=research', label: '因子验证', icon: '🧪' },
-    { path: '/quant-vnext?tab=outcomes', label: '信号结果', icon: '📈' },
-  ]},
-  { section: '交易研究', items: [
-    { path: '/yuzi-center', label: '游资', icon: '🐉' },
-    { path: '/quant-vnext', label: '量化动作', icon: '🧬' },
+    { path: '/a-ladder', label: '连板梯队', icon: '🪜' },
+    { path: '/a-strategy-scan', label: 'TSP 选股策略', icon: '🎛️' },
     { path: '/a-horseback', label: '回马枪选股器', icon: '🐎' },
-    { path: '/a-horseback-track', label: '回马枪 20 天跟踪', icon: '🐎' },
+    { path: '/a-factor-backtest', label: '因子回测评估', icon: '📊' },
+    { path: '/quant-vnext', label: '量化中心', icon: '🧮' },
+    { path: '/yuzi-center', label: '游资', icon: '🐉' },
+  ]},
+  { section: '市场研究', items: [
+    { path: '/panorama', label: '市场中心', icon: '📊' },
+    { path: '/stock-analysis', label: '个股分析（含扩展）', icon: '🔍' },
+    { path: '/research-center', label: '研报中心', icon: '📚' },
+    { path: '/research/intel', label: '市场情报', icon: '📡' },
+    { path: '/research/sectors', label: '板块研究', icon: '🔲' },
+    { path: '/research/reports', label: '研究工作区', icon: '📁' },
+    { path: '/fund-weather', label: '资金气象', icon: '🌦️' },
   ]},
   { section: '交易管理', items: [
     { path: '/watchlist', label: '自选', icon: '⭐' },
-    { path: '/focus', label: '重点关注', icon: '🎯' },
+    { path: '/trading/sector-rotation', label: '行业轮动池', icon: '🔄' },
+    { path: '/trading/industry-stage', label: '阶段强势池', icon: '🧭' },
     { path: '/portfolio', label: '持仓管理', icon: '💼' },
+  ]},
+  { section: '跟踪与复盘', items: [
+    { path: '/a-horseback-track', label: '回马枪 20 天跟踪', icon: '🐎' },
+    { path: '/strategy-track', label: '策略 20 天跟踪', icon: '📊' },
     { path: '/stock-tracker', label: 'BS 跟踪池', icon: '📈' },
-  ]},
-  { section: '行情研究', items: [
-    { path: '/concept-flow', label: '资金流向', icon: '💸' },
-    { path: '/fund-weather', label: '资金气象', icon: '🌦️' },
-    { path: '/index-flow', label: '指数资金', icon: '🇨🇳' },
-    { path: '/wave-analysis', label: '波浪分析', icon: '🌊' },
-  ]},
-  { section: '研究中心', items: [
-    { path: '/research-center', label: '研报中心', icon: '📚' },
-    { path: '/research/intel', label: '资讯雷达', icon: '📡' },
-    { path: '/research/daily-review', label: '每日复盘', icon: '📰' },
-    { path: '/research/sectors', label: '板块中心', icon: '🔲' },
-    { path: '/research/radar', label: '细分板块', icon: '🧩' },
-    { path: '/research/reports', label: '我的研报', icon: '📄' },
-    { path: '/research/notes', label: '研究记录', icon: '📝' },
-  ]},
-];
-
-const systemSections = [
-  { section: '系统管理', items: [
-    { path: '/quality', label: '系统状态与数据质量', icon: '🛡️' },
-    { path: '/quality#freshness', label: '数据采集与新鲜度', icon: '📡' },
   ]},
 ];
 
 // 各项目子菜单（仅在 AIROBOT 布局内切换用）
 const projectMenus = {
   'a-stock': { title: 'A股', icon: '🇨🇳', sections: mainSections },
-  system: { title: '系统', icon: '🛡️', sections: systemSections },
   'quant-vnext': {
     title: '量化 VNext',
     icon: '🧬',
@@ -78,7 +62,6 @@ const projectMenus = {
       ]},
     ],
   },
-  gostock: null,
   yuzi: {
     title: '游资主题',
     icon: '🐉',
@@ -88,22 +71,37 @@ const projectMenus = {
     ],
   },
   hk: {
-    title: '港股研究中心', icon: '🇭🇰', items: [
-      { path: '/hk-market?tab=market', label: '行情总览', icon: '📈' },
-      { path: '/hk-market?tab=scores', label: '智能评分', icon: '🧮' },
-      { path: '/hk-market?tab=south', label: '南向资金', icon: '💰' },
-      { path: '/hk-market?tab=sectors', label: '行业轮动', icon: '🔥' },
-      { path: '/hk-market?tab=strategy', label: '策略扫描', icon: '🎯' },
+    title: '港股量化', icon: '🇭🇰', sections: [
+      { section: '核心工作台', items: [
+        { path: '/hk-market?tab=market', label: '行情总览', icon: '📈' },
+        { path: '/hk-market?tab=watchlist', label: '自选清单', icon: '⭐' },
+        { path: '/hk-market?tab=scores', label: '智能评分', icon: '🧮' },
+      ]},
+      { section: '策略研究', items: [
+        { path: '/hk-market?tab=sectors', label: '行业轮动', icon: '🔥' },
+        { path: '/hk-market?tab=south', label: '南向资金', icon: '💰' },
+        { path: '/hk-market?tab=strategy', label: '策略扫描', icon: '🎯' },
+      ]},
     ],
   },
   us: {
-    title: 'US Quant System', icon: '🇺🇸', items: [
-      { path: '/us-market?tab=dashboard', label: '量化总览', icon: '📊' },
-      { path: '/us-market?tab=scanner', label: '策略扫描', icon: '🔍' },
-      { path: '/us-market?tab=sectors', label: '行业轮动', icon: '🔥' },
-      { path: '/us-market?tab=signals', label: '信号列表', icon: '📡' },
-      { path: '/us-market?tab=positions', label: '持仓管理', icon: '💼' },
-      { path: '/us-market?tab=risk', label: '风控中心', icon: '🛡️' },
+    title: '美股量化', icon: '🇺🇸', sections: [
+      { section: '每日决策', items: [
+        { path: '/us-daily-decision', label: '每日决策', icon: '🎯' },
+        { path: '/us-market?tab=strategy-tracking', label: '策略跟踪（30日）', icon: '📊' },
+      ]},
+      { section: '我的交易', items: [
+        { path: '/us-market?tab=positions', label: '持仓交易', icon: '💼' },
+        { path: '/us-market?tab=tracking', label: '重点关注（含板块）', icon: '👀' },
+        { path: '/us-stock-analysis', label: '个股分析', icon: '🔍' },
+        { path: '/us-market?tab=usmart', label: '自选同步', icon: '⭐' },
+      ]},
+      { section: '策略研究', items: [
+        { path: '/us-market?tab=scanner', label: '策略研究（量化 / TSP）', icon: '🔬' },
+        { path: '/us-market?tab=factors', label: '因子与股票池', icon: '🧮' },
+        { path: '/us-bs-strategy', label: 'B/S策略', icon: '🅱️' },
+        { path: '/us-market?tab=backtest', label: '回测中心', icon: '⏪' },
+      ]},
     ],
   },
   ipo: {
@@ -121,18 +119,20 @@ const projectMenus = {
 
 function detectProject(pathname) {
   if (pathname === '/' || pathname.startsWith('/research-center')) return 'a-stock';
+  if (pathname.startsWith('/llm-gateway')) return 'llm';
   if (pathname.startsWith('/quality')) return 'system';
   if (pathname.startsWith('/cxmt-ipo')) return 'ipo';
   if (pathname.startsWith('/unitree-ipo')) return 'ipo';
   if (pathname.startsWith('/hk-market') || pathname.startsWith('/hk-strategy')) return 'hk';
-  if (pathname.startsWith('/us-market')) return 'us';
-  if (pathname.startsWith('/a-horseback')) return 'a-stock';
-  if (pathname.startsWith('/v2') || pathname.startsWith('/a-stock/v2') || pathname.startsWith('/panorama') || pathname.startsWith('/today') || pathname.startsWith('/concept-flow') || pathname.startsWith('/fund-weather') || pathname.startsWith('/index-flow') || pathname.startsWith('/wave-analysis') || pathname.startsWith('/strategy-center') || pathname.startsWith('/yuzi-center') || pathname.startsWith('/quant-vnext') || pathname.startsWith('/watchlist') || pathname.startsWith('/portfolio') || pathname.startsWith('/stock-analysis') || pathname.startsWith('/research/')) return 'a-stock';
+  // TSP 移植模块：us 前缀归美股，a 前缀归 A股
+  if (pathname.startsWith('/us-')) return 'us';
+  if (pathname.startsWith('/a-ladder') || pathname.startsWith('/a-strategy-scan') || pathname.startsWith('/a-factor-backtest') || pathname.startsWith('/a-horizontal') || pathname.startsWith('/a-horseback')) return 'a-stock';
+  if (pathname.startsWith('/us-market') || pathname.startsWith('/market-dashboard') || pathname.startsWith('/us-stock-analysis') || pathname.startsWith('/us-bs-strategy') || pathname.startsWith('/us-premarket')) return 'us';
+  if (pathname.startsWith('/v2') || pathname.startsWith('/a-stock/v2') || pathname.startsWith('/panorama') || pathname.startsWith('/fund-weather') || pathname.startsWith('/wave-analysis') || pathname.startsWith('/strategy-center') || pathname.startsWith('/yuzi-center') || pathname.startsWith('/quant-vnext') || pathname.startsWith('/watchlist') || pathname.startsWith('/portfolio') || pathname.startsWith('/stock-analysis') || pathname.startsWith('/research/')) return 'a-stock';
   if (pathname.startsWith('/quant-vnext')) return 'quant-vnext';
   // 游资一级
   if (pathname.startsWith('/yuzi-center')) return 'yuzi';
   if (pathname === '/research') return 'a-stock';
-  if (pathname.startsWith('/gostock/') || pathname === '/gostock') return 'gostock';
   return 'main';
 }
 
@@ -146,19 +146,29 @@ function externalPageUrl(path) {
 /** 侧边栏子项是否高亮：同时比较 pathname 与 ?tab= 参数（默认 tab 视为 market） */
 function itemActive(path, loc) {
   const [p, q] = path.split('?');
+  // 每日决策工作台合并了旧的四个入口；旧 URL 仍可访问时也保持菜单高亮。
+  if (p === '/us-daily-decision' && (
+    loc.pathname === '/market-dashboard'
+    || loc.pathname === '/us-premarket'
+    || (loc.pathname === '/us-market' && ['dashboard', 'sectors'].includes(new URLSearchParams(loc.search).get('tab')))
+  )) return true;
   if (loc.pathname !== p) return false;
+  // 工作台内部用 view 参数切换页签；进入任一视图都应保持“每日决策”高亮。
+  if (p === '/us-daily-decision') return true;
   if (!q) return true;
   const tab = new URLSearchParams(q).get('tab');
   const cur = new URLSearchParams(loc.search).get('tab');
   if (tab === cur) return true;
-  if (tab === 'market' && cur == null) return true; // 顶部菜单裸链默认命中总览
+  // 裸链（无 tab 参数）时，命中各项目默认 tab（与路由默认 tab 对齐）
+  if (cur == null) {
+    const DEFAULT_TABS = { '/us-market': 'dashboard', '/hk-market': 'market' };
+    if (DEFAULT_TABS[p] === tab) return true;
+  }
   return false;
 }
 
 /** 顶部菜单统一走内部路由（点击在当前页内切换到对应模块，左侧栏随之切换） */
-function projectExternalUrl(key) {
-  return null;
-}
+
 
 export default function Layout() {
   const [theme, setTheme] = useState('light');
@@ -168,8 +178,9 @@ export default function Layout() {
   const [pushMsg, setPushMsg] = useState('');
   const location = useLocation();
   const activeProject = detectProject(location.pathname);
-  // 所有顶层上下文都保留左侧菜单；页面内容只随菜单切换，不再隐藏导航。
-  const isStandalonePage = false;
+  const isStockAnalysisPage = location.pathname === '/stock-analysis';
+  // 系统中心已在页面顶部提供市场与功能切换，不再重复显示左侧系统菜单。
+  const isStandalonePage = location.pathname.startsWith('/quality') || location.pathname.startsWith('/llm-gateway');
 
   useEffect(() => {
     const saved = localStorage.getItem('airobot-theme') || 'light';
@@ -185,7 +196,9 @@ export default function Layout() {
       try {
         const { ok, data } = await apiFetch('/api/analysis/notifications');
         if (ok) setReportNotifCount(data.unread_count || 0);
-      } catch {}
+      } catch {
+        // 通知轮询失败不打断主界面；下一轮会自动重试。
+      }
     };
     check();
     const t = setInterval(check, 30000);
@@ -209,7 +222,7 @@ export default function Layout() {
       } else {
         setPushMsg('❌ ' + (error || '失败'));
       }
-    } catch (e) {
+    } catch {
       setPushMsg('❌ 网络错误');
     } finally {
       setPushing(false);
@@ -227,23 +240,26 @@ export default function Layout() {
                 {sec.section}
               </div>
               <div className="space-y-0.5">
-                {sec.items.map(item => (
-                  <NavLink
+                {sec.items.map(item => {
+                  const active = itemActive(item.path, location);
+                  return (
+                  <Link
                     key={item.path}
                     to={item.path}
                     onClick={() => setNavOpen(false)}
-                    className={({ isActive }) =>
-                      `flex items-center gap-2 rounded-md px-2.5 py-1.5 text-xs transition-all ${isActive ? 'font-medium' : ''}`
-                    }
-                    style={({ isActive }) => ({
-                      background: isActive ? 'var(--bg-hover)' : 'transparent',
-                      color: isActive ? 'var(--accent-blue)' : 'var(--text-secondary)',
-                    })}
+                    aria-current={active ? 'page' : undefined}
+                    className="flex items-center gap-2 rounded-md px-2.5 py-1.5 text-xs transition-all"
+                    style={{
+                      background: active ? 'var(--bg-hover)' : 'transparent',
+                      color: active ? 'var(--accent-blue)' : 'var(--text-secondary)',
+                      fontWeight: active ? 600 : 400,
+                    }}
                   >
                     <span className="text-sm">{item.icon}</span>
                     {item.label}
-                  </NavLink>
-                ))}
+                  </Link>
+                  );
+                })}
               </div>
             </div>
           ))}
@@ -269,6 +285,7 @@ export default function Layout() {
               <div className="space-y-0.5">
                 {sec.items.map(sub => {
                   const ext = externalPageUrl(sub.path);
+                  const active = itemActive(sub.path, location);
                   if (ext) {
                     return (
                       <a key={sub.path} href={ext} target="_blank" rel="noopener noreferrer"
@@ -282,18 +299,18 @@ export default function Layout() {
                     );
                   }
                   return (
-                    <NavLink key={sub.path} to={sub.path}
+                    <Link key={sub.path} to={sub.path}
                       onClick={() => setNavOpen(false)}
-                      className={({ isActive }) =>
-                        `flex items-center gap-2 rounded-md px-2.5 py-1.5 text-xs transition-all ${isActive ? 'font-medium' : ''}`
-                      }
-                      style={({ isActive }) => ({
-                        background: isActive ? 'var(--bg-hover)' : 'transparent',
-                        color: isActive ? 'var(--accent-blue)' : 'var(--text-secondary)',
-                      })}>
+                      aria-current={active ? 'page' : undefined}
+                      className="flex items-center gap-2 rounded-md px-2.5 py-1.5 text-xs transition-all"
+                      style={{
+                        background: active ? 'var(--bg-hover)' : 'transparent',
+                        color: active ? 'var(--accent-blue)' : 'var(--text-secondary)',
+                        fontWeight: active ? 600 : 400,
+                      }}>
                       <span className="text-sm">{sub.icon}</span>
                       {sub.label}
-                    </NavLink>
+                    </Link>
                   );
                 })}
               </div>
@@ -325,8 +342,9 @@ export default function Layout() {
               );
             }
             return (
-              <NavLink key={sub.path} to={sub.path}
+              <Link key={sub.path} to={sub.path}
                 onClick={() => setNavOpen(false)}
+                aria-current={active ? 'page' : undefined}
                 className="flex items-center gap-2 rounded-md px-2.5 py-1.5 text-xs transition-all"
                 style={{
                   background: active ? 'var(--bg-hover)' : 'transparent',
@@ -335,7 +353,7 @@ export default function Layout() {
                 }}>
                 <span className="text-sm">{sub.icon}</span>
                 {sub.label}
-              </NavLink>
+              </Link>
             );
           })}
         </div>
@@ -378,28 +396,40 @@ export default function Layout() {
       {/* 右侧内容区 */}
       <div className="flex-1 flex flex-col w-full min-w-0 h-full overflow-hidden">
         {/* 顶栏 */}
-        <header className={`shrink-0 z-30 h-10 border-b flex items-center justify-between ${isStandalonePage ? 'pl-4' : 'pl-12'} md:pl-4 pr-2 md:pr-4`}
+        <header className={`shrink-0 z-50 h-10 border-b flex items-center justify-between ${isStandalonePage ? 'pl-4' : 'pl-12'} md:pl-4 pr-2 md:pr-4`}
           style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
-          <div className="flex items-center gap-1 overflow-x-auto no-scrollbar flex-1 min-w-0">
-            {topNav.map(({ key, path, label, icon }) => (
-              <NavLink
-                key={key}
-                to={path}
-                onClick={() => setNavOpen(false)}
-                className={({ isActive }) => `flex items-center gap-1 px-2.5 py-1.5 rounded-md text-xs transition-colors whitespace-nowrap ${isActive ? 'font-semibold' : ''}`}
-                style={({ isActive }) => ({
-                  background: isActive ? 'var(--bg-hover)' : 'transparent',
-                  color: isActive ? 'var(--accent-blue)' : 'var(--text-secondary)',
-                  border: isActive ? '1px solid var(--accent-blue)' : '1px solid transparent',
-                })}
-              >
-                <span>{icon}</span>
-                {label}
-              </NavLink>
-            ))}
+          <div className="flex items-center gap-1 flex-1 min-w-0">
+            <div className="flex items-center gap-1 overflow-x-auto no-scrollbar flex-1 min-w-0">
+              {topNav.map(({ key, path, label, icon }) => {
+                const active = detectProject(location.pathname) === key;
+                const target = key === 'llm'
+                  ? 'http://127.0.0.1:9002/llm-gateway'
+                  : (window.location.port === '9002' ? `http://127.0.0.1:9000${path}` : path);
+                return (
+                <a
+                  key={key}
+                  href={target}
+                  onClick={() => setNavOpen(false)}
+                  aria-current={active ? 'page' : undefined}
+                  className={`flex items-center gap-1 px-2.5 py-1.5 rounded-md text-xs transition-colors whitespace-nowrap ${active ? 'font-semibold' : ''}`}
+                  style={{
+                    background: active ? 'var(--bg-hover)' : 'transparent',
+                    color: active ? 'var(--accent-blue)' : 'var(--text-secondary)',
+                    border: active ? '1px solid var(--accent-blue)' : '1px solid transparent',
+                  }}
+                >
+                  <span>{icon}</span>
+                  {label}
+                </a>
+                );
+              })}
+            </div>
+            <TradeActivityTicker />
           </div>
           {/* 共享数据只保留状态提示，避免与核心导航重复 */}
           <div className="flex items-center gap-1 ml-2">
+            {/* 全局自选搜索框 */}
+            <GlobalWatchlistSearch />
             <NavLink to="/research-center" className="relative flex items-center gap-1 px-1.5 py-1 rounded-md text-xs hover:opacity-80 no-underline"
               style={{ color: reportNotifCount > 0 ? '#ef4444' : 'var(--text-secondary)' }}>
               <span>🛎️</span>
@@ -412,6 +442,16 @@ export default function Layout() {
             </NavLink>
             <HealthStrip />
             <div className="text-xs hidden sm:block mr-2" style={{ color: 'var(--text-secondary)' }}>{currentDate}</div>
+            <a
+              href="https://dapanyuntu.com"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex px-2 py-1 rounded-md text-xs border transition-colors items-center gap-1"
+              style={{ borderColor: 'var(--border-color)', color: 'var(--text-secondary)' }}
+              title="跳转大盘云图"
+            >
+              <span>🗺️</span><span className="hidden sm:inline">云图</span>
+            </a>
             <a
               href="https://finance.sina.com.cn/stock/"
               target="_blank"
@@ -449,7 +489,7 @@ export default function Layout() {
 
         {/* 页面内容 */}
         <SystemCheckBanner />
-        <main className="flex-1 overflow-auto p-3 md:p-4" style={{ background: 'var(--bg-primary)' }}>
+        <main className={`flex-1 overflow-auto ${isStockAnalysisPage ? 'p-0' : 'p-3 md:p-4'}`} style={{ background: 'var(--bg-primary)' }}>
           <Outlet />
         </main>
       </div>

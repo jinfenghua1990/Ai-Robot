@@ -1,13 +1,24 @@
 import { memo, useEffect, useRef, useState } from 'react';
-import { createChart, AreaSeries, HistogramSeries, LineSeries } from 'lightweight-charts';
+import { createChart, AreaSeries, HistogramSeries, LineSeries, LineStyle } from 'lightweight-charts';
 import { apiFetch } from '../../utils/request';
 import { POLL_INTERVAL, isMarketOpenNow } from '../../utils/constants';
 
+function ChartBox({ title, extra, children, className = '' }) {
+  return (
+    <div className={`rounded-lg border flex flex-col overflow-hidden ${className}`} style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)', minHeight: 0 }}>
+      <div className="text-[10px] font-bold px-2 pt-1.5 pb-0.5 flex-shrink-0 flex items-center justify-between gap-1 min-w-0" style={{ color: 'var(--text-secondary)' }}>
+        <span className="min-w-0 truncate" title={title}>{title}</span>
+        {extra && <span className="text-[10px] font-normal whitespace-nowrap flex-shrink-0" style={{ color: 'var(--text-muted)' }}>{extra}</span>}
+      </div>
+      <div className="flex-1" style={{ minHeight: 0 }}>{children}</div>
+    </div>
+  );
+}
+
 /**
- * 分时面板（2×3网格右侧三格）
- * 上：当日5分钟分时走势
- * 中：板块当天实时热度（成分股合成）
- * 下：板块7天热度折线
+ * 分时面板：桌面端主分时图占左侧两行，两个板块热度图在右侧上下排列；
+ * 小屏恢复为纵向三段，避免主图过窄。
+ * 价格、成交量和板块热度均来自后端数据库接口。
  */
 function IntradayPanel({ code }) {
   const intradayRef = useRef(null);
@@ -16,6 +27,15 @@ function IntradayPanel({ code }) {
   const chartRefs = useRef({});
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+
+  function cleanupAll() {
+    for (const key of ['intraday', 'sectorToday', 'sector7d']) {
+      const c = chartRefs.current[key];
+      if (c?.chart) { try { c.chart.remove(); } catch { /* chart cleanup: ignore */ } }
+      if (c?.ro) c.ro.disconnect();
+    }
+    chartRefs.current = {};
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -34,24 +54,15 @@ function IntradayPanel({ code }) {
     return () => { cancelled = true; if (timer) clearInterval(timer); cleanupAll(); };
   }, [code]);
 
-  function cleanupAll() {
-    for (const key of ['intraday', 'sectorToday', 'sector7d']) {
-      const c = chartRefs.current[key];
-      if (c?.chart) { try { c.chart.remove(); } catch {} }
-      if (c?.ro) c.ro.disconnect();
-    }
-    chartRefs.current = {};
-  }
-
   function buildChart(container, opts) {
     const { timeFormat, timeScale: userTimeScale, labelMap, ...restOpts } = opts || {};
     const chart = createChart(container, {
       width: container.clientWidth,
       height: container.clientHeight || 120,
-      layout: { background: { color: 'transparent' }, textColor: '#9ca3af', fontSize: 9 },
-      grid: { vertLines: { color: 'rgba(255,255,255,0.03)' }, horzLines: { color: 'rgba(255,255,255,0.03)' } },
+      layout: { background: { color: 'transparent' }, textColor: '#7c8aa0', fontSize: 9 },
+      grid: { vertLines: { color: 'rgba(148,163,184,0.08)' }, horzLines: { color: 'rgba(148,163,184,0.10)' } },
       timeScale: {
-        borderColor: 'rgba(255,255,255,0.1)',
+        borderColor: 'rgba(148,163,184,0.24)',
         tickMarkFormatter: (time) => {
           // 虚拟时间轴模式：用 labelMap 反查真实 HH:MM
           if (labelMap) {
@@ -68,7 +79,7 @@ function IntradayPanel({ code }) {
         },
         ...userTimeScale,
       },
-      rightPriceScale: { borderColor: 'rgba(255,255,255,0.1)' },
+      rightPriceScale: { borderColor: 'rgba(148,163,184,0.24)' },
       crosshair: { mode: 1 },
       ...restOpts,
     });
@@ -97,7 +108,7 @@ function IntradayPanel({ code }) {
     });
 
     const { chart, ro } = buildChart(intradayRef.current, {
-      timeScale: { borderColor: 'rgba(255,255,255,0.1)', timeVisible: true, secondsVisible: false },
+      timeScale: { borderColor: 'rgba(148,163,184,0.24)', timeVisible: true, secondsVisible: false },
       labelMap,
     });
 
@@ -113,6 +124,16 @@ function IntradayPanel({ code }) {
       time: idx * 300, // 虚拟时间戳
       value: k.close,
     })));
+    if (sq?.yesterdayClose > 0) {
+      area.createPriceLine({
+        price: sq.yesterdayClose,
+        color: 'rgba(148,163,184,0.65)',
+        lineWidth: 1,
+        lineStyle: LineStyle.Dashed,
+        axisLabelVisible: true,
+        title: '昨收',
+      });
+    }
 
     const vol = chart.addSeries(HistogramSeries, {
       priceScaleId: 'vol', priceLineVisible: false, lastValueVisible: false,
@@ -136,7 +157,7 @@ function IntradayPanel({ code }) {
     if (old?.ro) old.ro.disconnect();
 
     const { chart, ro } = buildChart(sectorTodayRef.current, {
-      timeScale: { borderColor: 'rgba(255,255,255,0.1)', timeVisible: true, secondsVisible: false },
+      timeScale: { borderColor: 'rgba(148,163,184,0.24)', timeVisible: true, secondsVisible: false },
     });
 
     const series = data.sector_today_series;
@@ -162,9 +183,9 @@ function IntradayPanel({ code }) {
     if (old?.chart) { try { old.chart.remove(); } catch { /* chart cleanup: ignore */ } }
     if (old?.ro) old.ro.disconnect();
 
-	    const { chart, ro } = buildChart(sector7dRef.current, {
+    const { chart, ro } = buildChart(sector7dRef.current, {
       timeFormat: 'date',
-      timeScale: { borderColor: 'rgba(255,255,255,0.1)', timeVisible: false },
+      timeScale: { borderColor: 'rgba(148,163,184,0.24)', timeVisible: false },
     });
 
     const heatTrend = data.sector.heat_trend;
@@ -186,22 +207,11 @@ function IntradayPanel({ code }) {
   const sector = data?.sector;
   const todaySeries = data?.sector_today_series || [];
 
-  const ChartBox = ({ title, extra, children, className = '' }) => (
-    <div className={`rounded-lg border flex flex-col overflow-hidden ${className}`} style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)', minHeight: 0 }}>
-      <div className="text-[10px] font-bold px-2 pt-1.5 pb-0.5 flex-shrink-0 flex items-center justify-between" style={{ color: 'var(--text-secondary)' }}>
-        <span>{title}</span>
-        {extra && <span className="text-[10px] font-normal" style={{ color: 'var(--text-muted)' }}>{extra}</span>}
-      </div>
-      <div className="flex-1" style={{ minHeight: 0 }}>
-        {children}
-      </div>
-    </div>
-  );
-
   return (
-    <div className="grid gap-1.5 h-full" style={{ gridTemplateRows: '1fr 0.6fr 0.8fr' }}>
-      {/* 分时图（第1行） */}
+    <div className="grid gap-2 h-full grid-cols-1 grid-rows-[minmax(0,1.7fr)_minmax(0,1fr)_minmax(0,1fr)] md:grid-cols-[minmax(0,2fr)_minmax(160px,1fr)] md:grid-rows-2">
+      {/* 主分时图 */}
       <ChartBox
+        className="md:row-span-2"
         title="当日分时（5分钟）"
         extra={sq ? `${sq.name} ${sq.price.toFixed(2)} ${sq.changePct >= 0 ? '+' : ''}${sq.changePct}%` : ''}
       >
@@ -214,35 +224,34 @@ function IntradayPanel({ code }) {
         )}
       </ChartBox>
 
-      {/* 板块当天实时热度（第2行） */}
+      {/* 板块当天实时热度 */}
       <ChartBox
-        title={`板块当天热度 ${sector?.name || '—'}`}
-        extra={todaySeries.length > 0 ? `采样${todaySeries.length}次` : ''}
+        title={`当日热度 · ${sector?.name || '—'}`}
+        extra={todaySeries.length > 0 ? `${todaySeries.length}次采样` : ''}
       >
         {todaySeries.length >= 2 ? (
           <div ref={sectorTodayRef} className="w-full h-full" />
         ) : todaySeries.length === 1 ? (
-          <div className="h-full flex flex-col items-center justify-center gap-1">
-            <span className="text-2xl font-bold" style={{ color: todaySeries[0].value >= 0 ? '#ef4444' : '#22c55e' }}>
+          <div className="h-full flex flex-col items-center justify-center gap-0.5">
+            <span className="text-lg font-bold" style={{ color: todaySeries[0].value >= 0 ? '#ef4444' : '#22c55e' }}>
               {todaySeries[0].value >= 0 ? '+' : ''}{todaySeries[0].value}%
             </span>
-            <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>板块成分股平均涨跌（实时）</span>
-            <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>更新时间 {todaySeries[0].time}</span>
+            <span className="text-[9px]" style={{ color: 'var(--text-muted)' }}>更新时间 {todaySeries[0].time}</span>
           </div>
         ) : (
-          <div className="h-full flex items-center justify-center text-[11px]" style={{ color: 'var(--text-muted)' }}>暂无板块当天数据</div>
+          <div className="h-full flex items-center justify-center text-[10px]" style={{ color: 'var(--text-muted)' }}>暂无板块当日数据</div>
         )}
       </ChartBox>
 
-      {/* 板块7天热度（第3行） */}
+      {/* 板块7天热度 */}
       <ChartBox
-        title={`板块7天热度 ${sector?.name || '—'}`}
-        extra={sector?.latest_heat > 0 ? `热度${sector.latest_heat} ${sector.heat_trend === 'up' ? '↑' : sector.heat_trend === 'down' ? '↓' : '→'}` : ''}
+        title={`7日热度 · ${sector?.name || '—'}`}
+        extra={sector?.latest_heat > 0 ? `${sector.latest_heat} ${sector.heat_trend === 'up' ? '↑' : sector.heat_trend === 'down' ? '↓' : '→'}` : ''}
       >
         {sector?.heat_series?.length > 0 ? (
           <div ref={sector7dRef} className="w-full h-full" />
         ) : (
-          <div className="h-full flex items-center justify-center text-[11px]" style={{ color: 'var(--text-muted)' }}>无板块数据</div>
+          <div className="h-full flex items-center justify-center text-[10px]" style={{ color: 'var(--text-muted)' }}>无板块数据</div>
         )}
       </ChartBox>
     </div>

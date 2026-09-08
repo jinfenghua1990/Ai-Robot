@@ -22,7 +22,7 @@ from typing import Optional, List, Dict
 logger = logging.getLogger(__name__)
 from db.connection import get_db
 from db.session import get_db_session
-from api.watchlist._shared import get_quote, fetch_kline_cached
+from api.watchlist._shared import get_quote, fetch_kline_cached, normalize_ts_code
 from analyzers.strategy_engine import _find_sector_for_stock, _get_sector_trend
 from analyzers.buy_power import calc_buy_power_for_signal
 from analyzers.market_state import get_latest_state, compute_quality_from_features
@@ -48,8 +48,11 @@ def _get_lifecycle_stage(db, ts_code: str) -> Optional[str]:
     _lifecycle_cache[ts_code] = (stage, time.time())
     return stage
 
-def _get_lifecycle_map(db, ts_codes: List[str], trade_date: str = None) -> Dict[str, str]:
+def _get_lifecycle_map(db=None, ts_codes: List[str] = None, trade_date: str = None) -> Dict[str, str]:
     """批量查询多只股票的生命周期阶段（默认取最新交易日），用于批量场景"""
+    if db is None:
+        with get_db_session() as db:
+            return _get_lifecycle_map(db, ts_codes, trade_date)
     if not ts_codes:
         return {}
     from db.models import LeaderLifecycle
@@ -68,6 +71,65 @@ def _get_lifecycle_map(db, ts_codes: List[str], trade_date: str = None) -> Dict[
             LeaderLifecycle.ts_code.in_(ts_codes),
         ).all()
     return {r.ts_code: r.stage for r in rows}
+
+
+def _apply_database_signal_factors(db, code: str, positive_factors: List[dict], negative_factors: List[dict]) -> None:
+    """补充只读数据库因子；调用方保证会话只在本段短暂存在。"""
+    from datetime import date as d
+    from sqlalchemy import text
+
+    today_str = d.today().isoformat()
+    ts_code = normalize_ts_code(code)
+    is_suspended = False
+    try:
+        suspended = db.execute(text(
+            "SELECT 1 FROM suspend_stock_daily WHERE ts_code=:code AND trade_date=:d"
+        ), {'code': ts_code, 'd': today_str}).scalar()
+        is_suspended = bool(suspended)
+        if is_suspended:
+            positive_factors.clear()
+            negative_factors[:] = [{'factor': '停牌', 'detail': '当日停牌，无交易', 'weight': -3}]
+    except Exception:
+        logger.debug("signal_builder: suspend factor failed", exc_info=False)
+
+    if is_suspended:
+        return
+
+    try:
+        margin_rows = db.execute(text("""
+            SELECT trade_date, rzye, rqye, rzmre
+            FROM stock_margin_data
+            WHERE ts_code=:code ORDER BY trade_date DESC LIMIT 3
+        """), {'code': ts_code}).fetchall()
+        if len(margin_rows) >= 2:
+            rzye_0 = float(margin_rows[0][1] or 0)
+            rzye_1 = float(margin_rows[1][1] or 0)
+            if rzye_0 > 0 and rzye_1 > 0:
+                margin_chg = (rzye_0 - rzye_1) / rzye_1
+                if margin_chg > 0.02:
+                    positive_factors.append({'factor': '融资加仓', 'detail': f'融资余额日增 {margin_chg*100:.1f}%', 'weight': 2})
+                elif margin_chg > 0.005:
+                    positive_factors.append({'factor': '融资微增', 'detail': f'融资余额日增 {margin_chg*100:.1f}%', 'weight': 1})
+                elif margin_chg < -0.02:
+                    negative_factors.append({'factor': '融资减仓', 'detail': f'融资余额日降 {abs(margin_chg)*100:.1f}%', 'weight': -2})
+                elif margin_chg < -0.005:
+                    negative_factors.append({'factor': '融资微降', 'detail': f'融资余额日降 {abs(margin_chg)*100:.1f}%', 'weight': -1})
+    except Exception:
+        logger.debug("signal_builder: margin factor failed", exc_info=False)
+
+    try:
+        wave = db.execute(text("""
+            SELECT signal, confidence, reason FROM stock_wave_signals
+            WHERE code=:c AND signal_date=:d ORDER BY id DESC LIMIT 1
+        """), {'c': code.replace('.SH', '').replace('.SZ', ''), 'd': today_str}).first()
+        if wave:
+            wsig, wconf, wreason = wave
+            if wsig == 'buy' and float(wconf or 0) > 50:
+                positive_factors.append({'factor': '波浪买入', 'detail': f'波浪信号: {str(wreason)[:30]}', 'weight': 1})
+            elif wsig == 'sell' and float(wconf or 0) > 50:
+                negative_factors.append({'factor': '波浪卖出', 'detail': f'波浪信号: {str(wreason)[:30]}', 'weight': -1})
+    except Exception:
+        logger.debug("signal_builder: wave factor failed", exc_info=False)
 
 
 # ============================================================
@@ -159,7 +221,7 @@ async def build_signal_for_stock(
     code: str,
     name: str,
     sector_name: str,
-    db,
+    db=None,
     *,
     stage: Optional[str] = None,
     strength: Optional[float] = None,
@@ -188,14 +250,20 @@ async def build_signal_for_stock(
     if isinstance(klines, Exception):
         klines = []
 
-    # 查找板块 + 板块趋势
-    ts_code = f"{code}.SH" if code[0] in ('6', '9') else f"{code}.SZ"
-    sector = _find_sector_for_stock(db, ts_code) or sector_name
-    sector_trend = _get_sector_trend(db, sector, 7) if sector else {"sector": "", "available": False}
-
-    # 自动查 LeaderLifecycle 真实生命周期阶段（调用方未传时 fallback 查询）
-    if lifecycle_stage is None:
-        lifecycle_stage = _get_lifecycle_stage(db, ts_code)
+    # 查找板块 + 板块趋势。行情/K 线请求完成后再使用短会话，
+    # 避免异步等待期间占住数据库事务。
+    ts_code = normalize_ts_code(code)
+    if db is None:
+        with get_db_session() as signal_db:
+            sector = _find_sector_for_stock(signal_db, ts_code) or sector_name
+            sector_trend = _get_sector_trend(signal_db, sector, 7) if sector else {"sector": "", "available": False}
+            if lifecycle_stage is None:
+                lifecycle_stage = _get_lifecycle_stage(signal_db, ts_code)
+    else:
+        sector = _find_sector_for_stock(db, ts_code) or sector_name
+        sector_trend = _get_sector_trend(db, sector, 7) if sector else {"sector": "", "available": False}
+        if lifecycle_stage is None:
+            lifecycle_stage = _get_lifecycle_stage(db, ts_code)
 
     # 获取 BS 信号 + 技术指标（KDJ/MACD/支撑/阻力）
     bs_signal = None
@@ -297,63 +365,12 @@ async def build_signal_for_stock(
     if extra_negative:
         negative_factors.extend(extra_negative)
 
-    # === 停牌检查 ===
-    is_suspended = False
-    try:
-        from sqlalchemy import text
-        from datetime import date as d
-        today_str = d.today().isoformat()
-        _s_ts_code = f"{code}.SH" if code[0] in ('6', '9') else f"{code}.SZ"
-        sus = db.execute(text(
-            "SELECT 1 FROM suspend_stock_daily WHERE ts_code=:code AND trade_date=:d"
-        ), {'code': _s_ts_code, 'd': today_str}).scalar()
-        is_suspended = bool(sus)
-        if is_suspended:
-            positive_factors = []
-            negative_factors = [{'factor': '停牌', 'detail': '当日停牌，无交易', 'weight': -3}]
-    except Exception:
-        logger.debug("signal_builder: factor init fallback", exc_info=False)
-
-    # === 融资融券因子 ===
-    if not is_suspended:
-        try:
-            margin_rows = db.execute(text("""
-                SELECT trade_date, rzye, rqye, rzmre
-                FROM stock_margin_data
-                WHERE ts_code=:code ORDER BY trade_date DESC LIMIT 3
-            """), {'code': _s_ts_code}).fetchall()
-            if len(margin_rows) >= 2:
-                rzye_0 = float(margin_rows[0][1] or 0)
-                rzye_1 = float(margin_rows[1][1] or 0)
-                if rzye_0 > 0 and rzye_1 > 0:
-                    margin_chg = (rzye_0 - rzye_1) / rzye_1
-                    if margin_chg > 0.02:
-                        positive_factors.append({'factor': '融资加仓', 'detail': f'融资余额日增 {margin_chg*100:.1f}%', 'weight': 2})
-                    elif margin_chg > 0.005:
-                        positive_factors.append({'factor': '融资微增', 'detail': f'融资余额日增 {margin_chg*100:.1f}%', 'weight': 1})
-                    elif margin_chg < -0.02:
-                        negative_factors.append({'factor': '融资减仓', 'detail': f'融资余额日降 {abs(margin_chg)*100:.1f}%', 'weight': -2})
-                    elif margin_chg < -0.005:
-                        negative_factors.append({'factor': '融资微降', 'detail': f'融资余额日降 {abs(margin_chg)*100:.1f}%', 'weight': -1})
-        except Exception:
-            logger.debug("signal_builder: margin factor failed", exc_info=False)
-
-    # === 波浪信号交叉验证 ===
-    if not is_suspended:
-        try:
-            pure_code = code.replace('.SH','').replace('.SZ','')
-            wave = db.execute(text("""
-                SELECT signal, confidence, reason FROM stock_wave_signals
-                WHERE code=:c AND signal_date=:d ORDER BY id DESC LIMIT 1
-            """), {'c': pure_code, 'd': d.today().isoformat()}).first()
-            if wave:
-                wsig, wconf, wreason = wave
-                if wsig == 'buy' and float(wconf or 0) > 50:
-                    positive_factors.append({'factor': '波浪买入', 'detail': f'波浪信号: {str(wreason)[:30]}', 'weight': 1})
-                elif wsig == 'sell' and float(wconf or 0) > 50:
-                    negative_factors.append({'factor': '波浪卖出', 'detail': f'波浪信号: {str(wreason)[:30]}', 'weight': -1})
-        except Exception:
-            logger.debug("signal_builder: margin factor failed", exc_info=False)
+    # 后续因子查询也使用短会话；兼容已有调用方传入的 session。
+    if db is None:
+        with get_db_session() as factor_db:
+            _apply_database_signal_factors(factor_db, code, positive_factors, negative_factors)
+    else:
+        _apply_database_signal_factors(db, code, positive_factors, negative_factors)
 
     score = len(positive_factors) - len(negative_factors)
     reasons.append(f'综合评分: {"看多" if score > 0 else "看空" if score < 0 else "中性"} → {signal_label}')
@@ -419,7 +436,7 @@ async def build_signal_for_stock(
 
 async def build_signals_batch(
     stocks: List[dict],
-    db,
+    db=None,
     *,
     code_key: str = 'code',
     name_key: str = 'name',
@@ -438,12 +455,20 @@ async def build_signals_batch(
         stage_key/strength_key/change_key/days_key: 可选的策略维度字段名
         batch_size: 每批并发数
     """
+    if db is None:
+        with get_db_session() as db:
+            return await build_signals_batch(
+                stocks, db,
+                code_key=code_key, name_key=name_key, sector_key=sector_key,
+                stage_key=stage_key, strength_key=strength_key,
+                change_key=change_key, days_key=days_key, batch_size=batch_size,
+            )
     # 收集所有 ts_code，批量查 LeaderLifecycle 真实生命周期阶段
     _all_ts_codes = []
     for s in stocks:
         code = s.get(code_key) or s.get('ts_code') or s.get('secCode') or ''
         if '.' not in code and len(code) == 6:
-            code = f"{code}.SH" if code[0] in ('6', '9') else f"{code}.SZ"
+            code = normalize_ts_code(code)
         if '.' in code:
             _all_ts_codes.append(code)
     lifecycle_map = _get_lifecycle_map(db, _all_ts_codes)
@@ -459,7 +484,7 @@ async def build_signals_batch(
                 code = code.split('.')[0]
             if not code or len(code) != 6:
                 continue
-            ts_code = f"{code}.SH" if code[0] in ('6', '9') else f"{code}.SZ"
+            ts_code = normalize_ts_code(code)
             name = s.get(name_key) or s.get('secName') or ''
             sector = s.get(sector_key) or ''
             kwargs = {}
@@ -506,7 +531,7 @@ async def build_signal_from_precomputed(
 
     # 自动查 LeaderLifecycle 真实生命周期阶段（调用方未传时 fallback 查询）
     if lifecycle_stage is None:
-        _ts_code = f"{code}.SH" if code[0] in ('6', '9') else f"{code}.SZ"
+        _ts_code = normalize_ts_code(code)
         if db is not None:
             lifecycle_stage = _get_lifecycle_stage(db, _ts_code)
         else:
@@ -582,63 +607,11 @@ async def build_signal_from_precomputed(
     if extra_negative:
         negative_factors.extend(extra_negative)
 
-    # === 停牌检查 ===
-    is_suspended = False
-    try:
-        from sqlalchemy import text
-        from datetime import date as d
-        today_str = d.today().isoformat()
-        _s_ts_code = f"{code}.SH" if code[0] in ('6', '9') else f"{code}.SZ"
-        sus = db.execute(text(
-            "SELECT 1 FROM suspend_stock_daily WHERE ts_code=:code AND trade_date=:d"
-        ), {'code': _s_ts_code, 'd': today_str}).scalar()
-        is_suspended = bool(sus)
-        if is_suspended:
-            positive_factors = []
-            negative_factors = [{'factor': '停牌', 'detail': '当日停牌，无交易', 'weight': -3}]
-    except Exception:
-        logger.debug("signal_builder: factor init fallback", exc_info=False)
-
-    # === 融资融券因子 ===
-    if not is_suspended:
-        try:
-            margin_rows = db.execute(text("""
-                SELECT trade_date, rzye, rqye, rzmre
-                FROM stock_margin_data
-                WHERE ts_code=:code ORDER BY trade_date DESC LIMIT 3
-            """), {'code': _s_ts_code}).fetchall()
-            if len(margin_rows) >= 2:
-                rzye_0 = float(margin_rows[0][1] or 0)
-                rzye_1 = float(margin_rows[1][1] or 0)
-                if rzye_0 > 0 and rzye_1 > 0:
-                    margin_chg = (rzye_0 - rzye_1) / rzye_1
-                    if margin_chg > 0.02:
-                        positive_factors.append({'factor': '融资加仓', 'detail': f'融资余额日增 {margin_chg*100:.1f}%', 'weight': 2})
-                    elif margin_chg > 0.005:
-                        positive_factors.append({'factor': '融资微增', 'detail': f'融资余额日增 {margin_chg*100:.1f}%', 'weight': 1})
-                    elif margin_chg < -0.02:
-                        negative_factors.append({'factor': '融资减仓', 'detail': f'融资余额日降 {abs(margin_chg)*100:.1f}%', 'weight': -2})
-                    elif margin_chg < -0.005:
-                        negative_factors.append({'factor': '融资微降', 'detail': f'融资余额日降 {abs(margin_chg)*100:.1f}%', 'weight': -1})
-        except Exception:
-            logger.debug("signal_builder: margin factor failed", exc_info=False)
-
-    # === 波浪信号交叉验证 ===
-    if not is_suspended:
-        try:
-            pure_code = code.replace('.SH','').replace('.SZ','')
-            wave = db.execute(text("""
-                SELECT signal, confidence, reason FROM stock_wave_signals
-                WHERE code=:c AND signal_date=:d ORDER BY id DESC LIMIT 1
-            """), {'c': pure_code, 'd': d.today().isoformat()}).first()
-            if wave:
-                wsig, wconf, wreason = wave
-                if wsig == 'buy' and float(wconf or 0) > 50:
-                    positive_factors.append({'factor': '波浪买入', 'detail': f'波浪信号: {str(wreason)[:30]}', 'weight': 1})
-                elif wsig == 'sell' and float(wconf or 0) > 50:
-                    negative_factors.append({'factor': '波浪卖出', 'detail': f'波浪信号: {str(wreason)[:30]}', 'weight': -1})
-        except Exception:
-            logger.debug("signal_builder: margin factor failed", exc_info=False)
+    if db is None:
+        with get_db_session() as factor_db:
+            _apply_database_signal_factors(factor_db, code, positive_factors, negative_factors)
+    else:
+        _apply_database_signal_factors(db, code, positive_factors, negative_factors)
 
     score = len(positive_factors) - len(negative_factors)
     reasons.append(f'综合评分: {"看多" if score > 0 else "看空" if score < 0 else "中性"} → {signal_label}')
@@ -689,6 +662,9 @@ async def build_signals_from_strategy_result(
     返回 enriched signals 列表；无预计算数据时返回 None（调用方 fallback 现场计算）。
     跳过 K线/BS/板块/市场状态的现场计算，仅拉实时 quote（30s缓存）。
     """
+    if db is None:
+        with get_db_session() as db:
+            return await build_signals_from_strategy_result(db, strategy_key, trade_date, stage=stage)
     from db.models import StrategyResult, WatchlistSignalDaily
     from sqlalchemy import func
 
@@ -784,7 +760,7 @@ async def build_signals_from_strategy_result(
         enriched.append(r)
 
     # 补充自选股个股模块字段（moneyFlow/hitTags/actionHint），让 SignalCard 显示完整信息
-    await _enrich_signals_with_watchlist_extras(db, enriched)
+    await _enrich_signals_with_watchlist_extras(enriched)
     return enriched
 
 
@@ -794,7 +770,7 @@ _enrich_extras_cache = BoundedDict(maxsize=50)  # key: frozenset(codes) -> (time
 _ENRICH_EXTRAS_CACHE_TTL = 120  # 2 分钟
 
 
-async def _enrich_signals_with_watchlist_extras(db, signals: List[dict]) -> None:
+async def _enrich_signals_with_watchlist_extras(signals: List[dict]) -> None:
     """为 signal 列表批量补充自选股个股模块的 3 个字段（原地修改）：
     - moneyFlow: 4 档资金流 + 1/2/3/4/5 日累计（盘后数据）
     - hitTags:   7 大命中标签（yuzi/strategy/trend/capital/popularity/support/accumulation）
@@ -819,24 +795,26 @@ async def _enrich_signals_with_watchlist_extras(db, signals: List[dict]) -> None
         moneyflow_map, hit_tags_map = cached[1], cached[2]
     else:
         # 批量拉资金流 + 命中标签（11+ 次 DB 查询，首次 6-9s）
-        moneyflow_map = _batch_moneyflow_map(db, stock_codes)
+        with get_db_session() as extras_db:
+            moneyflow_map = _batch_moneyflow_map(extras_db, stock_codes)
         sectors_map = {s.get('secCode'): s.get('sector', '') for s in signals}
-        hit_tags_map = _batch_hit_tags(db, stock_codes, sectors_map)
+        hit_tags_map = _batch_hit_tags(stock_codes, sectors_map)
         _enrich_extras_cache[cache_key] = (now, moneyflow_map, hit_tags_map)
 
     for s in signals:
         code = s.get('secCode')
         if not code or len(code) != 6:
             continue
-        ts_code = f"{code}.SH" if code[0] in ('6', '9') else f"{code}.SZ"
+        ts_code = normalize_ts_code(code)
         # moneyFlow（缺失时给空壳，前端显示"暂无盘后数据"）；浅拷贝避免污染缓存
         if 'moneyFlow' not in s or not s.get('moneyFlow'):
             mf = moneyflow_map.get(ts_code)
             s['moneyFlow'] = dict(mf) if mf else {
-                'available': False, 'main_net': 0, 'super_large': 0,
-                'large': 0, 'small': 0, 'tiny': 0, 'turnover_rate': 0,
-                'inflow_1d': 0, 'inflow_2d': 0, 'inflow_3d': 0,
-                'inflow_4d': 0, 'inflow_5d': 0, 'flow_continuity': 0,
+                'available': False, 'status': 'MISSING', 'source': 'database',
+                'main_net': None, 'super_large': None,
+                'large': None, 'small': None, 'tiny': None, 'turnover_rate': None,
+                'inflow_1d': None, 'inflow_2d': None, 'inflow_3d': None,
+                'inflow_4d': None, 'inflow_5d': None, 'flow_continuity': None,
             }
         # hitTags + actionHint；浅拷贝 list 避免污染缓存
         hit_info = hit_tags_map.get(ts_code, {})

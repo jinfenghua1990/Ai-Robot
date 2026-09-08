@@ -1,16 +1,17 @@
-import React from 'react';
-import { UP_COLOR, DOWN_COLOR } from '../../utils/colors';
-import { TRADING_SESSIONS, TOTAL_TRADING_MINUTES, SESSION_LABELS, timeStrToMinutes, minuteToX, scoreColor } from './SignalCardUtils';
+import 'react';
+
+import {  timeStrToMinutes, minuteToX } from './SignalCardUtils';
+import { toFiniteNumber } from '../../utils/format';
 
 export function IntradaySparkline({ data, showPriceLabel = true }) {
   if (!data || data.length < 2) return null;
   const W = 240, H = 38, padY = 5;
-  const prices = data.map((d) => d.price).filter((v) => v != null);
+  const prices = data.map((d) => toFiniteNumber(d?.price)).filter((v) => v != null);
   if (prices.length < 2) return null;
   const min = Math.min(...prices), max = Math.max(...prices);
   const span = max - min || 1;
   const last = data[data.length - 1];
-  const up = (last.pct_chg ?? 0) >= 0;
+  const up = (toFiniteNumber(last?.pct_chg) ?? 0) >= 0;
   const stroke = up ? '#ef4444' : '#22c55e'; // 红涨绿跌
   // X 轴：按实际时间映射到固定交易时段位置
   const x = (d) => {
@@ -18,14 +19,17 @@ export function IntradaySparkline({ data, showPriceLabel = true }) {
     return m == null ? 0 : minuteToX(m, W);
   };
   const y = (p) => padY + (1 - (p - min) / span) * (H - 2 * padY);
-  const pts = data.map((d) => (d.price == null ? null : `${x(d).toFixed(1)},${y(d.price).toFixed(1)}`)).filter(Boolean);
+  const pts = data.map((d) => {
+    const price = toFiniteNumber(d?.price);
+    return price == null ? null : `${x(d).toFixed(1)},${y(price).toFixed(1)}`;
+  }).filter(Boolean);
   const line = pts.join(' ');
   // 面积从首个点开始（不是从 X=0 开始），让折线与面积对齐
   const firstX = pts.length > 0 ? pts[0].split(',')[0] : '0';
   const area = `${firstX},${H} ${line} ${W},${H}`;
   // 当前价格点位置（用于在 SVG 内部右上角标注价格涨幅）
-  const lastX = pts.length > 0 ? parseFloat(pts[pts.length - 1].split(',')[0]) : W;
-  const priceLabelX = lastX > W * 0.6 ? Math.max(2, lastX - 2) : Math.min(W - 50, lastX + 4);
+
+
   return (
     <div>
       <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} preserveAspectRatio="none" style={{ display: 'block' }}>
@@ -49,7 +53,7 @@ export function IntradaySparkline({ data, showPriceLabel = true }) {
       {showPriceLabel && (
         <div style={{ position: 'relative', width: '100%', height: '11px', fontSize: '9px', whiteSpace: 'nowrap' }}>
           <span className="font-bold" style={{ position: 'absolute', right: '0%', color: stroke }}>
-            {last.price?.toFixed(2)} {up ? '↑' : '↓'}{Math.abs(last.pct_chg ?? 0).toFixed(2)}%
+            {toFiniteNumber(last?.price)?.toFixed(2) ?? '--'} {up ? '↑' : '↓'}{Math.abs(toFiniteNumber(last?.pct_chg) ?? 0).toFixed(2)}%
           </span>
         </div>
       )}
@@ -65,10 +69,10 @@ export function BSRangeSparkline({ klines, bsInt }) {
   if (!klines || klines.length < 1) return null;
   // viewBox 与实际像素 1:1，避免 preserveAspectRatio="none" 拉伸导致文字扭曲
   const W = 240, H = 48, padY = 10, padX = 8;
-  const closes = klines.map((k) => k.close).filter((v) => v != null);
+  const closes = klines.map((k) => toFiniteNumber(k?.close)).filter((v) => v != null);
   if (closes.length < 1) return null;
-  const sp = bsInt?.start_price;
-  const ep = bsInt?.end_price;
+  const sp = toFiniteNumber(bsInt?.start_price);
+  const ep = toFiniteNumber(bsInt?.end_price);
   // y 轴范围：纳入 B 起点 / S 终点价格 + 10% padding，确保标记在可视区内
   const allVals = [...closes];
   if (sp != null) allVals.push(sp);
@@ -85,9 +89,12 @@ export function BSRangeSparkline({ klines, bsInt }) {
   const y = (p) => padY + (1 - (p - min) / span) * (H - 2 * padY);
   const last = klines[n - 1];
   const first = klines[0];
-  const up = (last.close ?? 0) >= (first.close ?? 0);
+  const up = (toFiniteNumber(last?.close) ?? 0) >= (toFiniteNumber(first?.close) ?? 0);
   const stroke = up ? '#ef4444' : '#22c55e';
-  const pts = klines.map((d, i) => (d.close == null ? null : `${x(i).toFixed(1)},${y(d.close).toFixed(1)}`)).filter(Boolean);
+  const pts = klines.map((d, i) => {
+    const close = toFiniteNumber(d?.close);
+    return close == null ? null : `${x(i).toFixed(1)},${y(close).toFixed(1)}`;
+  }).filter(Boolean);
   const line = pts.join(' ');
   const area = `${padX},${H} ${line} ${W - padX},${H}`;
   const sd = bsInt?.start_date || '';

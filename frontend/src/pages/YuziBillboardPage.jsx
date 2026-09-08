@@ -18,7 +18,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { apiFetch } from '../utils/request';
-import { UP_COLOR, DOWN_COLOR, UP_DARK, DOWN_DARK, BULLISH_COLOR, BEARISH_COLOR, upBg, downBg } from '../utils/colors';
+import { UP_COLOR, DOWN_COLOR, UP_DARK, upBg, downBg } from '../utils/colors';
 import SinaLink from '../components/SinaLink';
 import StockActionButtons from '../components/trading/StockActionButtons';
 

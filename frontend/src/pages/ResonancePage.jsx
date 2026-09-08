@@ -7,6 +7,8 @@ import { apiFetch } from '../utils/request';
 import { UP_COLOR, DOWN_COLOR, UP_DARK, DOWN_DARK } from '../utils/colors';
 import { stripCode } from '../utils/format';
 import SinaLink from '../components/SinaLink';
+import { useViewMode } from '../hooks/useViewMode';
+import StockListContainer from '../components/StockListContainer';
 
 const RESONANCE_COLORS = {
   2: '#3b82f6',
@@ -218,12 +220,44 @@ function TrackerCard({ row, onExit, acting }) {
   );
 }
 
+/** 把共振 API 的股票对象转成 WatchlistTable / StrategySignalCard 需要的 signal 结构 */
+function buildResonanceSignal(stock) {
+  const lp = stock.latest_price;
+  const pc = stock.pct_chg;
+  const lpNum = lp == null ? null : Number(lp);
+  const pcNum = pc == null ? null : Number(pc);
+  return {
+    secCode: stock.ts_code,
+    secName: stock.name,
+    code: stock.ts_code,
+    signalLabel: `${stock.resonance_count}共振`,
+    signalColor: getResonanceColor(stock.resonance_count),
+    score: stock.total_score,
+    strategies: stock.strategies,
+    sector: stock.sector,
+    latest_price: lp,
+    pct_chg: pc,
+    return_20d: stock.return_20d,
+    // 注入 position：WatchlistTable 行1 的「当日 X% / 现价」读这里
+    position: {
+      price: lpNum,
+      dayProfitPct: pcNum,
+      avg_cost: null,
+      count: 0,
+      profitPct: null,
+    },
+    // 注入 quote：实时图表与 sparkline 读这里
+    quote: lpNum != null ? { price: lpNum, changePct: pcNum } : null,
+  };
+}
+
 export default function ResonancePage() {
   const { selectedDate, setSelectedDate, changeDate } = useDatePicker();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [minCount, setMinCount] = useState(1);
+  const [viewMode, setViewMode] = useViewMode('resonance', 'card');
   // 重试触发器：递增以重新触发 useEffect
   const [retryNonce, setRetryNonce] = useState(0);
   // 预取的 stock-dashboard 数据：{[ts_code]: dash}，供每张 SignalCard 直接消费，
@@ -254,7 +288,7 @@ export default function ResonancePage() {
     try {
       const { ok, data } = await apiFetch('/api/strategy-track/history?limit=100&offset=0');
       if (ok) setTrackHistory(data);
-    } catch (e) {}
+    } catch {}
   }, []);
 
   useEffect(() => {
@@ -309,7 +343,7 @@ export default function ResonancePage() {
         method: 'POST', body: JSON.stringify({ tracker_id: trackerId, reason: 'MANUAL' })
       });
       if (ok) { loadTrackActive(); if (trackTab==='history') loadTrackHistory(); }
-    } catch (e) {}
+    } catch {}
     finally { setTrackActing(false); }
   }, [loadTrackActive, loadTrackHistory, trackTab]);
 
@@ -381,7 +415,7 @@ export default function ResonancePage() {
               return next;
             });
           }
-        } catch (e) {
+        } catch {
           // 批量失败静默：每张卡片仍有自己的单只请求兜底
           if (cancelled) return;
         }
@@ -404,6 +438,9 @@ export default function ResonancePage() {
     });
     return Object.entries(dist).sort((a, b) => Number(a[0]) - Number(b[0]));
   }, [data]);
+
+  // 表格视图数据：把共振股票映射为 WatchlistTable 需要的 signal 结构
+  const tableSignals = useMemo(() => (data?.stocks || []).map(buildResonanceSignal), [data?.stocks]);
 
   if (!selectedDate) {
     return (
@@ -493,15 +530,29 @@ export default function ResonancePage() {
       )}
 
       {/* 股票列表 */}
-      <div className="rounded-xl border p-3" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
-        {loading ? (
-          <div className="flex items-center justify-center h-64 gap-2">
-            <div className="w-5 h-5 border-2 rounded-full animate-spin" style={{ borderColor: '#a855f7', borderTopColor: 'transparent' }} />
-            <span className="text-xs" style={{ color: 'var(--text-muted)' }}>加载共振数据...</span>
-          </div>
-        ) : data?.stocks?.length > 0 ? (
+      <StockListContainer
+        viewModeKey="resonance"
+        viewMode={viewMode}
+        onViewModeChange={setViewMode}
+        loading={loading}
+        items={data?.stocks || []}
+        tableItems={tableSignals}
+        groupBy="sector"
+        tableProps={{
+          selectedCode: null,
+          onSelect: () => {},
+          onRemove: () => {},
+          onSell: null,
+          onRefresh: () => setRetryNonce(n => n + 1),
+          onAnalyze: () => {},
+          batchMode: false,
+          selectedIds: [],
+          onToggleCheck: () => {},
+          strategyPicks: [],
+        }}
+        cardRenderer={(stocks) => (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-            {data.stocks.map((stock, idx) => (
+            {stocks.map((stock) => (
               <div key={stock.ts_code} style={{ contentVisibility: 'auto', containIntrinsicSize: '360px' }}>
                 <CardSafetyBoundary>
                   <ResonanceSignalItem
@@ -513,12 +564,11 @@ export default function ResonancePage() {
               </div>
             ))}
           </div>
-        ) : (
-          <div className="flex items-center justify-center h-64 text-sm" style={{ color: 'var(--text-muted)' }}>
-            {data ? '当日无共振股票，降低筛选阈值试试（如切换到"全部"或"2+"）' : '暂无数据'}
-          </div>
         )}
-      </div>
+        emptyText={data ? '当日无共振股票，降低筛选阈值试试（如切换到"全部"或"2+"）' : '暂无数据'}
+        loadingText="加载共振数据..."
+        onRetry={() => setRetryNonce(n => n + 1)}
+      />
 
       {/* === 20天跟踪模块 (完整复制自 StrategyTrackPage) === */}
       <div className="border-t pt-3 mt-4" style={{ borderColor: 'var(--border-color)' }}>
@@ -579,6 +629,12 @@ export default function ResonancePage() {
             历史 ({(trackHistory?.rows?.length) ?? 0})
           </button>
         </div>
+
+        {trackError && (
+          <div className="mb-2 rounded-md border px-3 py-2 text-xs" style={{ borderColor: 'rgba(239,68,68,0.35)', background: 'rgba(239,68,68,0.08)', color: '#ef4444' }}>
+            {trackError}
+          </div>
+        )}
 
         {/* 跟踪中 - 卡片网格 */}
         {trackTab === 'active' && (
@@ -667,35 +723,7 @@ export default function ResonancePage() {
  *   （避免 100+ 卡片同时打单只接口 → 后端被打挂）。
  */
 const ResonanceSignalItem = ({ stock, prefetchedDash = null, awaitParentPrefetch = false }) => {
-  const signal = useMemo(() => {
-    const lp = stock.latest_price;
-    const pc = stock.pct_chg;
-    const lpNum = lp == null ? null : Number(lp);
-    const pcNum = pc == null ? null : Number(pc);
-    return {
-      secCode: stock.ts_code,
-      secName: stock.name,
-      code: stock.ts_code,
-      signalLabel: `${stock.resonance_count}共振`,
-      signalColor: getResonanceColor(stock.resonance_count),
-      score: stock.total_score,
-      strategies: stock.strategies,
-      sector: stock.sector,
-      latest_price: lp,
-      pct_chg: pc,
-      return_20d: stock.return_20d,
-      // 注入 position：SignalCardTuned 行1 的「当日 X% / 现价」读这里
-      position: {
-        price: lpNum,
-        dayProfitPct: pcNum,
-        avg_cost: null,
-        count: 0,
-        profitPct: null,
-      },
-      // 注入 quote：实时图表与 sparkline 读这里
-      quote: lpNum != null ? { price: lpNum, changePct: pcNum } : null,
-    };
-  }, [stock]);
+  const signal = useMemo(() => buildResonanceSignal(stock), [stock]);
 
   return (
     <StrategySignalCard

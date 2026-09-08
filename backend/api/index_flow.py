@@ -12,6 +12,7 @@
 - 市场指数（上证综指/深证成指/创业板指/中小板指/科创50）：按代码前缀聚合
 """
 import time
+import concurrent.futures
 import json
 import logging
 import asyncio
@@ -24,7 +25,7 @@ from sqlalchemy import func, and_, or_
 
 from db.session import get_db_session
 from utils.cache import BoundedDict
-from db.models import StockFlow
+from db.models import SectorFlow, StockFlow
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -202,6 +203,8 @@ _constituent_cache = BoundedDict(maxsize=50)  # ts_code -> {'members': [...], 't
 _RANK_CACHE_TTL = 300  # 5 分钟
 _HISTORY_CACHE_TTL = 300
 _CONSTITUENT_CACHE_TTL = 86400  # 成分股日频更新，缓存 1 天
+_REMOTE_CONSTITUENT_TIMEOUT = 5
+_REMOTE_RANK_TIMEOUT = 8
 
 
 # ============================================================
@@ -221,35 +224,63 @@ def _get_index_constituents(ts_code: str, index_type: str) -> list:
         return cached['members']
 
     raw_code = ts_code.split('.')[0]
-    members = []
-    try:
+
+    def _fetch_codes():
         if index_type == 'cni':
             df = ak.index_detail_cni(symbol=raw_code)
-            codes = df['样本代码'].astype(str).str.zfill(6).tolist()
-        elif index_type == 'csi':
+            return df['样本代码'].astype(str).str.zfill(6).tolist()
+        if index_type == 'csi':
             df = ak.index_stock_cons_weight_csindex(symbol=raw_code)
-            codes = df['成分券代码'].astype(str).str.zfill(6).tolist()
+            return df['成分券代码'].astype(str).str.zfill(6).tolist()
+        return []
+
+    try:
+        # AkShare 的部分成分股接口没有超时参数。在线程池中加硬超时，
+        # 保证单个慢源不能拖住 /api/index-flow/rank 或占用数据库连接。
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        future = executor.submit(_fetch_codes)
+        try:
+            codes = future.result(timeout=_REMOTE_CONSTITUENT_TIMEOUT)
+        except concurrent.futures.TimeoutError:
+            future.cancel()
+            executor.shutdown(wait=False, cancel_futures=True)
+            logger.warning('[index_flow] 获取 %s 成分股超时，跳过本轮远程源', ts_code)
+            return []
         else:
-            codes = []
-        for c in codes:
-            if c.startswith('6') or c.startswith('8') or c.startswith('9'):
-                members.append(f'{c}.SH')
-            else:
-                members.append(f'{c}.SZ')
+            executor.shutdown(wait=True)
     except Exception as e:
         logger.warning(f'[index_flow] 获取 {ts_code} 成分股失败: {e}')
         return []
+
+    members = []
+    for c in codes:
+        if c.startswith('6') or c.startswith('8') or c.startswith('9'):
+            members.append(f'{c}.SH')
+        else:
+            members.append(f'{c}.SZ')
 
     _constituent_cache[cache_key] = {'members': members, 'ts': time.time()}
     return members
 
 
-def _build_member_filter(idx_def: dict):
-    """根据指数定义构建成员过滤条件（SQLAlchemy expression）"""
+def _resolve_index_members(idx_def: dict, allow_remote_constituents: bool = True) -> list:
+    """解析指数成分股；远程拉取必须在数据库会话之外完成。"""
     members = idx_def.get('members')
-    # 行业主题指数：动态获取成分股
     if not members and idx_def.get('type') in ('cni', 'csi'):
-        members = _get_index_constituents(idx_def['ts_code'], idx_def['type'])
+        if not allow_remote_constituents:
+            cache_key = f'{idx_def["ts_code"]}:{idx_def["type"]}'
+            cached = _constituent_cache.get(cache_key)
+            if not cached or time.time() - cached['ts'] >= _CONSTITUENT_CACHE_TTL:
+                return []
+            members = cached['members']
+        else:
+            members = _get_index_constituents(idx_def['ts_code'], idx_def['type'])
+    return members or []
+
+
+def _build_member_filter(idx_def: dict, members: list | None = None):
+    """根据已解析的指数成分股构建数据库过滤条件。"""
+    members = idx_def.get('members') if members is None else members
     if members:
         return StockFlow.ts_code.in_(members)
     elif idx_def.get('prefix'):
@@ -261,13 +292,18 @@ def _build_member_filter(idx_def: dict):
     return None
 
 
-def _aggregate_index_from_db(idx_def: dict, db, latest_n_days: int = 22) -> dict:
+def _aggregate_index_from_db(
+    idx_def: dict,
+    db,
+    latest_n_days: int = 22,
+    members: list | None = None,
+) -> dict:
     """从 stock_flow 表聚合单个指数最近 N 天的资金流向
 
     返回：{ts_code, name, dates: [...], main_net: [...], cumulative: [...],
            inflow_1d, inflow_3d, inflow_5d, inflow_10d, inflow_22d, close, pct_change, member_count}
     """
-    member_filter = _build_member_filter(idx_def)
+    member_filter = _build_member_filter(idx_def, members)
     if member_filter is None:
         return None
 
@@ -442,19 +478,26 @@ def _aggregate_flow_em(history: list, days: int) -> float:
 # API
 # ============================================================
 
-async def _build_rank_result(indices_list: list, cache: dict, source_label: str,
-                              force: int = 0) -> dict:
-    """通用排名构建：对给定指数列表按成分股聚合 stock_flow，缺数据时降级东方财富"""
-    if not force and cache['data'] and time.time() - cache['ts'] < _RANK_CACHE_TTL:
-        return cache['data']
-
-    # 主数据源：数据库聚合
+def _load_rank_db_results(
+    indices_list: list,
+    allow_remote_constituents: bool = False,
+) -> tuple[list, int]:
+    """从已有成分股缓存解析范围，再在短数据库会话内完成聚合。"""
     db_results = []
     db_hit_count = 0
+    resolved_members = [
+        _resolve_index_members(idx_def, allow_remote_constituents)
+        for idx_def in indices_list
+    ]
     with get_db_session() as db:
-        for idx_def in indices_list:
+        for idx_def, members in zip(indices_list, resolved_members):
             try:
-                agg = _aggregate_index_from_db(idx_def, db, latest_n_days=22)
+                agg = _aggregate_index_from_db(
+                    idx_def,
+                    db,
+                    latest_n_days=22,
+                    members=members,
+                )
                 if agg and agg.get('latest_date'):
                     db_results.append(agg)
                     db_hit_count += 1
@@ -463,6 +506,88 @@ async def _build_rank_result(indices_list: list, cache: dict, source_label: str,
             except Exception as e:
                 logger.warning(f'[index_flow] DB 聚合 {idx_def["ts_code"]} 失败: {e}')
                 db_results.append(None)
+    return db_results, db_hit_count
+
+
+def _load_sector_rank_db_results(latest_n_days: int = 22) -> list[dict]:
+    """用已落库行业资金流生成主题排名兜底。
+
+    主题指数成分股接口可能暂时不可用，但 sector_flow 是盘后已持久化的
+    同一资金数据，不能因为外部成分股服务失败而让页面空白。
+    """
+    with get_db_session() as db:
+        rows = db.query(
+            SectorFlow.sector, SectorFlow.trade_date,
+            func.sum(SectorFlow.net_flow).label("net_flow"),
+            func.avg(SectorFlow.avg_chg).label("avg_chg"),
+        ).filter(
+            SectorFlow.trade_date.in_(
+                db.query(SectorFlow.trade_date)
+                .distinct()
+                .order_by(SectorFlow.trade_date.desc())
+                .limit(latest_n_days)
+            )
+        ).group_by(SectorFlow.sector, SectorFlow.trade_date).order_by(
+            SectorFlow.trade_date.asc(), SectorFlow.sector.asc()
+        ).all()
+    if not rows:
+        return []
+    by_sector: dict[str, list] = {}
+    for row in rows:
+        by_sector.setdefault(row.sector, []).append(row)
+    latest_date = max(row.trade_date for row in rows)
+    result = []
+    for sector, history in by_sector.items():
+        history.sort(key=lambda row: row.trade_date)
+        values = [float(row.net_flow or 0) * 1e4 for row in history]
+        changes = [float(row.avg_chg or 0) for row in history]
+        def total(days: int) -> float:
+            return sum(values[-days:])
+        latest = history[-1]
+        result.append({
+            "ts_code": f"SECTOR:{sector}", "name": sector,
+            "close": None, "pct_change": float(latest.avg_chg or 0),
+            "inflow_1d": total(1), "inflow_3d": total(3),
+            "inflow_5d": total(5), "inflow_10d": total(10),
+            "inflow_22d": total(22), "abs_1d": abs(total(1)),
+            "member_count": 0, "source": "sector_flow",
+            "latest_date": latest_date.isoformat(),
+        })
+    return result
+
+
+async def _build_rank_result(indices_list: list, cache: dict, source_label: str,
+                              force: int = 0,
+                              allow_remote_constituents: bool = False,
+                              skip_external_fallback: bool = False) -> dict:
+    """用已入库资金流构建指数排名；查询路径不调用外部数据源。"""
+    if not force and cache['data'] and time.time() - cache['ts'] < _RANK_CACHE_TTL:
+        return cache['data']
+
+    # 主数据源：数据库聚合
+    db_results, db_hit_count = await asyncio.to_thread(
+        _load_rank_db_results,
+        indices_list,
+        allow_remote_constituents,
+    )
+
+    if skip_external_fallback and db_hit_count < len(indices_list):
+        return {'skipped': True, 'reason': 'constituent_cache_incomplete'}
+
+    if source_label == 'theme' and db_hit_count == 0:
+        sector_indices = await asyncio.to_thread(_load_sector_rank_db_results)
+        if sector_indices:
+            sector_indices.sort(key=lambda item: item['inflow_5d'], reverse=True)
+            result = {
+                'date': max(item['latest_date'] for item in sector_indices),
+                'indices': sector_indices,
+                'count': len(sector_indices),
+                'source': 'database:sector_flow',
+                'index_type': source_label,
+                'status': 'READY',
+            }
+            cache['data'], cache['ts'] = result, time.time()
+            return result
 
     # 如果数据库全部命中，直接返回
     if db_hit_count == len(indices_list):
@@ -494,28 +619,15 @@ async def _build_rank_result(indices_list: list, cache: dict, source_label: str,
             'count': len(result_indices),
             'source': 'database',
             'index_type': source_label,
+            'status': 'READY',
         }
         cache['data'] = result
         cache['ts'] = time.time()
         return result
 
-    # 降级：对数据库未命中的指数调用东方财富
-    logger.info(f'[index_flow] DB 命中 {db_hit_count}/{len(indices_list)}, 降级 EM 补充')
-    em_indices_with_secid = [(i, idx) for i, idx in enumerate(indices_list)
-                             if idx.get('secid') and db_results[i] is None]
-    em_hist_results = []
-    em_quote_results = []
-    if em_indices_with_secid:
-        tasks_hist = [_fetch_index_flow_history_em(idx['secid'], limit=15) for _, idx in em_indices_with_secid]
-        tasks_quote = [_fetch_index_quote_em(idx['secid']) for _, idx in em_indices_with_secid]
-        em_hist_results = await asyncio.gather(*tasks_hist, return_exceptions=True)
-        em_quote_results = await asyncio.gather(*tasks_quote, return_exceptions=True)
-
+    # 数据库部分命中时只返回已有存档，并显式标记数据不完整。
     result_indices = []
     latest_date = None
-    em_fail_count = 0
-
-    # 处理 DB 命中的指数
     for agg in db_results:
         if agg is None:
             continue
@@ -536,59 +648,60 @@ async def _build_rank_result(indices_list: list, cache: dict, source_label: str,
             'source': 'db',
         })
 
-    # 处理 EM 补充的指数
-    for j, (orig_i, idx_def) in enumerate(em_indices_with_secid):
-        hist = em_hist_results[j] if not isinstance(em_hist_results[j], Exception) else []
-        quote = em_quote_results[j] if not isinstance(em_quote_results[j], Exception) else {}
-        if not hist:
-            em_fail_count += 1
-            continue
-        if latest_date is None or hist[-1]['date'] > latest_date:
-            latest_date = hist[-1]['date']
-        result_indices.append({
-            'ts_code': idx_def['ts_code'],
-            'name': idx_def['name'],
-            'close': quote.get('close'),
-            'pct_change': quote.get('pct_change'),
-            'inflow_1d': _aggregate_flow_em(hist, 1),
-            'inflow_3d': _aggregate_flow_em(hist, 3),
-            'inflow_5d': _aggregate_flow_em(hist, 5),
-            'inflow_10d': _aggregate_flow_em(hist, 10),
-            'inflow_22d': _aggregate_flow_em(hist, 22),
-            'abs_1d': abs(_aggregate_flow_em(hist, 1)),
-            'member_count': 0,
-            'source': 'eastmoney',
-        })
-
     result_indices.sort(key=lambda x: x['inflow_5d'], reverse=True)
     result = {
         'date': latest_date,
         'indices': result_indices,
         'count': len(result_indices),
-        'source': 'database+eastmoney' if em_indices_with_secid else 'database',
+        'source': 'database',
         'index_type': source_label,
+        'status': 'PARTIAL' if result_indices else 'MISSING',
+        'missing_count': max(0, len(indices_list) - len(result_indices)),
     }
-
-    # 全部失败时附加错误信息
     if not result_indices:
-        result['error'] = 'data_source_unavailable'
-        result['message'] = '数据库与东方财富数据源均不可用，请稍后重试'
+        result['error'] = 'database_data_unavailable'
+        result['message'] = '数据库暂无可用指数资金流，请等待采集任务入库'
 
     cache['data'] = result
     cache['ts'] = time.time()
     return result
 
 
+async def preheat_rank_cache(allow_remote_constituents: bool = False,
+                             skip_external_fallback: bool = False) -> dict:
+    """直接预热默认排名缓存；启动阶段不能通过尚未监听的 HTTP 端口回调自身。"""
+    return await _build_rank_result(
+        THEME_INDICES,
+        _rank_cache,
+        'theme',
+        force=0,
+        allow_remote_constituents=allow_remote_constituents,
+        skip_external_fallback=skip_external_fallback,
+    )
+
+
 @router.get('/api/index-flow/rank')
 async def get_index_flow_rank(force: int = Query(0, description='1=跳过缓存强制刷新')):
     """获取行业主题指数的 1/3/5/10 日累计主力净流入排名（默认入口，匹配截图维度）"""
-    return await _build_rank_result(THEME_INDICES, _rank_cache, 'theme', force=force)
+    return await _build_rank_result(
+        THEME_INDICES,
+        _rank_cache,
+        'theme',
+        force=force,
+        allow_remote_constituents=False,
+    )
 
 
 @router.get('/api/index-flow/broad-rank')
 async def get_index_flow_broad_rank(force: int = Query(0, description='1=跳过缓存强制刷新')):
     """获取宽基主要指数的 1/3/5/10 日累计主力净流入排名（兼容原逻辑）"""
-    return await _build_rank_result(MAJOR_INDICES, _broad_rank_cache, 'broad', force=force)
+    return await _build_rank_result(
+        MAJOR_INDICES,
+        _broad_rank_cache,
+        'broad',
+        force=force,
+        allow_remote_constituents=False,
+    )
 
 
 @router.get('/api/index-flow/history')
@@ -615,8 +728,9 @@ async def get_index_flow_history(
     # 优先：数据库聚合
     db_result = None
     try:
+        members = await asyncio.to_thread(_resolve_index_members, idx, False)
         with get_db_session() as db:
-            agg = _aggregate_index_from_db(idx, db, latest_n_days=days)
+            agg = _aggregate_index_from_db(idx, db, latest_n_days=days, members=members)
             if agg and agg.get('dates'):
                 db_result = {
                     'ts_code': ts_code,
@@ -626,6 +740,7 @@ async def get_index_flow_history(
                     'cumulative': agg['cumulative'],
                     'latest_date': agg['latest_date'],
                     'source': 'database',
+                    'status': 'READY',
                     'member_count': agg.get('member_count', 0),
                 }
     except Exception as e:
@@ -635,32 +750,16 @@ async def get_index_flow_history(
         _history_cache[ts_code] = {'data': db_result, 'ts': time.time()}
         return db_result
 
-    # 降级：东方财富
-    if not idx.get('secid'):
-        _history_cache[ts_code] = {
-            'data': {'ts_code': ts_code, 'name': idx['name'], 'dates': [], 'main_net': [], 'cumulative': []},
-            'ts': time.time(),
-        }
-        return _history_cache[ts_code]['data']
-
-    history = await _fetch_index_flow_history_em(idx['secid'], limit=days)
-    if not history:
-        return {'ts_code': ts_code, 'name': idx['name'], 'dates': [], 'main_net': [], 'cumulative': []}
-
-    cumulative = []
-    total = 0
-    for r in history:
-        total += r['main_net']
-        cumulative.append(total)
-
     result = {
         'ts_code': ts_code,
         'name': idx['name'],
-        'dates': [r['date'] for r in history],
-        'main_net': [r['main_net'] for r in history],
-        'cumulative': cumulative,
-        'latest_date': history[-1]['date'] if history else None,
-        'source': 'eastmoney',
+        'dates': [],
+        'main_net': [],
+        'cumulative': [],
+        'latest_date': None,
+        'source': 'database',
+        'status': 'MISSING',
+        'message': '数据库暂无该指数资金流历史，请等待采集任务入库',
     }
     _history_cache[ts_code] = {'data': result, 'ts': time.time()}
     return result

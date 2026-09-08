@@ -1,9 +1,7 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useDatePicker } from '../hooks/useDatePicker';
 import DateNavigator from '../components/DateNavigator';
-import StrategySignalCard from '../components/trading/StrategySignalCard';
-import StrategyResultsTable from '../components/StrategyResultsTable';
-import CardSafetyBoundary from '../components/CardSafetyBoundary';
+import WatchlistResultsTable from '../components/WatchlistResultsTable';
 import { apiFetch } from '../utils/request';
 
 /**
@@ -22,16 +20,9 @@ import { apiFetch } from '../utils/request';
 const DRAWDOWN_OPTIONS = [10, 20, 30];
 const CLOSE_UP_OPTIONS = [5, 6, 10];
 
-const fmtPct = (v, withSign = true, digits = 2) => {
-  if (v == null || Number.isNaN(v)) return '--';
-  const sign = withSign && v >= 0 ? '+' : '';
-  return `${sign}${v.toFixed(digits)}%`;
-};
 
-const pctColor = (v) => {
-  if (v == null || Number.isNaN(v)) return 'var(--text-muted)';
-  return v >= 0 ? '#E24B4A' : '#1D9E75';
-};
+
+
 
 export default function StrategyDrawdownReboundPage() {
   const { selectedDate, setSelectedDate, changeDate } = useDatePicker();
@@ -167,35 +158,15 @@ export default function StrategyDrawdownReboundPage() {
         </div>
       )}
 
-      {/* 股票列表 */}
+      {/* 股票列表 - 自选式卡片+18列表格 */}
       <div className="rounded-lg border p-2.5" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
-        {loading ? (
-          <div className="flex items-center justify-center h-64 gap-2">
-            <div className="w-5 h-5 border-2 rounded-full animate-spin" style={{ borderColor: '#f97316', borderTopColor: 'transparent' }} />
-            <span className="text-xs" style={{ color: 'var(--text-muted)' }}>筛选抗跌反弹...</span>
-          </div>
-        ) : data?.stocks?.length > 0 ? (
-          <StrategyResultsTable
-            rows={data.stocks}
-            getRowKey={(row, i) => row.ts_code || i}
-            columns={[
-              { key: 'code', label: '代码', render: r => r.ts_code, width: '70px' },
-              { key: 'name', label: '名称', render: r => r.name, width: '80px' },
-              { key: 'todayPct', label: '今日涨幅', render: r => r.today_pct, type: 'percent', align: 'right', width: '75px' },
-              { key: 'periodPct', label: '区间涨跌', render: r => r.period_pct, type: 'percent', align: 'right', width: '75px' },
-              { key: 'minIntra', label: '盘中最低', render: r => r.min_intraday_pct, type: 'percent', align: 'right', width: '75px' },
-              { key: 'vRebound', label: '反弹幅度', render: r => r.v_rebound_pct, type: 'percent', align: 'right', width: '75px' },
-              { key: 'sector', label: '板块', render: r => r.sector, width: '80px' },
-              { key: 'board', label: '板', render: r => r.board, width: '60px' },
-            ]}
-            cardComponent={StrategySignalCard}
-            cardProps={{ mode: 'watchlist', showWatchBtn: true, showAnalysisButton: true }}
-          />
-        ) : (
-          <div className="flex items-center justify-center h-64 text-xs" style={{ color: 'var(--text-muted)' }}>
-            {data ? '当日无命中, 可尝试: ① 降低今日涨幅 ② 放宽区间跌幅' : '暂无数据'}
-          </div>
-        )}
+        <WatchlistResultsTable
+          items={data?.stocks ?? []}
+          loading={loading}
+          viewModeKey="drawdown-rebound"
+          defaultViewMode="table"
+          emptyText={data ? '当日无命中, 可尝试: ① 降低今日涨幅 ② 放宽区间跌幅' : '暂无数据'}
+        />
       </div>
     </div>
   );
@@ -230,49 +201,3 @@ const ParamBtn = ({ active, onClick, children }) => (
  * 复用 strategy-vreversal API 的字段, 注入 SignalCard 期望的 signal 结构。
  * 本策略不要求 V 形态, 故 vRebound 角标恒为非强。
  */
-const ReboundSignalItem = ({ stock, sectorColor }) => {
-  const signal = useMemo(() => {
-    const stockName = stock.name || stock.ts_code;
-    return {
-      secCode: stock.ts_code,
-      secName: stockName,
-      code: stock.ts_code,
-      signalLabel: `${stock.today_pct >= 0 ? '+' : ''}${stock.today_pct.toFixed(1)}%`,
-      signalColor: sectorColor,
-      score: stock.today_pct,
-      sector: stock.sector,
-      position: {
-        price: stock.today_close,
-        dayProfitPct: stock.today_pct,
-        avg_cost: stock.base_close,
-        count: 0,
-        profitPct: stock.period_pct, // 区间相对基准日涨跌幅
-      },
-      quote: {
-        price: stock.today_close,
-        yesterdayClose: stock.pre_close,
-        changePct: stock.today_pct,
-        high: stock.today_close,
-        low: stock.today_close,
-      },
-      _vreversal: {
-        minIntradayPct: stock.min_intraday_pct,
-        vReboundPct: stock.v_rebound_pct,
-        requiredCloseUp: stock.required_close_up,
-        intradayRange: stock.intraday_range_pct,
-        maxUpPct: stock.max_up_pct,
-        isVShapeStrong: false,
-        board: stock.board,
-      },
-    };
-  }, [stock, sectorColor]);
-
-  return (
-    <SignalCard
-      signal={signal}
-      mode="watchlist"
-      showWatchBtn
-      showAnalysisButton
-    />
-  );
-};

@@ -14,6 +14,7 @@ export default function SectorMoneyFlowCompareSection({
   const [rotationData, setRotationData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
     if (!selectedDate) return;
@@ -32,7 +33,7 @@ export default function SectorMoneyFlowCompareSection({
       setLoading(false);
     })();
     return () => controller.abort();
-  }, [selectedDate]);
+  }, [selectedDate, reloadKey]);
 
   // 盘后 Top 10 板块：按 |net_flow| 排序，取前 10
   const postTop10 = useMemo(() => {
@@ -41,7 +42,7 @@ export default function SectorMoneyFlowCompareSection({
     rotationData.signals.forEach(signal => {
       const match = signal.match(/资金(流入|流出)[：:]\s*/);
       if (!match) return;
-      const type = match[1];
+
       const sectors = signal.replace(/资金(流入|流出)[：:]\s*/, '').split('、').filter(Boolean);
       sectors.forEach(name => {
         // 从 rotationData 的 all_inflows/all_outflows 中找具体数值
@@ -91,7 +92,7 @@ export default function SectorMoneyFlowCompareSection({
           ) : error ? (
             <div className="flex flex-col items-center justify-center h-64 gap-2">
               <div className="text-sm" style={{ color: '#ef4444' }}>{error}</div>
-              <button onClick={() => setSelectedDate(selectedDate)} className="px-3 py-1.5 rounded-lg border text-xs" style={{ borderColor: 'var(--border-color)', color: 'var(--text-secondary)' }}>重试</button>
+              <button onClick={() => setReloadKey(key => key + 1)} className="px-3 py-1.5 rounded-lg border text-xs" style={{ borderColor: 'var(--border-color)', color: 'var(--text-secondary)' }}>重试</button>
             </div>
           ) : sectorNames.length === 0 ? (
             <div className="flex items-center justify-center h-64 text-sm" style={{ color: 'var(--text-muted)' }}>暂无板块资金流向数据</div>

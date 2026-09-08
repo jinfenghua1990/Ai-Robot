@@ -1,6 +1,8 @@
+import logging
+
 from fastapi import APIRouter, Query
 from db.connection import get_db
-from db.session import get_db_session
+from db.session import get_db_session, run_db
 from db.models import SectorFlow, StockFlow, LeaderLifecycle
 from collectors.tdx_collector import collect_daily_data
 from analyzers.heat_score import calculate_heat_scores
@@ -17,17 +19,185 @@ from sqlalchemy import select, func
 from db.connection import SessionLocal
 from db.models import StockUniverse, StockF10, StockMoneyFlowDetail
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _date_has_flow(trade_date) -> bool:
+    """指定交易日是否已具备选股依赖的主力资金数据（即盘后扫描是否已产出）。"""
+    with get_db_session() as db:
+        return db.query(StockFlow).filter(StockFlow.trade_date == trade_date).count() > 0
+
+
+def _latest_screen_date():
+    """最近一个已具备选股数据的交易日；当日扫描未产出时回退用。"""
+    with get_db_session() as db:
+        latest = db.execute(func.max(StockFlow.trade_date)).scalar()
+        return latest.isoformat() if latest else None
 
 @router.get("/api/screener")
 async def screen_stocks(strategy: str = Query("heat"), date: str = Query(None)):
-    """智能选股：heat(热度综合) / baihu(白虎V2.6) / qinglong(青龙)"""
+    # 智能选股：heat(热度综合) / baihu(白虎V2.6) / qinglong(青龙)
+    # 同步 DB 段已抽离到 _load_* 辅助函数，经 run_db 在线程池执行，不阻塞事件循环
     trade_date = validate_date(date)
+    # 当日盘后扫描尚未产出时，自动回退到最近可用交易日，避免页面空白
+    if not await run_db(_date_has_flow, trade_date):
+        latest = await run_db(_latest_screen_date)
+        if latest:
+            trade_date = latest
+    sector_flow_data, leader_data = await run_db(_load_screen_common, trade_date)
+    if strategy == "heat":
+        results, up_sectors, top_sectors_all, up_trend_sectors, use_leaders, total_candidates = await run_db(_load_heat, trade_date)
+        enriched_stocks = await build_signals_batch(
+            results, None,
+            code_key='ts_code', name_key='name', sector_key='sector',
+            stage_key='stage', strength_key='strength',
+            change_key='price_chg', days_key='consecutive_days',
+        )
+        stock_meta = {r['ts_code']: r for r in results}
+        for s in enriched_stocks:
+            meta = stock_meta.get(s['secCode'])
+            if meta:
+                s['compositeScore'] = meta.get('composite_score', 0)
+                s['mainForceInflow'] = meta.get('main_force_inflow', 0)
+        top_leaders = leader_data[:15]
+        enriched_leaders = await build_signals_batch(
+            top_leaders, None,
+            code_key='ts_code', name_key='name', sector_key='sector',
+            stage_key='stage', strength_key='strength',
+            change_key='change_rate', days_key='consecutive_days',
+        )
+        filters_used = [
+            '板块上升趋势(近3天>=2天净流入)',
+            '启动/发酵阶段' if use_leaders else '主力净流入Top50(降级)',
+            '主力净流入>0',
+            '涨幅>0',
+            '强度>30' if use_leaders else '',
+            '综合评分排序',
+            '精选Top15',
+        ]
+        return {
+            'strategy': 'heat',
+            'date': trade_date,
+            'stocks': enriched_stocks,
+            'top_sectors': [{'name': s.sector, 'heat_score': float(s.heat_score or 0)} for s in up_sectors[:5]],
+            'sector_flows': sector_flow_data,
+            'leaders': enriched_leaders,
+            'filter_info': {
+                'up_trend_sectors': len(up_trend_sectors),
+                'selected_sectors': len(up_sectors),
+                'total_candidates': total_candidates,
+                'filtered': len(results),
+                'mode': 'leader' if use_leaders else 'fallback',
+                'filters': [f for f in filters_used if f],
+            },
+        }
+    elif strategy in ("baihu", "qinglong", "macd", "risk_exit", "rsi_bounce"):
+        _sk_map = {'baihu': 'baihu_v30', 'qinglong': 'qinglong', 'macd': 'macd_golden_cross', 'risk_exit': 'risk_exit', 'rsi_bounce': 'rsi_bounce'}
+        _sk = _sk_map.get(strategy)
+        if _sk:
+            _precomputed = await build_signals_from_strategy_result(None, _sk, trade_date)
+            if _precomputed is not None:
+                return {
+                    'strategy': strategy,
+                    'date': trade_date,
+                    'stocks': _precomputed,
+                    'top_sectors': [],
+                    'candidate_count': len(_precomputed),
+                    'sector_flows': sector_flow_data,
+                    'leaders': [],
+                    'message': 'ok(预计算)',
+                }
+        top_sectors, stock_list, stock_name_map, stock_sector_map = await run_db(_load_baihu, trade_date)
+        if not stock_list:
+            return {'strategy': strategy, 'date': trade_date, 'stocks': [], 'message': '无候选股票'}
+        if strategy == "baihu":
+            from strategies.baihu_v30 import run_baihu_v30_screen
+            hits = run_baihu_v30_screen(stock_list, trade_date)
+        elif strategy == "qinglong":
+            from strategies.qinglong import run_qinglong_screen
+            hits = run_qinglong_screen(stock_list, trade_date)
+        elif strategy == "macd":
+            from strategies.macd_golden_cross import run_macd_golden_cross_screen
+            hits = run_macd_golden_cross_screen(stock_list, trade_date)
+        elif strategy == "risk_exit":
+            from strategies.risk_exit import run_risk_exit_screen
+            hits = run_risk_exit_screen(stock_list, trade_date)
+        elif strategy == "rsi_bounce":
+            from strategies.rsi_bounce import run_rsi_bounce_screen
+            hits = run_rsi_bounce_screen(stock_list, trade_date)
+        results = []
+        for h in hits:
+            ts_code = h.get('ts_code', '')
+            r = {
+                'ts_code': ts_code,
+                'name': stock_name_map.get(ts_code, ''),
+                'sector': stock_sector_map.get(ts_code, ''),
+                'stage': '策略选股',
+                'strength': float(h.get('score', 0)),
+                'main_force_inflow': 0,
+                'price_chg': float(h.get('change_pct', 0)),
+                'consecutive_days': 0,
+                'score': float(h.get('score', 0)),
+                'deviation': float(h.get('deviation', 0)),
+                'rsi': float(h.get('rsi', 0)),
+                'vol_ratio': float(h.get('vol_ratio', 0)),
+                '20day_gain': float(h.get('20day_gain', 0)),
+                'close': float(h.get('close', 0)),
+                'scores': h.get('scores', {}),
+                'lower_shadow': float(h.get('lower_shadow', 0)),
+                'ma20': float(h.get('ma20', 0)),
+            }
+            if strategy == "risk_exit":
+                r['worst_severity'] = h.get('worst_severity', '')
+                r['worst_label'] = h.get('worst_label', '')
+                r['worst_reason'] = h.get('worst_reason', '')
+                r['signals'] = h.get('signals', [])
+            results.append(r)
+        results = sorted(results, key=lambda x: x['score'], reverse=True)
+        enriched_stocks = await build_signals_batch(
+            results, None,
+            code_key='ts_code', name_key='name', sector_key='sector',
+            stage_key='stage', strength_key='score',
+            change_key='price_chg',
+        )
+        stock_meta = {}
+        for r in results:
+            code = r['ts_code']
+            if '.' in code:
+                code = code.split('.')[0]
+            stock_meta[code] = r
+        for s in enriched_stocks:
+            meta = stock_meta.get(s['secCode'])
+            if meta:
+                s['strategyScore'] = meta.get('score', 0)
+                s['deviation'] = meta.get('deviation', 0)
+                s['rsi'] = meta.get('rsi', 0)
+                s['scores'] = meta.get('scores', {})
+                s['lowerShadow'] = meta.get('lower_shadow', 0)
+                if strategy == "risk_exit":
+                    s['worstSeverity'] = meta.get('worst_severity', '')
+                    s['worstLabel'] = meta.get('worst_label', '')
+                    s['worstReason'] = meta.get('worst_reason', '')
+                    s['riskSignals'] = meta.get('signals', [])
+        return {
+            'strategy': strategy,
+            'date': trade_date,
+            'stocks': enriched_stocks,
+            'top_sectors': [{'name': s.sector, 'heat_score': float(s.heat_score or 0)} for s in top_sectors[:5]],
+            'candidate_count': len(stock_list),
+            'sector_flows': sector_flow_data,
+            'leaders': leader_data,
+        }
+    else:
+        return {'error': 'Unknown strategy: ' + str(strategy)}
+
+
+def _load_screen_common(trade_date):
+    # 通用加载：板块资金流 + 龙头生命周期（线程池内同步执行）
     with get_db_session() as db:
-        # 通用：获取板块资金流和龙头生命周期数据
         sector_flows = db.query(SectorFlow).filter_by(trade_date=trade_date).order_by(SectorFlow.net_flow.desc()).all()
         leaders = db.query(LeaderLifecycle).filter_by(trade_date=trade_date).order_by(LeaderLifecycle.strength.desc()).all()
-
         sector_flow_data = [{
             'sector': s.sector,
             'net_flow': float(s.net_flow or 0),
@@ -38,7 +208,6 @@ async def screen_stocks(strategy: str = Query("heat"), date: str = Query(None)):
             'leader_stock': s.leader_stock,
             'leader_strength': float(s.leader_strength or 0) if s.leader_strength else 0,
         } for s in sector_flows]
-
         leader_data = [{
             'ts_code': l.ts_code,
             'name': l.name,
@@ -48,338 +217,105 @@ async def screen_stocks(strategy: str = Query("heat"), date: str = Query(None)):
             'change_rate': float(l.change_rate or 0),
             'consecutive_days': int(l.consecutive_days or 0),
         } for l in leaders]
+        return sector_flow_data, leader_data
 
-        if strategy == "heat":
-            # === 热度综合选股（V2：板块趋势过滤 + 多因子筛选 + 精选15只） ===
 
-            # 1. 板块趋势分析：查询最近3个交易日，判断板块是否上升趋势
-            date_obj = datetime.strptime(trade_date, '%Y-%m-%d')
-            check_dates = []
-            for i in range(1, 8):  # 往前找7天，取最近3个有数据的交易日
-                d = (date_obj - timedelta(days=i)).strftime('%Y-%m-%d')
-                check_dates.append(d)
-            all_check_dates = [trade_date] + check_dates
-
-            recent_sectors = db.query(SectorFlow).filter(
-                SectorFlow.trade_date.in_(all_check_dates)
-            ).all()
-
-            # 按板块分组，计算趋势
-            sector_history = {}  # {sector: [(date, net_flow, heat_score), ...]}
-            for sf in recent_sectors:
-                if sf.sector not in sector_history:
-                    sector_history[sf.sector] = []
-                sector_history[sf.sector].append((
-                    sf.trade_date,
-                    float(sf.net_flow or 0),
-                    float(sf.heat_score or 0)
-                ))
-
-            # 判断板块趋势：最近3天中至少2天净流入为正 → 上升趋势
-            up_trend_sectors = set()
-            sector_trend_info = {}
-            for sector, records in sector_history.items():
-                records.sort(key=lambda x: x[0], reverse=True)
-                recent = records[:3]  # 最近3天
-                if len(recent) >= 2:
-                    up_days = sum(1 for r in recent if r[1] > 0)
-                    heat_now = recent[0][2]
-                    heat_prev = recent[-1][2] if len(recent) > 1 else heat_now
-                    is_up = up_days >= 2 and heat_now >= heat_prev
-                    sector_trend_info[sector] = {
-                        'trend': 'up' if is_up else ('flat' if up_days >= 1 else 'down'),
-                        'up_days': up_days,
-                        'heat_now': heat_now,
-                        'heat_prev': heat_prev,
-                    }
-                    if is_up:
-                        up_trend_sectors.add(sector)
-                else:
-                    # 数据不足，仅看当天
-                    if records and records[0][1] > 0:
-                        up_trend_sectors.add(sector)
-                        sector_trend_info[sector] = {'trend': 'up', 'up_days': 1, 'heat_now': records[0][2], 'heat_prev': records[0][2]}
-
-            # 2. 获取热度Top板块（用于展示）
-            top_sectors_all = db.query(SectorFlow).filter_by(
-                trade_date=trade_date
-            ).order_by(SectorFlow.heat_score.desc()).limit(15).all()
-
-            # 选股板块池：所有上升趋势板块 + 热度Top板块（取并集，避免板块名不一致漏选）
-            sector_names = list(up_trend_sectors)
-            for s in top_sectors_all:
-                if s.sector not in sector_names and float(s.net_flow or 0) > 0:
-                    sector_names.append(s.sector)
-
-            # 用于展示的Top板块
-            up_sectors = [s for s in top_sectors_all if s.sector in up_trend_sectors]
-            if not up_sectors:
-                up_sectors = [s for s in top_sectors_all if float(s.net_flow or 0) > 0][:5]
-
-            # 3. 从上升趋势板块中选突破/加速阶段龙头（兼容新旧命名）
-            leaders_query = db.query(LeaderLifecycle).filter(
-                LeaderLifecycle.trade_date == trade_date,
-                LeaderLifecycle.stage.in_(['突破', '加速', '启动', '发酵'])
-            )
-            if sector_names:
-                leaders_query = leaders_query.filter(LeaderLifecycle.sector.in_(sector_names))
-            leaders_stage = leaders_query.order_by(LeaderLifecycle.strength.desc()).limit(30).all()
-
-            results = []
-            use_leaders = len(leaders_stage) > 0
-
-            if use_leaders:
-                # 优先路径：有龙头生命周期数据
-                leader_codes = [l.ts_code for l in leaders_stage]
-                stocks = db.query(StockFlow).filter(
-                    StockFlow.trade_date == trade_date,
-                    StockFlow.ts_code.in_(leader_codes)
-                ).all()
-                stock_map = {s.ts_code: s for s in stocks}
-
-                for leader in leaders_stage:
-                    stock = stock_map.get(leader.ts_code)
-                    main_force = float(stock.main_force_inflow or 0) if stock else 0
-                    price_chg = float(stock.price_chg or 0) if stock else 0
-                    strength = float(leader.strength or 0)
-
-                    # 多因子过滤
-                    if main_force <= 0: continue
-                    if price_chg <= 0: continue
-                    if strength < 30: continue
-
-                    results.append({
-                        'ts_code': leader.ts_code,
-                        'name': leader.name or (stock.name if stock else '') or '',
-                        'sector': leader.sector,
-                        'stage': leader.stage,
-                        'strength': strength,
-                        'main_force_inflow': main_force,
-                        'price_chg': price_chg,
-                        'consecutive_days': leader.consecutive_days,
-                    })
+def _load_heat(trade_date):
+    # heat 策略：板块趋势过滤 + 多因子筛选（纯同步 DB，线程池执行）
+    with get_db_session() as db:
+        date_obj = datetime.strptime(trade_date, '%Y-%m-%d')
+        check_dates = []
+        for i in range(1, 8):
+            d = (date_obj - timedelta(days=i)).strftime('%Y-%m-%d')
+            check_dates.append(d)
+        all_check_dates = [trade_date] + check_dates
+        recent_sectors = db.query(SectorFlow).filter(SectorFlow.trade_date.in_(all_check_dates)).all()
+        sector_history = {}
+        for sf in recent_sectors:
+            if sf.sector not in sector_history:
+                sector_history[sf.sector] = []
+            sector_history[sf.sector].append((sf.trade_date, float(sf.net_flow or 0), float(sf.heat_score or 0)))
+        up_trend_sectors = set()
+        sector_trend_info = {}
+        for sector, records in sector_history.items():
+            records.sort(key=lambda x: x[0], reverse=True)
+            recent = records[:3]
+            if len(recent) >= 2:
+                up_days = sum(1 for r in recent if r[1] > 0)
+                heat_now = recent[0][2]
+                heat_prev = recent[-1][2] if len(recent) > 1 else heat_now
+                is_up = up_days >= 2 and heat_now >= heat_prev
+                sector_trend_info[sector] = {'trend': 'up' if is_up else ('flat' if up_days >= 1 else 'down'), 'up_days': up_days, 'heat_now': heat_now, 'heat_prev': heat_prev}
+                if is_up:
+                    up_trend_sectors.add(sector)
             else:
-                # 降级路径：无龙头数据，直接从StockFlow选强势股
-                stock_filter = [
-                    StockFlow.trade_date == trade_date,
-                    StockFlow.main_force_inflow > 0,
-                ]
-                if sector_names:
-                    stock_filter.append(StockFlow.sector.in_(sector_names))
-                candidates = db.query(StockFlow).filter(*stock_filter).order_by(
-                    StockFlow.main_force_inflow.desc()
-                ).limit(50).all()
-
-                for stock in candidates:
-                    main_force = float(stock.main_force_inflow or 0)
-                    price_chg = float(stock.price_chg or 0)
-
-                    if main_force <= 0: continue
-                    if price_chg <= 0: continue
-
-                    results.append({
-                        'ts_code': stock.ts_code,
-                        'name': stock.name or '',
-                        'sector': stock.sector or '',
-                        'stage': '热门',
-                        'strength': main_force,  # 用主力净流入作为强度代理
-                        'main_force_inflow': main_force,
-                        'price_chg': price_chg,
-                        'consecutive_days': 0,
-                    })
-
-            # 4. 综合评分排序：主力净流入(40%) + 强度(35%) + 涨幅(25%)
-            if results:
-                max_flow = max(r['main_force_inflow'] for r in results) or 1
-                max_strength = max(r['strength'] for r in results) or 1
-                max_chg = max(r['price_chg'] for r in results) or 1
-                for r in results:
-                    r['composite_score'] = round(
-                        (r['main_force_inflow'] / max_flow) * 40 +
-                        (r['strength'] / max_strength) * 35 +
-                        (r['price_chg'] / max_chg) * 25, 2
-                    )
-                results = sorted(results, key=lambda x: x['composite_score'], reverse=True)
-
-            # 5. 精选Top15
-            results = results[:15]
-
-            # 6. 构造完整 signal 数据（与自选股/重点关注口径一致）
-            enriched_stocks = await build_signals_batch(
-                results, db,
-                code_key='ts_code', name_key='name', sector_key='sector',
-                stage_key='stage', strength_key='strength',
-                change_key='price_chg', days_key='consecutive_days',
-            )
-            # 保留原始字段（composite_score/main_force_inflow）合并到 enriched
-            stock_meta = {r['ts_code']: r for r in results}
-            for s in enriched_stocks:
-                meta = stock_meta.get(s['secCode'])
-                if meta:
-                    s['compositeScore'] = meta.get('composite_score', 0)
-                    s['mainForceInflow'] = meta.get('main_force_inflow', 0)
-
-            # 同时为 leaders Top15 构造 signal
-            top_leaders = leader_data[:15]
-            enriched_leaders = await build_signals_batch(
-                top_leaders, db,
-                code_key='ts_code', name_key='name', sector_key='sector',
-                stage_key='stage', strength_key='strength',
-                change_key='change_rate', days_key='consecutive_days',
-            )
-
-            filters_used = [
-                '板块上升趋势(近3天≥2天净流入)',
-                '启动/发酵阶段' if use_leaders else '主力净流入Top50(降级)',
-                '主力净流入>0',
-                '涨幅>0',
-                '强度>30' if use_leaders else '',
-                '综合评分排序',
-                '精选Top15',
-            ]
-
-            return {
-                'strategy': 'heat',
-                'date': trade_date,
-                'stocks': enriched_stocks,
-                'top_sectors': [{'name': s.sector, 'heat_score': float(s.heat_score or 0)} for s in up_sectors[:5]],
-                'sector_flows': sector_flow_data,
-                'leaders': enriched_leaders,
-                'filter_info': {
-                    'up_trend_sectors': len(up_trend_sectors),
-                    'selected_sectors': len(up_sectors),
-                    'total_candidates': len(leaders_stage) if use_leaders else len(candidates),
-                    'filtered': len(results),
-                    'mode': 'leader' if use_leaders else 'fallback',
-                    'filters': [f for f in filters_used if f],
-                },
-            }
-        elif strategy in ("baihu", "qinglong", "macd", "risk_exit", "rsi_bounce"):
-            # 优先读预计算表（盘后定时扫描已落库），命中则跳过现场计算
-            _sk_map = {'baihu': 'baihu_v30', 'qinglong': 'qinglong', 'macd': 'macd_golden_cross', 'risk_exit': 'risk_exit', 'rsi_bounce': 'rsi_bounce'}
-            _sk = _sk_map.get(strategy)
-            if _sk:
-                _precomputed = await build_signals_from_strategy_result(db, _sk, trade_date)
-                if _precomputed is not None:
-                    return {
-                        'strategy': strategy,
-                        'date': trade_date,
-                        'stocks': _precomputed,
-                        'top_sectors': [],
-                        'candidate_count': len(_precomputed),
-                        'sector_flows': sector_flow_data,
-                        'leaders': [],
-                        'message': 'ok(预计算)',
-                    }
-            # 白虎V3 / 青龙 / MACD / 风险退出 选股
-            # 1. 获取热门板块的股票作为候选池（Top10板块 + 主力净流入>0）
-            top_sectors = db.query(SectorFlow).filter_by(
-                trade_date=trade_date
-            ).order_by(SectorFlow.heat_score.desc()).limit(10).all()
-            sector_names = [s.sector for s in top_sectors]
-
-            candidates = db.query(StockFlow).filter(
-                StockFlow.trade_date == trade_date,
-                StockFlow.sector.in_(sector_names),
-                StockFlow.main_force_inflow > 0,
-            ).order_by(StockFlow.main_force_inflow.desc()).limit(80).all()
-
-            stock_list = [c.ts_code for c in candidates]
-            stock_name_map = {c.ts_code: c.name for c in candidates}
-            stock_sector_map = {c.ts_code: c.sector for c in candidates}
-
-            if not stock_list:
-                return {'strategy': strategy, 'date': trade_date, 'stocks': [], 'message': '无候选股票'}
-
-            # 2. 执行策略选股
-            if strategy == "baihu":
-                from strategies.baihu_v30 import run_baihu_v30_screen
-                hits = run_baihu_v30_screen(stock_list, trade_date)
-            elif strategy == "qinglong":
-                from strategies.qinglong import run_qinglong_screen
-                hits = run_qinglong_screen(stock_list, trade_date)
-            elif strategy == "macd":
-                from strategies.macd_golden_cross import run_macd_golden_cross_screen
-                hits = run_macd_golden_cross_screen(stock_list, trade_date)
-            elif strategy == "risk_exit":
-                from strategies.risk_exit import run_risk_exit_screen
-                hits = run_risk_exit_screen(stock_list, trade_date)
-            elif strategy == "rsi_bounce":
-                from strategies.rsi_bounce import run_rsi_bounce_screen
-                hits = run_rsi_bounce_screen(stock_list, trade_date)
-
-            # 3. 格式化结果
-            results = []
-            for h in hits:
-                ts_code = h.get('ts_code', '')
-                r = {
-                    'ts_code': ts_code,
-                    'name': stock_name_map.get(ts_code, ''),
-                    'sector': stock_sector_map.get(ts_code, ''),
-                    'stage': '策略选股',
-                    'strength': float(h.get('score', 0)),
-                    'main_force_inflow': 0,
-                    'price_chg': float(h.get('change_pct', 0)),
-                    'consecutive_days': 0,
-                    'score': float(h.get('score', 0)),
-                    'deviation': float(h.get('deviation', 0)),
-                    'rsi': float(h.get('rsi', 0)),
-                    'vol_ratio': float(h.get('vol_ratio', 0)),
-                    '20day_gain': float(h.get('20day_gain', 0)),
-                    'close': float(h.get('close', 0)),
-                    'scores': h.get('scores', {}),
-                    'lower_shadow': float(h.get('lower_shadow', 0)),
-                    'ma20': float(h.get('ma20', 0)),
-                }
-                # 风险退出策略特有字段
-                if strategy == "risk_exit":
-                    r['worst_severity'] = h.get('worst_severity', '')
-                    r['worst_label'] = h.get('worst_label', '')
-                    r['worst_reason'] = h.get('worst_reason', '')
-                    r['signals'] = h.get('signals', [])
-                results.append(r)
-            results = sorted(results, key=lambda x: x['score'], reverse=True)
-
-            # 4. 构造完整 signal 数据
-            enriched_stocks = await build_signals_batch(
-                results, db,
-                code_key='ts_code', name_key='name', sector_key='sector',
-                stage_key='stage', strength_key='score',
-                change_key='price_chg',
-            )
-            # 保留原始策略字段（ts_code 形如 "000001.SZ"，secCode 是 6 位数字，需统一 key）
-            stock_meta = {}
-            for r in results:
-                code = r['ts_code']
-                if '.' in code:
-                    code = code.split('.')[0]
-                stock_meta[code] = r
-            for s in enriched_stocks:
-                meta = stock_meta.get(s['secCode'])
-                if meta:
-                    s['strategyScore'] = meta.get('score', 0)
-                    s['deviation'] = meta.get('deviation', 0)
-                    s['rsi'] = meta.get('rsi', 0)
-                    s['scores'] = meta.get('scores', {})
-                    s['lowerShadow'] = meta.get('lower_shadow', 0)
-                    # 风险退出策略特有字段
-                    if strategy == "risk_exit":
-                        s['worstSeverity'] = meta.get('worst_severity', '')
-                        s['worstLabel'] = meta.get('worst_label', '')
-                        s['worstReason'] = meta.get('worst_reason', '')
-                        s['riskSignals'] = meta.get('signals', [])
-
-            return {
-                'strategy': strategy,
-                'date': trade_date,
-                'stocks': enriched_stocks,
-                'top_sectors': [{'name': s.sector, 'heat_score': float(s.heat_score or 0)} for s in top_sectors[:5]],
-                'candidate_count': len(stock_list),
-                'sector_flows': sector_flow_data,
-                'leaders': leader_data,
-            }
+                if records and records[0][1] > 0:
+                    up_trend_sectors.add(sector)
+                    sector_trend_info[sector] = {'trend': 'up', 'up_days': 1, 'heat_now': records[0][2], 'heat_prev': records[0][2]}
+        top_sectors_all = db.query(SectorFlow).filter_by(trade_date=trade_date).order_by(SectorFlow.heat_score.desc()).limit(15).all()
+        sector_names = list(up_trend_sectors)
+        for s in top_sectors_all:
+            if s.sector not in sector_names and float(s.net_flow or 0) > 0:
+                sector_names.append(s.sector)
+        up_sectors = [s for s in top_sectors_all if s.sector in up_trend_sectors]
+        if not up_sectors:
+            up_sectors = [s for s in top_sectors_all if float(s.net_flow or 0) > 0][:5]
+        leaders_query = db.query(LeaderLifecycle).filter(LeaderLifecycle.trade_date == trade_date, LeaderLifecycle.stage.in_(['突破', '加速', '启动', '发酵']))
+        if sector_names:
+            leaders_query = leaders_query.filter(LeaderLifecycle.sector.in_(sector_names))
+        leaders_stage = leaders_query.order_by(LeaderLifecycle.strength.desc()).limit(30).all()
+        results = []
+        use_leaders = len(leaders_stage) > 0
+        if use_leaders:
+            leader_codes = [l.ts_code for l in leaders_stage]
+            stocks = db.query(StockFlow).filter(StockFlow.trade_date == trade_date, StockFlow.ts_code.in_(leader_codes)).all()
+            stock_map = {s.ts_code: s for s in stocks}
+            for leader in leaders_stage:
+                stock = stock_map.get(leader.ts_code)
+                main_force = float(stock.main_force_inflow or 0) if stock else 0
+                price_chg = float(stock.price_chg or 0) if stock else 0
+                strength = float(leader.strength or 0)
+                if main_force <= 0: continue
+                if price_chg <= 0: continue
+                if strength < 30: continue
+                results.append({'ts_code': leader.ts_code, 'name': leader.name or (stock.name if stock else '') or '', 'sector': leader.sector, 'stage': leader.stage, 'strength': strength, 'main_force_inflow': main_force, 'price_chg': price_chg, 'consecutive_days': leader.consecutive_days})
         else:
-            return {'error': f'Unknown strategy: {strategy}'}
+            stock_filter = [StockFlow.trade_date == trade_date, StockFlow.main_force_inflow > 0]
+            if sector_names:
+                stock_filter.append(StockFlow.sector.in_(sector_names))
+            candidates = db.query(StockFlow).filter(*stock_filter).order_by(StockFlow.main_force_inflow.desc()).limit(50).all()
+            for stock in candidates:
+                main_force = float(stock.main_force_inflow or 0)
+                price_chg = float(stock.price_chg or 0)
+                if main_force <= 0: continue
+                if price_chg <= 0: continue
+                results.append({'ts_code': stock.ts_code, 'name': stock.name or '', 'sector': stock.sector or '', 'stage': '热门', 'strength': main_force, 'main_force_inflow': main_force, 'price_chg': price_chg, 'consecutive_days': 0})
+        if results:
+            max_flow = max(r['main_force_inflow'] for r in results) or 1
+            max_strength = max(r['strength'] for r in results) or 1
+            max_chg = max(r['price_chg'] for r in results) or 1
+            for r in results:
+                r['composite_score'] = round((r['main_force_inflow'] / max_flow) * 40 + (r['strength'] / max_strength) * 35 + (r['price_chg'] / max_chg) * 25, 2)
+            results = sorted(results, key=lambda x: x['composite_score'], reverse=True)
+        results = results[:15]
+        if use_leaders:
+            total_candidates = len(leaders_stage)
+        else:
+            total_candidates = len(candidates)
+        return results, up_sectors, top_sectors_all, up_trend_sectors, use_leaders, total_candidates
+
+
+def _load_baihu(trade_date):
+    # baihu/青龙等策略：候选池查询（纯同步 DB，线程池执行）
+    with get_db_session() as db:
+        top_sectors = db.query(SectorFlow).filter_by(trade_date=trade_date).order_by(SectorFlow.heat_score.desc()).limit(10).all()
+        sector_names = [s.sector for s in top_sectors]
+        candidates = db.query(StockFlow).filter(StockFlow.trade_date == trade_date, StockFlow.sector.in_(sector_names), StockFlow.main_force_inflow > 0).order_by(StockFlow.main_force_inflow.desc()).limit(80).all()
+        stock_list = [c.ts_code for c in candidates]
+        stock_name_map = {c.ts_code: c.name for c in candidates}
+        stock_sector_map = {c.ts_code: c.sector for c in candidates}
+        return top_sectors, stock_list, stock_name_map, stock_sector_map
+
 
 
 @router.post("/api/backfill")

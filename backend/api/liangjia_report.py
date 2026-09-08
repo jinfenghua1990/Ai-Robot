@@ -149,7 +149,7 @@ async def liangjia_report(date: str = Query(None)):
                     s['strategyMode'] = meta.get('pattern', '')
 
             # 补充自选股个股模块字段
-            await _enrich_signals_with_watchlist_extras(db, enriched_stocks)
+            await _enrich_signals_with_watchlist_extras(enriched_stocks)
 
             return _format_response(trade_date, enriched_stocks, len(stock_list), 'ok')
     except Exception as e:

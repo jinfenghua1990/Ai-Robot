@@ -462,7 +462,7 @@ def should_switch(current_leader: dict, new_leader: dict):
     return False, '维持当前主龙'
 
 
-def run_leader_engine(target_date=None):
+def run_leader_engine(target_date=None, persist=True):
     """运行龙头引擎（完整生命周期驱动）
 
     流程：
@@ -667,8 +667,8 @@ def run_leader_engine(target_date=None):
         else:
             candidates_out = computed[:5]
 
-        # 8.8 持久化 LeaderTrack
-        if leader:
+        # 8.8 仅由采集/定时任务持久化；页面 GET 必须保持只读。
+        if leader and persist:
             _persist_leader_track(db, leader, lifecycle_map.get(leader['ts_code']), target_date, cur_track)
 
         return {

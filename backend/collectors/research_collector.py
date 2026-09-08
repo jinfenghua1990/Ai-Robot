@@ -9,7 +9,9 @@
 import logging
 import json
 import asyncio
+import time
 from datetime import datetime
+from urllib.parse import urlsplit
 
 from config import (
     AI_LLM_API_KEY, AI_LLM_BASE_URL, AI_LLM_MODEL,
@@ -17,6 +19,7 @@ from config import (
 )
 
 logger = logging.getLogger(__name__)
+_LLM_READY_CACHE = {"checked_at": 0.0, "ready": None}
 
 
 def _to_6digit(ts_code: str) -> str:
@@ -202,6 +205,33 @@ def _extract_json(text):
         raise
 
 
+async def _llm_is_ready() -> bool:
+    """Gate the local 9002 gateway so a missing upstream cannot flood logs."""
+    parsed = urlsplit(AI_LLM_BASE_URL)
+    if parsed.hostname not in {"127.0.0.1", "localhost"} or parsed.port != 9002:
+        return True
+    now = time.monotonic()
+    cached = _LLM_READY_CACHE["ready"]
+    if cached is not None and now - _LLM_READY_CACHE["checked_at"] < 300:
+        return bool(cached)
+    try:
+        from api.watchlist._shared import _get_http_client
+        client = _get_http_client()
+        response = await client.get(
+            f"{parsed.scheme}://{parsed.netloc}/health",
+            timeout=5,
+        )
+        payload = response.json()
+        ready = response.status_code == 200 and bool(payload.get("upstream_configured"))
+    except Exception as exc:
+        logger.warning("[research] LLM 网关健康检查失败，本轮使用数据库基线: %s", exc)
+        ready = False
+    _LLM_READY_CACHE.update({"checked_at": now, "ready": ready})
+    if not ready:
+        logger.warning("[research] LLM 网关未配置上游，本轮使用数据库基线")
+    return ready
+
+
 async def _call_llm(code6, name, news_content, data_tables) -> dict:
     """可选：调用配置的 LLM 生成综合分析 JSON。
     期望结构：{summary, bull_points:[], bear_points:[], catalysts:[], conclusion}
@@ -274,7 +304,7 @@ async def synthesize_and_store(code6, name, news_content, data_tables):
 
     analysis = None
     model = None
-    if AI_LLM_API_KEY:
+    if AI_LLM_API_KEY and await _llm_is_ready():
         model = AI_LLM_MODEL
         try:
             analysis = await _call_llm(code6, name, news_content, data_tables)

@@ -175,7 +175,7 @@ def post_ai_analysis(code: str, req: AIAnalysisRequest):
 # ===================== 市场状态（CHOPPY/TREND/IMPULSE）=====================
 
 @router.get("/api/stock/{code}/market-state")
-async def get_market_state(code: str):
+def get_market_state(code: str):
     """读取个股最新市场状态"""
     from analyzers.market_state import get_latest_state
     result = get_latest_state(code)
@@ -212,6 +212,76 @@ async def refresh_all_market_state():
 
     asyncio.create_task(_bg())
     return {"success": True, "total": len(codes), "message": "后台更新中，约需1-2分钟"}
+
+
+@router.post("/api/market-state/refresh-codes")
+async def refresh_market_state_codes(codes: str = Query(..., description="逗号分隔的股票代码，如 000001,600519，最多 200 只")):
+    """按指定代码列表补算精确特征（写 StockFeaturesDaily）。
+
+    个股页对未自选、但进入策略/共振列表的股票（走 kline_fallback），
+    用真正的特征入库逻辑现场补算，把「近似」落成精确特征。
+    数据来源与盘后定时任务一致：本地 DB 的日K + StockMoneyFlowDetail，纯本地无外部请求。
+    """
+    import asyncio
+    from analyzers.market_state import update_stock_state
+    code_list = [c.strip() for c in codes.split(',') if c.strip()]
+    code_list = code_list[:200]  # 上限 200，防止滥用
+    if not code_list:
+        return {"success": False, "total": 0, "message": "未提供有效代码"}
+
+    async def _bg():
+        for code in code_list:
+            try:
+                await update_stock_state(code)
+            except Exception as e:
+                logger.warning(f'[market-state] refresh-codes error {code}: {e}', exc_info=True)
+
+    asyncio.create_task(_bg())
+    return {"success": True, "total": len(code_list), "message": f"后台补算 {len(code_list)} 只，稍后刷新个股页即见精确特征"}
+
+
+@router.post("/api/market-state/backfill-all")
+async def backfill_all_market_state():
+    """全量补采精确特征：对所有有日K线的股票补算当日特征（写 StockFeaturesDaily）。
+
+    与盘后定时任务同口径（本地日K + StockMoneyFlowDetail，纯 DB，无外部请求），
+    仅为手动触发时复用同一逻辑，避免与定时任务重复实现。
+    """
+    import asyncio
+    from analyzers.market_state import update_stock_state
+    from db.models import StockDailyKline, StockFeaturesDaily, StockMoneyFlowDetail
+    from sqlalchemy import func
+
+    with get_db_session() as db:
+        latest_flow_day = db.query(func.max(StockMoneyFlowDetail.trade_date)).scalar()
+        done_codes = set()
+        if latest_flow_day:
+            day_str = str(latest_flow_day)[:10].replace('-', '')
+            done_codes = {r[0] for r in db.query(StockFeaturesDaily.stock_code).filter(
+                StockFeaturesDaily.trade_date == day_str)}
+        candidates = db.query(StockDailyKline.ts_code).distinct().all()
+        watch_codes = {s.stock_code for s in db.query(Watchlist).all()}
+        codes = []
+        for (ts_code,) in candidates:
+            c = (ts_code or '').split('.')[0]
+            if c and c not in watch_codes and c not in done_codes:
+                codes.append(c)
+        codes = list(dict.fromkeys(codes))
+
+    async def _bg():
+        ok = 0
+        for i, code in enumerate(codes):
+            try:
+                await update_stock_state(code)
+                ok += 1
+                if (i + 1) % 500 == 0:
+                    logger.info(f'[market-state] backfill-all {i+1}/{len(codes)} done')
+            except Exception as e:
+                logger.warning(f'[market-state] backfill-all error {code}: {e}', exc_info=True)
+        logger.info(f'[market-state] backfill-all completed, ok={ok}/{len(codes)}')
+
+    asyncio.create_task(_bg())
+    return {"success": True, "total": len(codes), "message": f"后台全量补算 {len(codes)} 只（自选股除外），稍后刷新个股页即见精确特征"}
 
 
 # ===================== 研究采集手动触发 =====================

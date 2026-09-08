@@ -4,6 +4,7 @@ from fastapi import APIRouter, Query, HTTPException, Response
 from db.connection import get_db
 from db.session import get_db_session
 from db.models import SectorFlow
+from industry_stage.registry import taxonomy_metadata
 from datetime import datetime
 from sqlalchemy import select
 from utils.cache import BoundedDict
@@ -106,6 +107,7 @@ def get_heatmap(response: Response, date: str = Query(None), days: int = Query(5
             'sectors': sector_names,
             'values': values,
             'actual_date': dates[-1],
+            'taxonomy': taxonomy_metadata(),
         }
 
         # 写入缓存
@@ -177,7 +179,7 @@ def get_sector_flow_trend(
             values = [data_map.get((name, i), 0) for i in range(len(dates))]
             series.append({'sector': name, 'values': values})
 
-        result = {'dates': dates, 'series': series, 'actual_date': dates[-1]}
+        result = {'dates': dates, 'series': series, 'actual_date': dates[-1], 'taxonomy': taxonomy_metadata()}
         _flow_trend_cache[cache_key] = (result, time.time())
         response.headers["Cache-Control"] = "public, max-age=300"
         response.headers["X-Cache"] = "MISS"
@@ -218,7 +220,7 @@ def get_sector_flow_rank(response: Response, date: str = Query(None)):
             }
             for r in records
         ]
-        result = {'date': date, 'actual_date': actual_date_str, 'sectors': sectors}
+        result = {'date': date, 'actual_date': actual_date_str, 'sectors': sectors, 'taxonomy': taxonomy_metadata()}
         _flow_rank_cache[cache_key] = (result, time.time())
         response.headers["Cache-Control"] = "public, max-age=300"
         response.headers["X-Cache"] = "MISS"

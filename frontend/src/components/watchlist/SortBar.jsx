@@ -14,7 +14,7 @@ const SORTS = [
  *  - 5 个排序键
  *  - asc / desc 切换
  */
-export default function SortBar({ sortKey, sortDir, onChange, addLog }) {
+export default function SortBar({ sortKey, sortDir, onChange }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
 

@@ -7,7 +7,7 @@ from fastapi import APIRouter, HTTPException
 from config import MX_APIKEY, MX_API_URL
 from db.session import get_db_session
 from db.models import Watchlist
-from ._shared import reset_watchlist_cache
+from ._shared import normalize_stock_code, reset_watchlist_cache
 from api.watchlist._shared import _get_http_client
 
 logger = logging.getLogger(__name__)
@@ -64,7 +64,7 @@ async def sync_from_mx():
         synced = []
         skipped = []
         for item in data_list:
-            stock_code = str(item.get('SECURITY_CODE', '')).strip()
+            stock_code = normalize_stock_code(item.get('SECURITY_CODE', ''))
             stock_name = str(item.get('SECURITY_SHORT_NAME', '')).strip()
             if not stock_code or len(stock_code) != 6:
                 continue

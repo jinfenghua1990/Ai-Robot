@@ -1,40 +1,5 @@
 import { useState, useRef, useEffect, useMemo } from 'react';
-
-const STORAGE_KEY = 'panorama_concept_filter_selected';
-
-/** 全部显示的哨兵值；默认展示全部概念板块 */
-export const ALL_CONCEPTS = '__ALL__';
-
-/** 旧版默认热门概念（仅用于向后兼容：识别历史存储并升级为"全部"） */
-const LEGACY_DEFAULT = [
-  '算力', '共封装光学CPO', '液冷', '人形机器人', '机器人概念',
-  'AI应用', '核聚变', '商业航天', '低空经济', '固态电池',
-  '铜缆高速连接', '车路云', '存储芯片', 'PCB概念', '人工智能',
-];
-
-function isLegacyDefault(arr) {
-  if (arr.length !== LEGACY_DEFAULT.length) return false;
-  return arr.every((x, i) => x === LEGACY_DEFAULT[i]);
-}
-
-export function loadSelectedConcepts() {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      const arr = JSON.parse(raw);
-      if (Array.isArray(arr)) {
-        // 历史默认（15 个热门）一律升级为「全部显示」
-        if (isLegacyDefault(arr)) return [ALL_CONCEPTS];
-        return arr;
-      }
-    }
-  } catch (e) { /* silent */ }
-  return [ALL_CONCEPTS];
-}
-
-export function saveSelectedConcepts(arr) {
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(arr)); } catch {}
-}
+import { ALL_CONCEPTS } from '../../utils/conceptFilterStorage';
 
 /**
  * 概念板块多选筛选器

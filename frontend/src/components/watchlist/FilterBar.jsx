@@ -22,7 +22,7 @@ const FILTERS = [
   { key: 'hit_accumulation', label: '吸筹命中', icon: '🧲', desc: '股东户数减少筹码集中' },
 ];
 
-export default function FilterBar({ activeFilters, onToggle, addLog }) {
+export default function FilterBar({ activeFilters, onToggle }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
 

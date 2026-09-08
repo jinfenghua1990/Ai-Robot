@@ -4,6 +4,7 @@
 - sync_from_ths: 从同花顺拉取到 AIROBOT
 - sync_to_ths:   从 AIROBOT 推送到同花顺
 """
+import asyncio
 import os
 import re
 import time
@@ -223,8 +224,8 @@ async def sync_from_ths(dry_run: bool = False, mirror: bool = False) -> dict:
             deleted = sorted(to_delete)
         db.commit()
 
-        from api.watchlist import _watchlist_cache
-        _watchlist_cache["data"] = None
+        from api.watchlist._shared import reset_watchlist_cache
+        reset_watchlist_cache()
 
         return {
             "success": True,
@@ -288,7 +289,7 @@ async def sync_to_ths(dry_run: bool = False, mirror: bool = False) -> dict:
                     pushed.append(code)
                 else:
                     failed.append({"code": code, "error": result.get('errorMsg', '未知')})
-                time.sleep(0.15)
+                await asyncio.sleep(0.15)
             except Exception as e:
                 failed.append({"code": code, "error": str(e)})
 
@@ -300,7 +301,7 @@ async def sync_to_ths(dry_run: bool = False, mirror: bool = False) -> dict:
                     deleted.append(code)
                 else:
                     failed.append({"code": code, "error": result.get('errorMsg', '未知')})
-                time.sleep(0.15)
+                await asyncio.sleep(0.15)
             except Exception as e:
                 failed.append({"code": code, "error": str(e)})
 

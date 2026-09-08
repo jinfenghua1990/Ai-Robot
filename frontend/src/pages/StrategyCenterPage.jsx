@@ -1,4 +1,5 @@
 import { useState, lazy, Suspense, useCallback, useEffect, useMemo } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { apiFetch } from '../utils/request';
 
 // 策略中心 v2.2 - 新增抗跌深V反转策略 (vreversal tab)
@@ -8,7 +9,6 @@ import { apiFetch } from '../utils/request';
  * [智能] 热度综合 / 白虎V3.0 / 白虎V4.0 / 青龙 / MACD金叉 / 风险退出
  * [BS]   动态策略1 / 动态策略2 / ... + 完整配置
  */
-const StrategyTrackPage = lazy(() => import('./StrategyTrackPage'));
 const LifecycleV4Page = lazy(() => import('./LifecycleV4Page'));
 const LifecyclePage = lazy(() => import('./LifecyclePage'));
 const LifecycleV2Page = lazy(() => import('./LifecycleV2Page'));
@@ -20,11 +20,12 @@ const BSStrategyTab = lazy(() => import('./BSStrategyTab'));
 const StrategyVReversalPage = lazy(() => import('./StrategyVReversalPage'));
 const StrategyDrawdownReboundPage = lazy(() => import('./StrategyDrawdownReboundPage'));
 const WaveAnalysisPage = lazy(() => import('./WaveAnalysisPage'));
+// 横盘蓄势策略（A股 · 盘后圈股）
+const AHorizontalPage = lazy(() => import('./AHorizontalPage'));
+const MediumTermPage = lazy(() => import('./MediumTermPage'));
 
 // 静态Tab定义（已调试完成的策略，每天看结果）
 const STATIC_TABS = [
-  // 20天跟踪（策略共振股跟踪，置顶）
-  { key: 'strategy-track', label: '20天跟踪', shortLabel: '20天跟踪', icon: '📊', group: 'resonance', Component: StrategyTrackPage },
   // 共振组（聚合视图，置顶）
   { key: 'resonance', label: '多策略共振', shortLabel: '共振', icon: '🎯', group: 'resonance', Component: ResonancePage },
   // 抗跌深V反转策略（新增）
@@ -44,6 +45,9 @@ const STATIC_TABS = [
   { key: 'smart-macd', label: 'MACD金叉', shortLabel: 'MACD金叉', icon: '📊', group: 'smart', Component: ScreenerPage, props: { initialStrategy: 'macd', hideStrategySelector: true } },
   { key: 'smart-risk-exit', label: '风险退出', shortLabel: '风险退出', icon: '🛡️', group: 'smart', Component: ScreenerPage, props: { initialStrategy: 'risk_exit', hideStrategySelector: true } },
   { key: 'smart-rsi-bounce', label: '超卖反弹', shortLabel: '超卖反弹', icon: '🔄', group: 'smart', Component: ScreenerPage, props: { initialStrategy: 'rsi_bounce', hideStrategySelector: true } },
+  // 横盘蓄势（盘后圈股：板块上涨+横盘+突破/回踩）
+  { key: 'horizontal', label: '横盘蓄势', shortLabel: '横盘蓄势', icon: '📦', group: 'smart', Component: AHorizontalPage },
+  { key: 'medium-term', label: '中线趋势', shortLabel: '中线趋势', icon: '📈', group: 'medium', Component: MediumTermPage },
   // 波浪分析组
   { key: 'wave-analysis', label: '波浪分析', shortLabel: '波浪分析', icon: '🌊', group: 'wave', Component: WaveAnalysisPage },
 ];
@@ -51,21 +55,14 @@ const STATIC_TABS = [
 // BS配置页（策略编辑器，不参与扁平Tab，放右侧操作区）
 const BS_CONFIG_TAB = { key: 'bs-full', label: '策略配置调整中心', Component: BSScreenerPage };
 
-const GROUP_LABELS = {
-  resonance: '共振',
-  rebound: '抗跌反弹',
-  leader: '龙头分析',
-  smart: '智能选股',
-  bs: 'BS',
-  'bs-config': 'BS',
-  wave: '波浪分析',
-};
+
 
 const GROUP_COLORS = {
   resonance: '#a855f7',
   rebound: '#f97316',
   leader: '#ef4444',
   smart: '#3b82f6',
+  medium: '#0ea5e9',
   bs: '#22c55e',
   'bs-config': '#22c55e',
   wave: '#06b6d4',
@@ -81,8 +78,17 @@ function TabLoader() {
 }
 
 export default function StrategyCenterPage() {
-  const [activeKey, setActiveKey] = useState('resonance');
-  const [loadedKeys, setLoadedKeys] = useState(() => new Set(['resonance']));
+  const [searchParams, setSearchParams] = useSearchParams();
+  const validTabKeys = useMemo(() => new Set([...STATIC_TABS.map(t => t.key), BS_CONFIG_TAB.key]), []);
+  const [activeKey, setActiveKey] = useState(() => {
+    const t = searchParams.get('tab');
+    return validTabKeys.has(t) ? t : 'resonance';
+  });
+  const [loadedKeys, setLoadedKeys] = useState(() => {
+    const t = searchParams.get('tab');
+    const key = validTabKeys.has(t) ? t : 'resonance';
+    return new Set([key]);
+  });
   const [refreshTicks, setRefreshTicks] = useState({});
   // BS动态策略Tab（从回测历史加载）
   const [bsStrategies, setBsStrategies] = useState([]);
@@ -90,6 +96,14 @@ export default function StrategyCenterPage() {
   const [healthData, setHealthData] = useState(null);
   const [healthLoading, setHealthLoading] = useState(false);
   const [scanning, setScanning] = useState(false);
+
+  // 同步 URL tab 参数
+  useEffect(() => {
+    const t = searchParams.get('tab');
+    if (t !== activeKey) {
+      setSearchParams({ tab: activeKey }, { replace: true });
+    }
+  }, [activeKey, searchParams, setSearchParams]);
 
   // 加载BS回测历史前5个策略作为独立Tab
   useEffect(() => {
@@ -99,7 +113,7 @@ export default function StrategyCenterPage() {
         if (ok) {
           setBsStrategies(data.history || []);
         }
-      } catch (e) { /* 静默失败 */ }
+      } catch { /* 静默失败 */ }
     })();
   }, []);
 
@@ -122,7 +136,7 @@ export default function StrategyCenterPage() {
     try {
       await apiFetch('/api/strategy-scan/trigger', { method: 'POST' });
       await loadHealth();
-    } catch (e) { /* silent */ }
+    } catch { /* silent */ }
     setScanning(false);
   }, [scanning, loadHealth]);
 
@@ -193,7 +207,7 @@ export default function StrategyCenterPage() {
     handleTabChange(BS_CONFIG_TAB.key);
   }, [handleTabChange]);
 
-  const activeTab = allTabs.find(t => t.key === activeKey);
+
   const isBSConfigActive = activeKey === BS_CONFIG_TAB.key;
   // 用于渲染内容区的完整Tab列表（包含BS配置）
   const allRenderTabs = useMemo(() => [...allTabs, BS_CONFIG_TAB], [allTabs]);

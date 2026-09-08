@@ -12,6 +12,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { apiFetch } from '../utils/request';
 import { UP_COLOR, DOWN_COLOR } from '../utils/colors';
+import { toFiniteNumber } from '../utils/format';
 import StockActionButtons from '../components/trading/StockActionButtons';
 
 // 游资阶段配色（覆盖所有阶段名变体）
@@ -32,6 +33,10 @@ const PHASE_COLOR_MAP = {
 };
 const phaseColor = (p) => PHASE_COLOR_MAP[p] || '#94a3b8';
 const trendArrow = (t) => (t === 'rising' ? '↑' : t === 'falling' ? '↓' : '→');
+const fixed = (value, digits = 2) => {
+  const n = toFiniteNumber(value);
+  return n == null ? '—' : n.toFixed(digits);
+};
 
 // 板块状态配色
 const SECTOR_STATE_COLORS = {
@@ -228,17 +233,17 @@ function LeaderHeroCard({ leader, onClick, onRefresh }) {
   const stage = leader.stage || leader.lifecycleStage || '主升';
   const color = stageColor(stage);
   const mf = leader.mainForce || {};
-  const inflow1 = mf.inflow_1d || 0;
-  const inflow3 = mf.inflow_3d || 0;
-  const inflow5 = mf.inflow_5d || 0;
-  const continuity = mf.flow_continuity || 0;
-  const changePct = leader.position?.dayProfitPct ?? leader.change_rate ?? 0;
-  const price = leader.position?.price || 0;
-  const leaderScore = leader.leaderScore ?? leader.details?.change != null ? 0 : 0;
+  const inflow1 = toFiniteNumber(mf.inflow_1d) ?? 0;
+  const inflow3 = toFiniteNumber(mf.inflow_3d) ?? 0;
+  const inflow5 = toFiniteNumber(mf.inflow_5d) ?? 0;
+  const continuity = toFiniteNumber(mf.flow_continuity) ?? 0;
+  const changePct = toFiniteNumber(leader.position?.dayProfitPct ?? leader.change_rate) ?? 0;
+  const price = toFiniteNumber(leader.position?.price) ?? 0;
+
   // leaderScore 来自 leader_engine 0-10 分
   const rawLeaderScore = leader.leaderScore ?? null;
-  const strength = leader.strength ?? null;
-  const days = leader.consecutive_days ?? 0;
+  const strength = toFiniteNumber(leader.strength);
+  const days = toFiniteNumber(leader.consecutive_days) ?? 0;
 
   return (
     <div
@@ -281,18 +286,18 @@ function LeaderHeroCard({ leader, onClick, onRefresh }) {
           <div className="flex items-baseline gap-3 mt-2 flex-wrap">
             <div>
               <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>现价</span>
-              <span className="ml-1 text-sm font-bold" style={{ color: 'var(--text-primary)' }}>{price.toFixed(2)}</span>
+              <span className="ml-1 text-sm font-bold" style={{ color: 'var(--text-primary)' }}>{fixed(price, 2)}</span>
             </div>
             <div>
               <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>当日</span>
               <span className="ml-1 text-sm font-bold" style={{ color: changePct >= 0 ? UP_COLOR : DOWN_COLOR }}>
-                {changePct >= 0 ? '+' : ''}{changePct.toFixed(2)}%
+                {changePct >= 0 ? '+' : ''}{fixed(changePct, 2)}%
               </span>
             </div>
             {strength != null && (
               <div>
                 <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>强度</span>
-                <span className="ml-1 text-sm font-bold" style={{ color: 'var(--text-primary)' }}>{Number(strength).toFixed(1)}</span>
+                <span className="ml-1 text-sm font-bold" style={{ color: 'var(--text-primary)' }}>{fixed(strength, 1)}</span>
               </div>
             )}
             {days > 0 && (
@@ -359,7 +364,7 @@ function InflowBox({ label, value }) {
       style={{ background: positive ? `${UP_COLOR}14` : `${DOWN_COLOR}14` }}>
       <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{label}</div>
       <div className="text-sm font-bold mt-0.5" style={{ color }}>
-        {positive ? '+' : ''}{(value / 10000).toFixed(1)}万
+        {positive ? '+' : ''}{fixed(toFiniteNumber(value) == null ? null : toFiniteNumber(value) / 10000, 1)}万
       </div>
     </div>
   );
@@ -370,12 +375,12 @@ function CandidateCard({ stock, rank, onClick, onRefresh }) {
   const stage = stock.stage || stock.lifecycleStage || '蓄势';
   const color = stageColor(stage);
   const mf = stock.mainForce || {};
-  const inflow1 = mf.inflow_1d || 0;
-  const changePct = stock.position?.dayProfitPct ?? stock.change_rate ?? 0;
-  const price = stock.position?.price || 0;
-  const strength = stock.strength ?? null;
-  const days = stock.consecutive_days ?? 0;
-  const leaderScore = stock.leaderScore ?? null;
+  const inflow1 = toFiniteNumber(mf.inflow_1d) ?? 0;
+  const changePct = toFiniteNumber(stock.position?.dayProfitPct ?? stock.change_rate) ?? 0;
+  const price = toFiniteNumber(stock.position?.price) ?? 0;
+  const strength = toFiniteNumber(stock.strength);
+  const days = toFiniteNumber(stock.consecutive_days) ?? 0;
+  const leaderScore = toFiniteNumber(stock.leaderScore);
 
   return (
     <div onClick={() => onClick(stock.secCode)}
@@ -393,9 +398,9 @@ function CandidateCard({ stock, rank, onClick, onRefresh }) {
         </span>
       </div>
       <div className="flex items-center gap-3 mt-2 text-[11px] flex-wrap" style={{ color: 'var(--text-muted)' }}>
-        <span>现价 <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{price.toFixed(2)}</span></span>
-        <span>当日 <span style={{ color: changePct >= 0 ? UP_COLOR : DOWN_COLOR, fontWeight: 600 }}>{changePct >= 0 ? '+' : ''}{changePct.toFixed(2)}%</span></span>
-        {strength != null && <span>强度 <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{Number(strength).toFixed(1)}</span></span>}
+        <span>现价 <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{fixed(price, 2)}</span></span>
+        <span>当日 <span style={{ color: changePct >= 0 ? UP_COLOR : DOWN_COLOR, fontWeight: 600 }}>{changePct >= 0 ? '+' : ''}{fixed(changePct, 2)}%</span></span>
+        {strength != null && <span>强度 <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{fixed(strength, 1)}</span></span>}
         {days > 0 && <span>连板 <span style={{ color: UP_COLOR, fontWeight: 600 }}>{days}</span></span>}
         {leaderScore != null && <span>评分 <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{leaderScore}/10</span></span>}
       </div>
@@ -473,11 +478,11 @@ function HeatPoolTable({ stocks, leaderCode, onRowClick, onRefresh }) {
             {stocks.map((s, i) => {
               const stage = s.stage || s.lifecycleStage || '观望';
               const c = stageColor(stage);
-              const change = s.position?.dayProfitPct ?? s.change_rate ?? 0;
-              const price = s.position?.price || 0;
-              const strength = s.strength ?? null;
-              const days = s.consecutive_days ?? 0;
-              const ls = s.leaderScore ?? null;
+              const change = toFiniteNumber(s.position?.dayProfitPct ?? s.change_rate) ?? 0;
+              const price = toFiniteNumber(s.position?.price) ?? 0;
+              const strength = toFiniteNumber(s.strength);
+              const days = toFiniteNumber(s.consecutive_days) ?? 0;
+              const ls = toFiniteNumber(s.leaderScore);
               const mf = s.mainForce || {};
               const isLeader = s.secCode === leaderCode;
               return (
@@ -501,14 +506,14 @@ function HeatPoolTable({ stocks, leaderCode, onRowClick, onRefresh }) {
                     </span>
                   </td>
                   <td className="px-2 py-1.5 text-right font-bold" style={{ color: 'var(--text-primary)' }}>
-                    {price.toFixed(2)}
+                    {fixed(price, 2)}
                   </td>
                   <td className="px-2 py-1.5 text-right font-bold"
                     style={{ color: change >= 0 ? UP_COLOR : DOWN_COLOR }}>
-                    {change >= 0 ? '+' : ''}{change.toFixed(2)}%
+                    {change >= 0 ? '+' : ''}{fixed(change, 2)}%
                   </td>
                   <td className="px-2 py-1.5 text-right" style={{ color: 'var(--text-primary)' }}>
-                    {strength != null ? Number(strength).toFixed(1) : '-'}
+                    {strength != null ? fixed(strength, 1) : '-'}
                   </td>
                   <td className="px-2 py-1.5 text-right font-bold" style={{ color: days > 0 ? UP_COLOR : 'var(--text-muted)' }}>
                     {days > 0 ? `${days}连板` : '-'}
@@ -518,15 +523,15 @@ function HeatPoolTable({ stocks, leaderCode, onRowClick, onRefresh }) {
                   </td>
                   <td className="px-2 py-1.5 text-right font-mono"
                     style={{ color: (mf.inflow_1d || 0) >= 0 ? UP_COLOR : DOWN_COLOR }}>
-                    {mf.inflow_1d != null ? `${(mf.inflow_1d / 10000).toFixed(1)}万` : '-'}
+                    {mf.inflow_1d != null ? `${fixed(toFiniteNumber(mf.inflow_1d) == null ? null : toFiniteNumber(mf.inflow_1d) / 10000, 1)}万` : '-'}
                   </td>
                   <td className="px-2 py-1.5 text-right font-mono"
                     style={{ color: (mf.inflow_3d || 0) >= 0 ? UP_COLOR : DOWN_COLOR }}>
-                    {mf.inflow_3d != null ? `${(mf.inflow_3d / 10000).toFixed(1)}万` : '-'}
+                    {mf.inflow_3d != null ? `${fixed(toFiniteNumber(mf.inflow_3d) == null ? null : toFiniteNumber(mf.inflow_3d) / 10000, 1)}万` : '-'}
                   </td>
                   <td className="px-2 py-1.5 text-right font-mono"
                     style={{ color: (mf.inflow_5d || 0) >= 0 ? UP_COLOR : DOWN_COLOR }}>
-                    {mf.inflow_5d != null ? `${(mf.inflow_5d / 10000).toFixed(1)}万` : '-'}
+                    {mf.inflow_5d != null ? `${fixed(toFiniteNumber(mf.inflow_5d) == null ? null : toFiniteNumber(mf.inflow_5d) / 10000, 1)}万` : '-'}
                   </td>
                   <td className="px-2 py-1.5" onClick={(e) => e.stopPropagation()}>
                     <StockActionButtons

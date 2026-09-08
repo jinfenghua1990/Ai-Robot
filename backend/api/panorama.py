@@ -11,6 +11,7 @@ from sqlalchemy import func
 from db.session import get_db_session
 from db.models import WatchlistSignalDaily
 from services.signal_builder import build_signal_for_stock, build_signal_from_precomputed
+from api.watchlist._shared import normalize_ts_code as _canonical_ts_code
 import asyncio
 
 router = APIRouter()
@@ -30,10 +31,8 @@ class EnrichRequest(BaseModel):
 
 
 def _normalize_ts_code(code: str) -> str:
-    """统一转成 600000.SH / 000001.SZ 格式"""
-    if '.' in code:
-        return code
-    return f"{code}.SH" if code[0] in ('6', '9') else f"{code}.SZ"
+    """统一交易所后缀，兼容北交所 920/4/8 开头代码。"""
+    return _canonical_ts_code(code)
 
 
 def _load_precomputed_map(db, stocks: list) -> dict:
@@ -88,8 +87,8 @@ async def enrich_panorama_stocks(req: EnrichRequest = Body(...)):
                         code, item.name, item.sector, db,
                         change_rate=item.price_chg,
                     )
-                signal['mainForceInflow'] = item.main_force_inflow or 0
-                signal['priceChg'] = item.price_chg or 0
+                signal['mainForceInflow'] = item.main_force_inflow
+                signal['priceChg'] = item.price_chg
                 return signal
             except Exception as e:
                 logger.warning(f'enrich {ts_code} failed: {e}')

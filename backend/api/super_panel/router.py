@@ -6,7 +6,7 @@
 
 为什么单点聚合而不是让前端拼装:
 - 盘后静态 7 个表, 1 次 JOIN 完成 vs 前端 N 次请求
-- 盘中实时走内存 dict, 0 DB
+- 盘中实时读取采集器已落库快照
 - 前端只读不拼, 失败降级统一在服务端处理
 """
 import logging
@@ -16,9 +16,8 @@ from fastapi import APIRouter, Query
 from db.session import get_db_session
 from db.models import (
     YuziQuantSignal, YuziSeatDaily, YuziDict, YuziLifecycleTracker,
-    ConceptSector, ConceptSectorFlow, Watchlist,
+    ConceptSector, ConceptSectorFlow, RealtimeStockFlow, StockRealtimeTick, Watchlist,
 )
-from collectors.realtime_aggregator import serialize_state, REALTIME_STATE
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -178,29 +177,97 @@ def _load_post_market_base(ts_code: str) -> dict:
 
 
 def _realtime_section(ts_code: str) -> dict:
-    """盘中实时(从内存 REALTIME_STATE dict 读, 0 DB)"""
-    state = REALTIME_STATE.get(ts_code)
-    if not state:
-        # 占位: 收盘或未采集
-        if _is_trading_hours():
+    """读取最近一条已落库盘中快照，并保持字段的时间和单位口径一致。"""
+    with get_db_session() as db:
+        tick = db.query(StockRealtimeTick).filter(
+            StockRealtimeTick.ts_code == ts_code,
+        ).order_by(StockRealtimeTick.snapshot_time.desc()).first()
+        flow = db.query(RealtimeStockFlow).filter(
+            RealtimeStockFlow.ts_code == ts_code,
+        ).order_by(RealtimeStockFlow.snapshot_time.desc()).first()
+    latest_time = max(
+        (value for value in (
+            tick.snapshot_time if tick else None,
+            flow.snapshot_time if flow else None,
+        ) if value is not None),
+        default=None,
+    )
+    trading_hours = _is_trading_hours()
+    if latest_time is None:
+        if trading_hours:
             return {
                 'available': False,
-                'status': 'pending',
-                'message': '盘中实时数据采集中, 请稍候 3 秒',
+                'status': 'missing',
+                'source': 'database',
+                'message': '数据库暂无盘中快照，请等待采集任务入库',
             }
         return {
             'available': False,
-            'status': 'closed',
-            'message': '非交易时段, 实时数据未采集',
+            'status': 'missing',
+            'source': 'database',
+            'message': '数据库暂无盘中快照',
         }
-    s = serialize_state(ts_code)
-    s['available'] = True
-    s['status'] = 'live'
-    # 计算 pct_chg 需要昨收价, 取自 state.last_close 字段
-    last_close = getattr(state, 'last_close', 0) or 0
-    if last_close and s.get('current_price'):
-        s['pct_chg'] = round((s['current_price'] - last_close) / last_close * 100, 2)
-    return s
+
+    # 两个表由不同任务写入。只把距离最新快照 1 分钟内的数据当作同一轮快照，
+    # 避免“新价格 + 旧资金”或跨时点盘口在一个卡片里混用。
+    def is_current_snapshot(snapshot_time):
+        return snapshot_time is not None and (latest_time - snapshot_time).total_seconds() <= 60
+
+    tick_current = bool(tick and is_current_snapshot(tick.snapshot_time))
+    flow_current = bool(flow and is_current_snapshot(flow.snapshot_time))
+    tick_is_derived = bool(tick and tick.source == 'realtime_stock_flow')
+    tick_is_fallback = bool(tick and tick.source == 'fallback')
+    flow_is_fallback = bool(flow and (flow.source or '').strip().lower() == 'fallback')
+    # 聚合器会把 realtime_stock_flow 同步写成兼容 tick。若其源 flow 是 fallback，
+    # 该 tick 中的 0 仍然只是占位，不得反过来认定为真实实时资金。
+    derived_tick_is_fallback = tick_is_derived and flow_current and flow_is_fallback
+    tick_has_live_flow = tick_current and not tick_is_fallback and not derived_tick_is_fallback
+    has_live_flow = (
+        (flow_current and not flow_is_fallback and flow.main_force_inflow is not None)
+        or (tick_has_live_flow and tick_is_derived and tick.main_force_inflow is not None)
+    )
+    stale = trading_hours and (datetime.now() - latest_time).total_seconds() > 300
+
+    # realtime_stock_flow 的兼容 tick 只承载价格和主力资金，盘口/成交量字段的 0 是占位，
+    # 必须返回 null，不能在界面上伪装成真实的 0。
+    tick_has_orderbook = tick_current and not tick_is_derived and not tick_is_fallback
+    current_price = (
+        float(tick.price) if tick_current and tick.price is not None else
+        float(flow.price) if flow_current and flow.price is not None else None
+    )
+    main_force_inflow = (
+        float(tick.main_force_inflow)
+        if tick_has_live_flow and tick_is_derived and tick.main_force_inflow is not None
+        else float(flow.main_force_inflow) * 10000
+        if flow_current and not flow_is_fallback and flow.main_force_inflow is not None
+        else float(tick.main_force_inflow)
+        if tick_has_live_flow and tick.main_force_inflow is not None
+        else None
+    )
+    return {
+        'available': current_price is not None,
+        'status': (
+            'stale' if stale else
+            'ready' if trading_hours and has_live_flow else
+            'price_only' if trading_hours else 'closed_snapshot'
+        ),
+        'data_quality': 'flow' if has_live_flow else 'price_only',
+        'current_price': current_price,
+        'pct_chg': float(flow.price_chg) if flow_current and not flow_is_fallback and flow.price_chg is not None else None,
+        'volume': int(tick.volume) if tick_has_orderbook and tick.volume is not None else None,
+        'amount': float(tick.amount) if tick_has_orderbook and tick.amount is not None else None,
+        'bid_price_1': float(tick.bid_price_1) if tick_has_orderbook and tick.bid_price_1 is not None else None,
+        'bid_vol_1': int(tick.bid_vol_1) if tick_has_orderbook and tick.bid_vol_1 is not None else None,
+        'ask_price_1': float(tick.ask_price_1) if tick_has_orderbook and tick.ask_price_1 is not None else None,
+        'ask_vol_1': int(tick.ask_vol_1) if tick_has_orderbook and tick.ask_vol_1 is not None else None,
+        'turnover_rate': float(tick.turnover_rate) if tick_has_orderbook and tick.turnover_rate is not None else None,
+        'main_force_inflow': main_force_inflow,
+        'snapshot_time': latest_time.isoformat(),
+        'price_as_of': tick.snapshot_time.isoformat() if tick_current else flow.snapshot_time.isoformat() if flow_current else None,
+        'flow_as_of': flow.snapshot_time.isoformat() if flow_current and not flow_is_fallback else None,
+        'source': 'database',
+        'upstream_source': flow.source if flow_current else tick.source if tick_current else None,
+    }
 
 
 @router.get('/api/v1/stock/super_panel')
@@ -217,14 +284,14 @@ def super_panel(code: str = Query(..., description='股票代码, 6位 或 ts_co
         return {'error': 'invalid code'}
 
     update_time = datetime.now().isoformat(timespec='seconds')
-    state = REALTIME_STATE.get(ts_code)
-    realtime_health = 'live' if state else ('closed' if not _is_trading_hours() else 'stale')
+    realtime_data = _realtime_section(ts_code)
+    realtime_health = realtime_data.get('status', 'missing')
 
     if section == 'realtime':
         return {
             'ts_code': ts_code,
             'update_time': update_time,
-            'realtime_intraday': _realtime_section(ts_code),
+            'realtime_intraday': realtime_data,
             'source_health': {'static': 'ok', 'realtime': realtime_health},
         }
 
@@ -245,17 +312,28 @@ def super_panel(code: str = Query(..., description='股票代码, 6位 或 ts_co
             'realtime': realtime_health,
         },
         'post_market_base': _load_post_market_base(ts_code),
-        'realtime_intraday': _realtime_section(ts_code),
+        'realtime_intraday': realtime_data,
     }
 
 
 @router.get('/api/v1/stock/super_panel/health')
 def super_panel_health():
-    """健康检查: 返回当前 REALTIME_STATE 中股票数 + 调度状态"""
+    """健康检查：返回数据库最新实时快照覆盖。"""
+    from sqlalchemy import func
     from collectors.scheduler import _is_intraday_trading_hours
+    with get_db_session() as db:
+        latest = db.query(func.max(RealtimeStockFlow.snapshot_time)).scalar()
+        codes = [row[0] for row in db.query(RealtimeStockFlow.ts_code).filter(
+            RealtimeStockFlow.snapshot_time == latest
+        ).limit(20).all()] if latest else []
+        count = db.query(func.count(RealtimeStockFlow.id)).filter(
+            RealtimeStockFlow.snapshot_time == latest
+        ).scalar() if latest else 0
     return {
-        'realtime_state_count': len(REALTIME_STATE),
+        'realtime_state_count': int(count or 0),
         'trading_hours': _is_intraday_trading_hours(),
-        'ts_codes_sample': list(REALTIME_STATE.keys())[:20],
+        'ts_codes_sample': codes,
+        'latest_snapshot_time': latest.isoformat() if latest else None,
+        'source': 'database',
         'check_time': datetime.now().isoformat(timespec='seconds'),
     }

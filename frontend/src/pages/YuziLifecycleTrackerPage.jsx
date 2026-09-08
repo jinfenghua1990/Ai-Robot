@@ -41,18 +41,7 @@ const pctColor = (v) => {
 };
 
 // 推算 anchor (YYYYMMDD) + n 天 后的日期字符串(YYYYMMDD)
-const addDaysStr = (yyyymmdd, n) => {
-  if (!yyyymmdd || yyyymmdd.length !== 8) return '';
-  const y = +yyyymmdd.slice(0, 4);
-  const m = +yyyymmdd.slice(4, 6) - 1;
-  const d = +yyyymmdd.slice(6, 8);
-  const dt = new Date(y, m, d);
-  dt.setDate(dt.getDate() + n);
-  const yy = dt.getFullYear();
-  const mm = String(dt.getMonth() + 1).padStart(2, '0');
-  const dd = String(dt.getDate()).padStart(2, '0');
-  return `${yy}${mm}${dd}`;
-};
+
 
 // 价格状态色块（红=强/绿=弱/灰=震荡）
 const stageColor = (stage) => {
@@ -178,7 +167,7 @@ const fmtMoney = (v) => {
 };
 
 // Day 单元格渲染 — 一眼看懂：涨跌幅 + 主力资金 + 散户 + 竞价 + 大佬卖出标记
-const DayCell = ({ data, dayNum, bossExits }) => {
+const DayCell = ({ data, bossExits }) => {
   if (!data) {
     return <div className="text-[10px] text-center" style={{ color: '#9ca3af' }}>—</div>;
   }
@@ -521,7 +510,7 @@ export default function YuziLifecycleTrackerPage() {
                 const ac = ACTION_STYLE[r._action];
                 const isSelected = selected?.id === r.id;
                 // 取每只股的 D1 触发日,作为相对锚点
-                const anchor = r.lifecycle_data.d1?.date || r.trigger_date;
+
                 return (
                   <tr
                     key={r.id}

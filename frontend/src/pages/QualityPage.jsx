@@ -1,10 +1,12 @@
 import { useState, useEffect, useCallback } from 'react';
-import ReactECharts from 'echarts-for-react/lib/core';
+import { useSearchParams } from 'react-router-dom';
+import ReactECharts from 'echarts-for-react/esm/core';
 import echarts from '../lib/echarts';
 import { tConfidence, tAction, tSource, tIndicator } from '../utils/i18n';
 import { getEastMoneyUrl, getTHSUrl, getStockUrl, getTencentUrl } from '../utils/stockLink';
 import { apiFetch } from '../utils/request';
 import { POLL_INTERVAL } from '../utils/constants';
+import MonitorRulesPage from './MonitorRulesPage';
 
 // 服务状态语义（与 HealthStrip 一致）
 const SERVICE_STATUS_META = {
@@ -14,7 +16,450 @@ const SERVICE_STATUS_META = {
   idle: { text: '待命',   color: 'var(--accent-amber)' },
 };
 
+const QUALITY_MARKETS = [
+  { id: 'all', label: '全市场', code: 'ALL' },
+  { id: 'a', label: 'A股', code: 'CN' },
+  { id: 'hk', label: '港股', code: 'HK' },
+  { id: 'us', label: '美股', code: 'US' },
+];
+
+const QUALITY_SECTIONS = [
+  { id: 'quality', label: '数据质量' },
+  { id: 'risk', label: '系统风控' },
+  { id: 'monitor', label: '监控规则' },
+];
+
+function QualityHubHeader({ market, section }) {
+  const marketLabel = QUALITY_MARKETS.find(item => item.id === market)?.label || '全市场';
+  const href = (nextMarket, nextSection = section) => {
+    const query = new URLSearchParams();
+    if (nextMarket !== 'all') query.set('market', nextMarket);
+    if (nextSection !== 'quality') query.set('section', nextSection);
+    const value = query.toString();
+    return value ? `/quality?${value}` : '/quality';
+  };
+  return (
+    <div className="rounded-lg border p-2.5" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <div>
+          <h2 className="text-base font-bold" style={{ color: 'var(--text-primary)' }}>🛡️ 系统与数据质量中心</h2>
+          <div className="text-[10px] mt-0.5" style={{ color: 'var(--text-muted)' }}>统一入口 · {marketLabel} · 数据质量、系统风控、监控规则</div>
+        </div>
+        <div className="flex items-center gap-1 flex-wrap">
+          {QUALITY_MARKETS.map(item => (
+            <a key={item.id} href={href(item.id)} className="no-underline px-2 py-1 rounded-md text-xs border"
+              style={{ borderColor: market === item.id ? 'var(--accent-blue)' : 'var(--border-color)', background: market === item.id ? 'rgba(59,130,246,0.1)' : 'transparent', color: market === item.id ? 'var(--accent-blue)' : 'var(--text-secondary)' }}>
+              {item.label}
+            </a>
+          ))}
+          <span className="mx-0.5 h-4 w-px" style={{ background: 'var(--border-color)' }} />
+          {QUALITY_SECTIONS.map(item => (
+            <a key={item.id} href={href(market, item.id)} className="no-underline px-2 py-1 rounded-md text-xs"
+              style={{ background: section === item.id ? 'var(--accent-blue)' : 'transparent', color: section === item.id ? '#fff' : 'var(--text-secondary)' }}>
+              {item.label}
+            </a>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function statusMeta(status) {
+  const value = String(status || 'NOT_READY').toUpperCase();
+  if (value === 'SUCCESS' || value === 'VALID' || value === 'FRESH') return { label: '正常', color: '#22c55e' };
+  if (value === 'NOT_READY' || value === 'STALE') return { label: value === 'STALE' ? '需关注' : '待就绪', color: '#f59e0b' };
+  return { label: '异常', color: '#ef4444' };
+}
+
+function AllMarketsPanel({ mode = 'quality' }) {
+  const [state, setState] = useState({ loading: true, services: [], aFreshness: null, hkHealth: null, hkHistory: null, usHealth: null, usHistory: null, usSystem: null });
+
+  const load = useCallback(async () => {
+    const results = await Promise.all([
+      apiFetch('/api/services/status'),
+      apiFetch('/api/quality/data-freshness'),
+      apiFetch('/api/market-quant/HK/health?universe=CORE'),
+      apiFetch('/api/market-quant/HK/history/status?universe=CORE'),
+      apiFetch('/api/market-quant/US/health?universe=CORE'),
+      apiFetch('/api/market-quant/US/history/status?universe=CORE'),
+      mode === 'risk' ? apiFetch('/api/us-quant/system/status') : Promise.resolve({ ok: false }),
+    ]);
+    setState({
+      loading: false,
+      services: results[0].ok ? (results[0].data?.services || []) : [],
+      aFreshness: results[1].ok ? results[1].data : null,
+      hkHealth: results[2].ok ? results[2].data : null,
+      hkHistory: results[3].ok ? results[3].data : null,
+      usHealth: results[4].ok ? results[4].data : null,
+      usHistory: results[5].ok ? results[5].data : null,
+      usSystem: results[6]?.ok ? results[6].data : null,
+    });
+  }, [mode]);
+
+  useEffect(() => { load(); }, [load]);
+
+  if (state.loading) return <div className="text-center text-xs py-10" style={{ color: 'var(--text-muted)' }}>加载全市场系统状态…</div>;
+
+  const marketRows = [
+    {
+      id: 'a', label: 'A股',
+      status: state.aFreshness?.summary?.overall_status,
+      updatedAt: state.aFreshness?.last_trade_day,
+      coverage: state.aFreshness?.summary ? `${state.aFreshness.summary.fresh || 0}/${state.aFreshness.summary.total || 0} 数据源最新` : '暂无质量快照',
+    },
+    {
+      id: 'hk', label: '港股',
+      status: state.hkHealth?.latest_status,
+      updatedAt: state.hkHealth?.latest_trade_date,
+      coverage: state.hkHistory ? `历史覆盖 ${state.hkHistory.with_history || 0}/${state.hkHistory.expected || 0}` : '暂无历史覆盖',
+    },
+    {
+      id: 'us', label: '美股',
+      status: state.usHealth?.latest_status,
+      updatedAt: state.usHealth?.latest_trade_date,
+      coverage: state.usHistory ? `历史覆盖 ${state.usHistory.with_history || 0}/${state.usHistory.expected || 0}` : '暂无历史覆盖',
+    },
+  ];
+  const servicesUp = state.services.filter(item => item.status === 'up').length;
+
+  return (
+    <div className="space-y-2">
+      <div className="rounded-lg border p-2.5 flex items-center justify-between gap-2 flex-wrap" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
+        <div>
+          <h3 className="text-sm font-bold" style={{ color: 'var(--text-primary)' }}>全市场系统总览</h3>
+          <div className="text-[10px] mt-0.5" style={{ color: 'var(--text-muted)' }}>服务、数据质量与风控统一查看；市场明细在本页内切换</div>
+        </div>
+        <button onClick={load} className="px-2 py-1 rounded border text-[11px]" style={{ borderColor: 'var(--border-color)', color: 'var(--text-secondary)' }}>↻ 刷新</button>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+        {marketRows.map(item => {
+          const meta = statusMeta(item.status);
+          return (
+            <a key={item.id} href={`/quality?market=${item.id}&section=${mode}`} className="rounded-lg border p-2.5 no-underline hover:opacity-80" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-sm font-bold" style={{ color: 'var(--text-primary)' }}>{item.label}</span>
+                <span className="text-[11px] font-semibold" style={{ color: meta.color }}>{meta.label}</span>
+              </div>
+              <div className="text-[11px] mt-2" style={{ color: 'var(--text-secondary)' }}>{item.coverage}</div>
+              <div className="text-[10px] mt-1" style={{ color: 'var(--text-muted)' }}>最近交易日：{item.updatedAt || '—'} · 查看明细 →</div>
+            </a>
+          );
+        })}
+      </div>
+
+      <div className="rounded-lg border" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
+        <div className="px-3 py-1.5 border-b flex items-center justify-between" style={{ borderColor: 'var(--border-color)' }}>
+          <h3 className="text-xs font-bold" style={{ color: 'var(--text-primary)' }}>⚙️ 公共服务状态</h3>
+          <span className="text-[10px]" style={{ color: servicesUp === state.services.length && state.services.length ? '#22c55e' : '#f59e0b' }}>{state.services.length ? `${servicesUp}/${state.services.length} 在线` : '暂无服务状态'}</span>
+        </div>
+        <div className="p-2 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-1.5">
+          {state.services.length === 0 ? <span className="text-xs" style={{ color: 'var(--text-muted)' }}>暂无服务状态数据</span> : state.services.map(service => {
+            const meta = SERVICE_STATUS_META[service.status] || SERVICE_STATUS_META.idle;
+            return <div key={service.key} className="rounded-md border p-2" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-hover)' }}>
+              <div className="flex items-center justify-between gap-2"><span className="text-xs font-medium" style={{ color: 'var(--text-primary)' }}>{service.label}</span><span className="text-[10px] font-medium" style={{ color: meta.color }}>{meta.text}</span></div>
+              <div className="text-[10px] mt-0.5" style={{ color: 'var(--text-muted)' }}>{service.detail}</div>
+            </div>;
+          })}
+        </div>
+      </div>
+
+      {mode === 'risk' && (
+        <div className="rounded-lg border p-2.5 text-xs" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)', color: 'var(--text-secondary)' }}>
+          <div className="font-bold mb-1" style={{ color: 'var(--text-primary)' }}>🔐 全市场风控说明</div>
+          <div>数据质量和交易规则按市场独立校验；美股当前为 {state.usSystem?.allow_live ? '实盘已开启' : '实盘关闭'}，其余市场请在本页切换后查看对应状态。</div>
+        </div>
+      )}
+
+      <USSystemPanel />
+      <GoogleSheetsSyncPanel />
+    </div>
+  );
+}
+
+function USSystemPanel() {
+  const [state, setState] = useState({ loading: true, overview: null, status: null });
+
+  const load = useCallback(async () => {
+    const [overview, status] = await Promise.all([
+      apiFetch('/api/us-quant/overview', {}, 15000),
+      apiFetch('/api/us-quant/system/status', {}, 10000),
+    ]);
+    setState({
+      loading: false,
+      overview: overview.ok ? overview.data : null,
+      status: status.ok ? status.data : null,
+    });
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  if (state.loading) return <div className="text-center text-xs py-6" style={{ color: 'var(--text-muted)' }}>加载美股系统状态…</div>;
+
+  const overview = state.overview || {};
+  const status = state.status || overview.system || {};
+  const scan = status.last_scan || overview.scan || {};
+  const regime = overview.regime;
+  const quality = overview.data_quality || {};
+  const modeLabel = { SHADOW: '影子模式', LIVE: '实盘模式', PAPER: '模拟模式' };
+  const qualityOk = quality.status === 'VALID';
+  const scanOk = scan.status === 'SUCCESS';
+  const riskItems = [
+    { label: '行情质量', value: qualityOk ? '正常' : quality.status === 'PENDING' ? '评估中' : '数据不足', color: qualityOk ? '#22c55e' : '#f59e0b', note: quality.message || '—' },
+    { label: '数据延迟', value: status.live ? '实时在线' : '离线/延迟', color: status.live ? '#22c55e' : '#ef4444', note: overview.updated_at ? `最近更新 ${String(overview.updated_at).slice(0, 19)}` : '—' },
+    { label: '券商连接', value: status.mode === 'SHADOW' ? '影子模式·无实盘' : (status.broker || '—'), color: status.mode === 'SHADOW' ? '#f59e0b' : '#22c55e', note: status.proxy ? `代理 ${status.proxy}` : '直连' },
+    { label: '盘后扫描', value: scanOk ? '成功' : (scan.status || '未执行'), color: scanOk ? '#22c55e' : '#f59e0b', note: scan.trade_date ? `${scan.trade_date} · 扫描 ${scan.scanned_count || 0} 只` : '—' },
+    { label: '实盘权限', value: status.allow_live ? '开启' : '关闭', color: status.allow_live ? '#ef4444' : '#22c55e', note: status.allow_live ? '请确认交易风控' : '当前为安全模式' },
+    { label: '账户熔断', value: status.allow_live ? '未触发' : '监控关闭', color: status.allow_live ? '#22c55e' : '#94a3b8', note: status.allow_live ? '实盘风控有效' : '实盘关闭时不执行成交熔断' },
+  ];
+
+  return (
+    <div className="space-y-2">
+      <div className="rounded-lg border p-2.5 flex items-center justify-between gap-2 flex-wrap" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
+        <div>
+          <h3 className="text-sm font-bold" style={{ color: 'var(--text-primary)' }}>⚙️ 美股运行与风控</h3>
+          <div className="text-[10px] mt-0.5" style={{ color: 'var(--text-muted)' }}>由统一系统中心承载，不再单独维护美股系统页</div>
+        </div>
+        <button onClick={load} className="px-2 py-1 rounded border text-[11px]" style={{ borderColor: 'var(--border-color)', color: 'var(--text-secondary)' }}>↻ 刷新</button>
+      </div>
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-1.5">
+        {[
+          ['运行模式', modeLabel[status.mode] || status.mode || '—', status.allow_live ? '允许实盘' : '实盘关闭'],
+          ['数据源', status.data_provider || '—', status.live ? '实时行情 ✓' : '延迟行情'],
+          ['交易账户', status.broker || '—', status.proxy ? `代理 ${status.proxy}` : '直连'],
+          ['最近扫描', scan.candidate_count ?? '—', scan.trade_date ? `${scan.trade_date} · ${scan.pool_source || '统一股票池'}` : '暂无'],
+        ].map(([label, value, sub]) => (
+          <div key={label} className="rounded-lg border p-2" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
+            <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{label}</div>
+            <div className="text-base font-bold mt-0.5" style={{ color: 'var(--text-primary)' }}>{value}</div>
+            <div className="text-[10px] mt-0.5 truncate" style={{ color: 'var(--text-muted)' }}>{sub}</div>
+          </div>
+        ))}
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-2">
+        <div className="rounded-lg border p-2.5" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
+          <h4 className="text-xs font-bold mb-2" style={{ color: 'var(--text-primary)' }}>🔐 风险开关（实时）</h4>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+            {riskItems.map(item => (
+              <div key={item.label} className="rounded-md p-2" style={{ background: 'var(--bg-hover)' }}>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[11px]" style={{ color: 'var(--text-secondary)' }}>{item.label}</span>
+                  <span className="text-[11px] font-bold" style={{ color: item.color }}>● {item.value}</span>
+                </div>
+                <div className="text-[10px] mt-0.5 truncate" style={{ color: 'var(--text-muted)' }}>{item.note}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="rounded-lg border p-2.5" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
+          <h4 className="text-xs font-bold mb-2" style={{ color: 'var(--text-primary)' }}>🌡️ 市场环境</h4>
+          {regime ? (
+            <>
+              <div className="flex items-center gap-3">
+                <span className="text-xl font-bold" style={{ color: regime.allow_new_positions ? '#22c55e' : '#f59e0b' }}>{regime.label || regime.regime || '—'}</span>
+                <span className="text-xs" style={{ color: 'var(--text-muted)' }}>评分 {regime.score ?? '—'}</span>
+              </div>
+              <div className="text-xs mt-2 leading-5" style={{ color: 'var(--text-secondary)' }}>{regime.reason || '暂无环境说明'}</div>
+              <div className="text-xs font-bold mt-2" style={{ color: regime.allow_new_positions ? '#22c55e' : '#ef4444' }}>{regime.allow_new_positions ? '✅ 允许开新仓' : '❌ 暂缓开新仓'}</div>
+            </>
+          ) : <div className="text-xs" style={{ color: 'var(--text-muted)' }}>暂无市场环境数据</div>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function GoogleSheetsSyncPanel() {
+  const [params] = useSearchParams();
+  const [status, setStatus] = useState(null);
+  const [busy, setBusy] = useState('');
+  const [message, setMessage] = useState('');
+
+  const loadStatus = useCallback(async () => {
+    const res = await apiFetch('/api/google-sheets/status', {}, 10000, 1);
+    if (res.ok) setStatus(res.data?.data || null);
+    else setMessage(res.error || '读取 Google Sheets 状态失败');
+  }, []);
+
+  useEffect(() => { loadStatus(); }, [loadStatus]);
+
+  useEffect(() => {
+    const result = params.get('google');
+    if (result === 'connected') setMessage('Google 授权成功，请点击“立即同步”写入表格');
+    if (result === 'error') setMessage(params.get('message') || 'Google 授权失败');
+  }, [params]);
+
+  const connect = async () => {
+    setBusy('connect'); setMessage('正在打开 Google 授权…');
+    const res = await apiFetch('/api/google-sheets/oauth/start', {}, 10000, 0);
+    setBusy('');
+    if (res.ok && res.data?.auth_url) window.location.assign(res.data.auth_url);
+    else setMessage(res.error || '无法开始 Google 授权');
+  };
+
+  const sync = async () => {
+    setBusy('sync'); setMessage('正在同步四个页签…');
+    const res = await apiFetch('/api/google-sheets/sync', { method: 'POST' }, 60000, 0);
+    setBusy('');
+    if (res.ok && res.data?.ok) {
+      setMessage(`同步完成：自选 ${res.data.counts?.自选 ?? 0} 行 · 持仓 ${res.data.counts?.持仓 ?? 0} 行 · 指标 ${res.data.counts?.指标 ?? 0} 行 · 信号 ${res.data.counts?.信号 ?? 0} 行`);
+      await loadStatus();
+    } else setMessage(res.error || res.data?.error || '同步失败');
+  };
+
+  const disconnect = async () => {
+    if (!window.confirm('确定断开 Google Sheets？本机保存的授权文件会被删除。')) return;
+    setBusy('disconnect');
+    const res = await apiFetch('/api/google-sheets/disconnect', { method: 'POST' }, 15000, 0);
+    setBusy('');
+    if (res.ok) { setMessage('已断开 Google Sheets'); await loadStatus(); }
+    else setMessage(res.error || '断开失败');
+  };
+
+  return (
+    <div className="rounded-lg border p-2.5" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <h3 className="text-xs font-bold" style={{ color: 'var(--text-primary)' }}>📄 Google Sheets 同步</h3>
+        <span className="text-[11px]" style={{ color: status?.connected ? '#22c55e' : 'var(--text-muted)' }}>{status?.connected ? '● 已连接' : '○ 未连接'}</span>
+      </div>
+      <div className="flex items-center gap-2 flex-wrap text-[11px] mt-1.5" style={{ color: 'var(--text-secondary)' }}>
+        <span>自选 · 持仓 · RSI/MACD/KDJ/BS · 美股信号</span>
+        {!status?.configured && <span style={{ color: '#f59e0b' }}>需先配置 Google OAuth 凭据</span>}
+        {status?.last_sync && <span style={{ color: 'var(--text-muted)' }}>上次同步 {status.last_sync}</span>}
+        {status?.last_error && <span style={{ color: '#ef4444' }} title={status.last_error}>上次失败：{status.last_error}</span>}
+      </div>
+      {message && <div className="text-[11px] mt-1.5" style={{ color: message.includes('失败') ? '#ef4444' : 'var(--text-secondary)' }}>{message}</div>}
+      <div className="flex gap-1.5 flex-wrap mt-2">
+        {!status?.connected && <button onClick={connect} disabled={busy === 'connect' || !status?.configured} className="px-2 py-1 rounded border text-[11px]" style={{ borderColor: 'var(--accent-blue)', color: 'var(--accent-blue)', background: 'transparent' }}>{busy === 'connect' ? '打开中…' : '连接 Google Sheets'}</button>}
+        {status?.connected && <button onClick={sync} disabled={busy === 'sync'} className="px-2 py-1 rounded text-[11px]" style={{ border: 0, color: '#fff', background: 'var(--accent-blue)' }}>{busy === 'sync' ? '同步中…' : '立即同步'}</button>}
+        {status?.spreadsheet_url && <a href={status.spreadsheet_url} target="_blank" rel="noreferrer" className="no-underline px-2 py-1 rounded border text-[11px]" style={{ borderColor: 'var(--border-color)', color: 'var(--text-secondary)' }}>打开表格 ↗</a>}
+        <a href="/api/google-sheets/export.csv?sheet=自选" download className="no-underline px-2 py-1 rounded border text-[11px]" style={{ borderColor: 'var(--border-color)', color: 'var(--text-secondary)' }}>下载自选 CSV</a>
+        {status?.connected && <button onClick={disconnect} disabled={busy === 'disconnect'} className="px-2 py-1 rounded border text-[11px]" style={{ borderColor: 'var(--border-color)', color: 'var(--text-muted)', background: 'transparent' }}>{busy === 'disconnect' ? '处理中…' : '断开'}</button>}
+      </div>
+      {!status?.configured && <div className="text-[10px] mt-2 leading-5" style={{ color: 'var(--text-muted)' }}>在项目根目录 .env 配置 GOOGLE_SHEETS_CLIENT_ID、GOOGLE_SHEETS_CLIENT_SECRET；回调地址：{status?.redirect_uri || 'http://127.0.0.1:9000/api/google-sheets/oauth/callback'}</div>}
+    </div>
+  );
+}
+
+function MarketScopePicker({ section }) {
+  return (
+    <div className="rounded-lg border p-3" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
+      <h3 className="text-sm font-bold" style={{ color: 'var(--text-primary)' }}>监控规则按市场管理</h3>
+      <p className="text-xs mt-1" style={{ color: 'var(--text-secondary)' }}>规则、交易时段和证券代码格式属于市场维度；仍在同一系统中心内，选择市场后即可维护规则与查看触发记录。</p>
+      <div className="flex gap-2 flex-wrap mt-3">
+        {QUALITY_MARKETS.filter(item => item.id !== 'all').map(item => (
+          <a key={item.id} href={`/quality?market=${item.id}&section=${section}`} className="no-underline px-3 py-1.5 rounded-md border text-xs font-medium" style={{ borderColor: 'var(--border-color)', color: 'var(--accent-blue)' }}>管理{item.label}规则 →</a>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function MarketQualityPanel({ market, mode = 'quality' }) {
+  const [state, setState] = useState({ loading: true, health: null, history: null, snapshot: null, overview: null, freshness: null, services: [], system: null });
+
+  const load = useCallback(async () => {
+    const isA = market === 'a';
+    const requests = isA ? [
+      apiFetch('/api/quality/overview'),
+      apiFetch('/api/quality/data-freshness'),
+      apiFetch('/api/services/status'),
+    ] : [
+      apiFetch(`/api/market-quant/${market.toUpperCase()}/health?universe=CORE`),
+      apiFetch(`/api/market-quant/${market.toUpperCase()}/history/status?universe=CORE`),
+      apiFetch(`/api/market-quant/${market.toUpperCase()}/snapshot?universe=CORE&limit=1`),
+      apiFetch('/api/services/status'),
+      market === 'us' && mode === 'risk' ? apiFetch('/api/us-quant/system/status') : Promise.resolve({ ok: false }),
+    ];
+    const results = await Promise.all(requests);
+    if (isA) {
+      setState({ loading: false, overview: results[0].ok ? results[0].data : null, freshness: results[1].ok ? results[1].data : null, services: results[2].ok ? (results[2].data?.services || []) : [], health: null, history: null, snapshot: null, system: null });
+    } else {
+      setState({ loading: false, health: results[0].ok ? results[0].data : null, history: results[1].ok ? results[1].data : null, snapshot: results[2].ok ? results[2].data : null, services: results[3].ok ? (results[3].data?.services || []) : [], system: results[4]?.ok ? results[4].data : null, overview: null, freshness: null });
+    }
+  }, [market, mode]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const label = QUALITY_MARKETS.find(item => item.id === market)?.label || market;
+  const goodServices = state.services.filter(item => item.status === 'up').length;
+  const allServices = state.services.length;
+  const freshnessStatus = state.freshness?.summary?.overall_status;
+  const healthStatus = state.health?.latest_status || state.snapshot?.status
+    || (freshnessStatus === 'fresh' ? 'VALID' : freshnessStatus === 'error' ? 'ERROR' : freshnessStatus ? 'STALE' : 'NOT_READY');
+  const statusColor = healthStatus === 'SUCCESS' || healthStatus === 'VALID' ? '#22c55e' : healthStatus === 'NOT_READY' ? '#facc15' : '#ef4444';
+  const historyRows = state.history?.min_rows || 0;
+
+  if (state.loading) return <div className="text-center text-xs py-10" style={{ color: 'var(--text-muted)' }}>加载{label}系统状态…</div>;
+
+  return (
+    <div className="space-y-2">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-1.5">
+        <div className="rounded-lg border p-2" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
+          <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>当前市场</div>
+          <div className="text-lg font-bold" style={{ color: 'var(--text-primary)' }}>{label}</div>
+          <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>数据范围独立核验</div>
+        </div>
+        <div className="rounded-lg border p-2" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
+          <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>数据状态</div>
+          <div className="text-lg font-bold" style={{ color: state.overview ? (state.overview.avg_quality_score >= 70 ? '#22c55e' : '#facc15') : statusColor }}>{state.overview ? `${state.overview.avg_quality_score?.toFixed(1) || '—'} 分` : (healthStatus === 'SUCCESS' ? '正常' : healthStatus)}</div>
+          <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{state.health?.updated_at || state.snapshot?.trade_date || state.overview?.trade_date || '暂无最新记录'}</div>
+        </div>
+        <div className="rounded-lg border p-2" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
+          <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>历史日线</div>
+          <div className="text-lg font-bold" style={{ color: 'var(--text-primary)' }}>{state.overview ? (state.overview.total_stocks || 0) : historyRows}</div>
+          <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{state.overview ? '质量快照股票数' : `最少 ${historyRows} 个交易日`}</div>
+        </div>
+        <div className="rounded-lg border p-2" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
+          <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>服务状态</div>
+          <div className="text-lg font-bold" style={{ color: goodServices === allServices && allServices > 0 ? '#22c55e' : '#facc15' }}>{allServices ? `${goodServices}/${allServices}` : '—'}</div>
+          <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>在线服务</div>
+        </div>
+      </div>
+
+      {mode === 'risk' && (
+        <div className="rounded-lg border p-3" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
+          <h3 className="text-xs font-bold mb-2" style={{ color: 'var(--text-primary)' }}>🔐 {label}风控状态</h3>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs">
+            <div><span style={{ color: 'var(--text-muted)' }}>数据可交易：</span><b style={{ color: statusColor }}>{healthStatus === 'SUCCESS' || healthStatus === 'VALID' ? '通过' : '待检查'}</b></div>
+            <div><span style={{ color: 'var(--text-muted)' }}>候选池：</span><b style={{ color: 'var(--text-primary)' }}>{state.health?.pool_count ?? state.snapshot?.signals?.length ?? state.overview?.total_stocks ?? '—'}</b></div>
+            <div><span style={{ color: 'var(--text-muted)' }}>交易权限：</span><b style={{ color: state.system?.allow_live ? '#facc15' : '#22c55e' }}>{state.system ? (state.system.allow_live ? '实盘已开启' : '实盘关闭') : '按市场数据状态'}</b></div>
+          </div>
+        </div>
+      )}
+
+      <div className="rounded-lg border" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
+        <div className="px-3 py-1.5 border-b flex items-center justify-between" style={{ borderColor: 'var(--border-color)' }}>
+          <h3 className="text-xs font-bold" style={{ color: 'var(--text-primary)' }}>📡 {label}数据检查</h3>
+          <button onClick={load} className="px-2 py-0.5 rounded border text-[10px]" style={{ borderColor: 'var(--border-color)', color: 'var(--text-secondary)' }}>刷新</button>
+        </div>
+        <div className="p-2 text-xs" style={{ color: 'var(--text-secondary)' }}>
+          {state.freshness?.sources ? state.freshness.sources.map(item => <div key={item.table || item.name} className="flex justify-between py-1 border-b" style={{ borderColor: 'var(--border-color)' }}><span>{item.name}</span><span style={{ color: item.status === 'fresh' ? '#22c55e' : item.status === 'error' ? '#ef4444' : '#facc15' }}>{item.message || item.status}</span></div>) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+              <span>股票池：{state.health?.pool_count ?? '—'} 只</span>
+              <span>快照：{state.snapshot?.signals?.length ?? 0} 条</span>
+              <span>历史覆盖：{state.history?.with_history ?? 0}/{state.history?.expected ?? 0} 只</span>
+              <span>最近交易日：{state.health?.latest_trade_date || state.snapshot?.trade_date || '—'}</span>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function QualityPage() {
+  const [searchParams] = useSearchParams();
+  const requestedMarket = (searchParams.get('market') || 'all').toLowerCase();
+  const market = QUALITY_MARKETS.some(item => item.id === requestedMarket) ? requestedMarket : 'all';
+  const requestedSection = searchParams.get('section') || searchParams.get('tab') || 'quality';
+  const sectionAliases = { health: 'risk', system: 'risk', rules: 'monitor', monitorRules: 'monitor' };
+  const normalizedSection = sectionAliases[requestedSection] || requestedSection;
+  const section = QUALITY_SECTIONS.some(item => item.id === normalizedSection) ? normalizedSection : 'quality';
   const [overview, setOverview] = useState(null);
   const [sources, setSources] = useState(null);
   const [dataSources, setDataSources] = useState(null);
@@ -63,15 +508,21 @@ export default function QualityPage() {
     }
   }, []);
 
-  useEffect(() => { fetchAll(); fetchServices(); }, [fetchAll, fetchServices]);
+  useEffect(() => {
+    if (market === 'a' && section === 'quality') {
+      fetchAll();
+      fetchServices();
+    }
+  }, [market, section, fetchAll, fetchServices]);
 
   useEffect(() => {
+    if (market !== 'a' || section !== 'quality') return undefined;
     const interval = setInterval(async () => {
       const { ok, data } = await apiFetch('/api/quality/data-freshness');
       if (ok) setFreshness(data);
     }, POLL_INTERVAL);
     return () => clearInterval(interval);
-  }, []);
+  }, [market, section]);
 
   const [selectedValues, setSelectedValues] = useState({});
 
@@ -151,6 +602,32 @@ export default function QualityPage() {
     };
   }, [sources]);
 
+  // 港股/美股使用各自 market_quant 数据库快照；不把 A 股质量表伪装成其他市场。
+  if (section === 'monitor') {
+    return (
+      <div className="space-y-2">
+        <QualityHubHeader market={market} section={section} />
+        {market === 'all' ? <MarketScopePicker section={section} /> : <MonitorRulesPage market={market} embedded />}
+      </div>
+    );
+  }
+  if (market === 'all') {
+    return (
+      <div className="space-y-2">
+        <QualityHubHeader market={market} section={section} />
+        <AllMarketsPanel mode={section} />
+      </div>
+    );
+  }
+  if (market !== 'a' || section === 'risk') {
+    return (
+      <div className="space-y-2">
+        <QualityHubHeader market={market} section={section} />
+        <MarketQualityPanel market={market} mode={section} />
+        {market === 'us' && section === 'risk' && <USSystemPanel />}
+      </div>
+    );
+  }
   if (loading) return <div className="flex items-center justify-center h-96"><div className="text-xs" style={{ color: 'var(--text-muted)' }}>加载中...</div></div>;
 
   const upCount = services.filter(s => s.status === 'up').length;
@@ -158,9 +635,10 @@ export default function QualityPage() {
 
   return (
     <div className="space-y-1">
+      <QualityHubHeader market={market} section={section} />
       <div className="flex items-center justify-between">
         <h2 className="text-base font-bold" style={{ color: 'var(--text-primary)' }}>
-          🛡️ 系统与服务健康
+          A股数据质量明细
           <span className="ml-2 px-1.5 py-0.5 rounded text-[10px] font-normal align-middle" style={{ background: 'rgba(234,179,8,0.1)', color: 'var(--accent-amber)' }}>盘后数据</span>
         </h2>
         <button onClick={() => { fetchAll(); fetchServices(); }} className="px-2 py-1 rounded-lg border text-xs" style={{ borderColor: 'var(--border-color)', color: 'var(--text-secondary)' }}>🔄 刷新</button>

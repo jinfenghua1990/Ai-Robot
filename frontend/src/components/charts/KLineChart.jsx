@@ -1,12 +1,12 @@
 import { useState, useEffect } from 'react';
-import ReactECharts from 'echarts-for-react/lib/core';
+import ReactECharts from 'echarts-for-react/esm/core';
 import echarts from '../../lib/echarts';
 import { tooltipStyle } from '../../utils/chartConfig';
 import { apiFetch } from '../../utils/request';
 
 /**
- * K线图组件（2×3网格左列三格：K线主图 / 成交量 / MACD+KDJ）
- * 信息头/图例/指标说明已移到 KLineModal 顶部信息区
+ * K线图组件：完整模式使用同一坐标画布对齐价格、成交量与MACD+KDJ；
+ * MACD使用左轴，KDJ使用0-100右轴，保持时间轴一致且避免量纲互相干扰。
  * 通过 onSummary 回调把 summary 数据传给父组件
  */
 function hexToRgba(hex, a) {
@@ -15,11 +15,11 @@ function hexToRgba(hex, a) {
   return `rgba(${r},${g},${b},${a})`;
 }
 
-export default function KLineChart({ stockCode, stockName, code, height, onSummary, upColor = '#ef4444', downColor = '#22c55e', livePrice, liveSeries }) {
+export default function KLineChart({ stockCode, code, height, onSummary, upColor = '#ef4444', downColor = '#22c55e', dataAsOf }) {
   // 兼容旧调用：code / height
   // compact 模式：传入 height（小图场景，如 WatchlistPage 右侧）只渲染单个 K 线主图
   const sc = stockCode || code;
-  const sn = stockName || code;
+
   const compact = !!height;
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -27,9 +27,13 @@ export default function KLineChart({ stockCode, stockName, code, height, onSumma
 
   useEffect(() => {
     if (!sc) return;
+    let cancelled = false;
     setLoading(true);
     setError(null);
-    apiFetch(`/api/trading/bs-signals?stockCode=${sc}&datalen=60`).then(({ ok, data, error }) => {
+    const query = new URLSearchParams({ stockCode: sc, datalen: '60' });
+    if (dataAsOf) query.set('as_of', dataAsOf);
+    apiFetch(`/api/trading/bs-signals?${query.toString()}`).then(({ ok, data, error }) => {
+      if (cancelled) return;
       if (ok) {
         setData(data);
         if (onSummary && data?.summary) onSummary(data.summary);
@@ -38,7 +42,8 @@ export default function KLineChart({ stockCode, stockName, code, height, onSumma
       }
       setLoading(false);
     });
-  }, [sc]);
+    return () => { cancelled = true; };
+  }, [sc, onSummary, dataAsOf]);
 
   if (loading) {
     return (
@@ -58,7 +63,7 @@ export default function KLineChart({ stockCode, stockName, code, height, onSumma
 
   if (!data) return null;
 
-  const { klines = [], indicators: rawInd = {}, techSignals = [], tradeRecords = [], summary } = data;
+  const { klines = [], indicators: rawInd = {}, techSignals = [], tradeRecords = [] } = data;
   if (!klines.length || !rawInd.ma5) return (
     <div className="flex items-center justify-center h-full text-sm" style={{ color: 'var(--text-muted)' }}>
       无K线数据
@@ -78,21 +83,12 @@ export default function KLineChart({ stockCode, stockName, code, height, onSumma
     kdj_d: rawInd.kdj_d || [],
     kdj_j: rawInd.kdj_j || [],
   };
-  // 实时最新价：仅更新最后一根日K的 close/high/low（盘中跳动），不影响历史K线；不传 livePrice 时原样
-  const displayKlines = (livePrice != null && klines.length)
-    ? klines.map((k, i) => i === klines.length - 1
-        ? { ...k, close: livePrice, high: Math.max(k.high, livePrice), low: Math.min(k.low, livePrice) }
-        : k)
-    : klines;
+  // 日K图严格展示已完成交易日；实时行情单独由“盘中分时”区域展示，
+  // 不把当日价格篡改为上一交易日蜡烛，避免指标和图形日期不一致。
+  const displayKlines = klines;
   const dates = displayKlines.map(k => k.date);
   const ohlc = displayKlines.map(k => [k.open, k.close, k.low, k.high]);
   const volumes = displayKlines.map(k => k.volume);
-
-  // 实时价曲线：把当日实时价序列叠加到最后一根日K的位置（与蜡烛同坐标系，盘中跳动）
-  const lastIdx = displayKlines.length - 1;
-  const liveSeriesLine = (liveSeries && liveSeries.length && lastIdx >= 0)
-    ? liveSeries.map((p, i) => [lastIdx + (i / Math.max(1, liveSeries.length - 1)) * 0.96, p])
-    : null;
 
   // === 成交量信号计算 ===
   const volumeSignals = [];
@@ -152,7 +148,8 @@ export default function KLineChart({ stockCode, stockName, code, height, onSumma
     }
   }
 
-  const volumeMarks = volumeSignals.map(s => ({
+  // 窄图只保留最近的有效量价标记，避免标签覆盖K线阅读区。
+  const volumeMarks = volumeSignals.slice(-8).map(s => ({
     coord: [s.idx, volumes[s.idx]],
     symbol: 'circle',
     symbolSize: 8,
@@ -232,14 +229,12 @@ export default function KLineChart({ stockCode, stockName, code, height, onSumma
     ? [[{ xAxis: dates[Math.min(...bsIdx)] }, { xAxis: dates[Math.max(...bsIdx)] }]]
     : null;
 
-  const commonAxis = {
-    axisLine: { lineStyle: { color: 'var(--border-color)' } },
-    axisLabel: { color: 'var(--text-muted)', fontSize: 9 },
-  };
 
-  const dataZoom = [
-    { type: 'inside', start: 40, end: 100, zoomOnMouseWheel: false, moveOnMouseWheel: false, moveOnMouseMove: true },
-    { type: 'slider', bottom: 0, height: 14, borderColor: 'var(--border-color)', textStyle: { color: 'var(--text-muted)', fontSize: 9 } },
+
+  const visibleSessions = Math.min(40, dates.length);
+  const zoomStart = dates.length ? Math.max(0, 100 - (visibleSessions / dates.length) * 100) : 0;
+  const compactDataZoom = [
+    { type: 'inside', start: zoomStart, end: 100, zoomOnMouseWheel: false, moveOnMouseWheel: false, moveOnMouseMove: true },
   ];
 
   const makeTooltip = (extraFn) => ({
@@ -247,7 +242,7 @@ export default function KLineChart({ stockCode, stockName, code, height, onSumma
     trigger: 'axis',
     axisPointer: { type: 'cross' },
     formatter: (params) => {
-      const idx = params[0]?.dataIndex;
+      const idx = params.find(p => p?.dataIndex != null)?.dataIndex;
       if (idx == null || !displayKlines[idx]) return '';
       const k = displayKlines[idx];
       const change = ((k.close - k.open) / k.open * 100).toFixed(2);
@@ -272,7 +267,7 @@ export default function KLineChart({ stockCode, stockName, code, height, onSumma
   const priceOption = {
     animation: false,
     tooltip: makeTooltip(),
-    grid: { left: 50, right: 12, top: 8, bottom: 22 },
+    grid: { left: 50, right: 12, top: 8, bottom: 18 },
     xAxis: {
       type: 'category',
       data: dates,
@@ -284,117 +279,200 @@ export default function KLineChart({ stockCode, stockName, code, height, onSumma
       axisLabel: { color: 'var(--text-secondary)', fontSize: 9, formatter: v => v.toFixed(2) },
       splitLine: { lineStyle: { color: 'var(--border-color)', type: 'dashed', opacity: 0.3 } },
     },
-    dataZoom,
+    dataZoom: compactDataZoom,
     series: [
       {
         name: 'K线',
         type: 'candlestick',
         data: ohlc,
+        barMinWidth: 4,
+        barMaxWidth: 12,
         itemStyle: { color: upColor, color0: downColor, borderColor: upColor, borderColor0: downColor },
         markPoint: { data: [...techMarks, ...tradeMarks], animation: false },
         ...(bsBand ? { markArea: { silent: true, itemStyle: { color: 'rgba(56,138,221,0.10)', borderColor: '#85B7EB', borderWidth: 1, borderType: 'dashed' }, data: bsBand } } : {}),
       },
-      { name: 'MA5', type: 'line', data: indicators.ma5, smooth: true, symbol: 'none', lineStyle: { width: 1, color: '#eab308' } },
-      { name: 'MA20', type: 'line', data: indicators.ma20, smooth: true, symbol: 'none', lineStyle: { width: 1, color: '#3b82f6' } },
-      { name: 'SuperTrend', type: 'line', data: indicators.supertrend, symbol: 'none', smooth: false, lineStyle: { width: 2, color: '#a855f7' }, z: 5 },
-      ...(liveSeriesLine ? [{
-        name: '实时价',
-        type: 'line',
-        data: liveSeriesLine,
-        showSymbol: false,
-        smooth: true,
-        z: 7,
-        lineStyle: { width: 2, color: '#378ADD' },
-        markPoint: { data: [{
-          coord: liveSeriesLine[liveSeriesLine.length - 1],
-          symbol: 'circle', symbolSize: 7,
-          itemStyle: { color: '#378ADD', borderColor: '#fff', borderWidth: 1.5 },
-          label: { show: true, formatter: '实时', position: 'top', color: '#185FA5', fontSize: 9, fontWeight: 'bold' },
-        }], animation: false },
-      }] : []),
+      { name: 'MA5', type: 'line', data: indicators.ma5, symbol: 'none', lineStyle: { width: 1.4, color: '#eab308', opacity: 0.9 } },
+      { name: 'MA20', type: 'line', data: indicators.ma20, symbol: 'none', lineStyle: { width: 1.4, color: '#3b82f6', opacity: 0.9 } },
+      { name: 'SuperTrend', type: 'line', data: indicators.supertrend, symbol: 'none', smooth: false, lineStyle: { width: 1.5, color: '#a855f7', opacity: 0.85 }, z: 5 },
     ],
   };
 
-  // === 成交量 option ===
-  const volumeOption = {
-    animation: false,
-    tooltip: makeTooltip(),
-    grid: { left: 50, right: 12, top: 8, bottom: 22 },
-    xAxis: {
-      type: 'category',
-      data: dates,
-      axisLabel: { show: true, color: 'var(--text-muted)', fontSize: 9, formatter: v => (typeof v === 'number' ? '' : (v || '').slice(5)), interval: Math.floor(dates.length / 6) },
-      axisLine: { lineStyle: { color: 'var(--border-color)' } },
+  const volumeSeriesData = volumes.map((v, i) => ({
+    value: v,
+    itemStyle: {
+      color: (() => {
+        if (i >= 5) {
+          const avg5 = volumes.slice(i - 5, i).reduce((a, b) => a + b, 0) / 5;
+          if (v >= avg5 * 1.5) {
+            return klines[i].close >= klines[i].open ? hexToRgba(upColor, 0.9) : hexToRgba(downColor, 0.9);
+          }
+        }
+        return klines[i].close >= klines[i].open ? hexToRgba(upColor, 0.48) : hexToRgba(downColor, 0.48);
+      })(),
     },
-    yAxis: {
-      axisLabel: { color: 'var(--text-muted)', fontSize: 8, formatter: v => (v / 10000).toFixed(0) + '万' },
-      splitLine: { show: false },
-    },
-    dataZoom,
-    series: [{
-      name: '成交量',
-      type: 'bar',
-      data: volumes.map((v, i) => ({
-        value: v,
-        itemStyle: {
-          color: (() => {
-            if (i >= 5) {
-              const avg5 = volumes.slice(i - 5, i).reduce((a, b) => a + b, 0) / 5;
-              if (v >= avg5 * 1.5) {
-                return klines[i].close >= klines[i].open ? hexToRgba(upColor, 0.95) : hexToRgba(downColor, 0.95);
-              }
-            }
-            return klines[i].close >= klines[i].open ? hexToRgba(upColor, 0.5) : hexToRgba(downColor, 0.5);
-          })(),
-        },
-      })),
-      markPoint: { data: volumeMarks, animation: false },
-    }],
-  };
+  }));
 
-  // === MACD+KDJ option ===
-  const macdKdjOption = {
+  const axisLabelInterval = Math.max(0, Math.floor(visibleSessions / 6) - 1);
+  const axisTextColor = '#7c8aa0';
+  const axisLineColor = 'rgba(148,163,184,0.28)';
+  const splitLineColor = 'rgba(148,163,184,0.16)';
+
+  // KDJ 轴自适应范围：J = 3K - 2D，强趋势下 J 会跌破 0 或突破 100。
+  // 若 K/D/J 都在 [0,100] 内则保持经典 0-100 观感；否则按数据扩展范围并加 10% 缓冲，
+  // 避免 J 线尖峰超出绘图区被裁切。
+  const kdjAxis = (() => {
+    let min = 0, max = 100;
+    for (let i = 0; i < indicators.kdj_j.length; i++) {
+      const j = indicators.kdj_j[i];
+      if (j == null) continue;
+      if (j < min) min = j;
+      if (j > max) max = j;
+    }
+    if (min === 0 && max === 100) return { min: 0, max: 100 };
+    const pad = Math.max((max - min) * 0.1, 5);
+    return { min: Math.floor(min - pad), max: Math.ceil(max + pad) };
+  })();
+
+  // 完整模式：一个ECharts实例内对齐三组坐标；仅保留图内拖动缩放，不显示底部缩放条。
+  const fullOption = {
     animation: false,
+    backgroundColor: 'transparent',
     tooltip: makeTooltip((idx) => {
-      let html = '';
-      if (indicators.dif[idx] != null) html += `<div>DIF:${indicators.dif[idx]} DEA:${indicators.dea[idx]} MACD:${indicators.macd[idx]}</div>`;
-      if (indicators.kdj_k[idx] != null) html += `<div>K:${indicators.kdj_k[idx]} D:${indicators.kdj_d[idx]} J:${indicators.kdj_j[idx]}</div>`;
-      return html;
+      const rows = [];
+      if (indicators.dif[idx] != null) {
+        rows.push(`<div>DIF:${indicators.dif[idx]} DEA:${indicators.dea[idx]} MACD:${indicators.macd[idx]}</div>`);
+      }
+      if (indicators.kdj_k[idx] != null) {
+        rows.push(`<div>K:${indicators.kdj_k[idx]} D:${indicators.kdj_d[idx]} J:${indicators.kdj_j[idx]}</div>`);
+      }
+      return rows.join('');
     }),
-    grid: { left: 50, right: 50, top: 8, bottom: 22 },
-    xAxis: {
-      type: 'category',
-      data: dates,
-      axisLabel: { show: true, color: 'var(--text-muted)', fontSize: 9, formatter: v => (typeof v === 'number' ? '' : (v || '').slice(5)), interval: Math.floor(dates.length / 6) },
-      axisLine: { lineStyle: { color: 'var(--border-color)' } },
+    axisPointer: {
+      link: [{ xAxisIndex: [0, 1, 2] }],
+      label: { backgroundColor: '#475569', fontSize: 9 },
     },
-    yAxis: [
-      { axisLabel: { color: 'var(--text-muted)', fontSize: 8 }, splitLine: { show: false } },
-      { position: 'right', min: 0, max: 100, axisLabel: { color: 'var(--text-muted)', fontSize: 8 }, splitLine: { show: false } },
+    title: [
+      { text: '价格', left: 10, top: 5, textStyle: { color: axisTextColor, fontSize: 10, fontWeight: 600 } },
+      { text: '成交量', left: 10, top: '51.5%', textStyle: { color: axisTextColor, fontSize: 10, fontWeight: 600 } },
+      { text: 'MACD + KDJ', left: 10, top: '70.5%', textStyle: { color: axisTextColor, fontSize: 10, fontWeight: 600 } },
     ],
-    dataZoom,
+    legend: [
+      {
+        data: ['MA5', 'MA20', 'SuperTrend'],
+        selectedMode: false,
+        top: 4,
+        right: 10,
+        itemWidth: 12,
+        itemHeight: 3,
+        itemGap: 10,
+        textStyle: { color: axisTextColor, fontSize: 9 },
+      },
+      {
+        data: ['DIF', 'DEA', 'K', 'D', 'J'],
+        selectedMode: false,
+        top: '70.2%',
+        right: 28,
+        itemWidth: 11,
+        itemHeight: 2,
+        itemGap: 7,
+        textStyle: { color: axisTextColor, fontSize: 8 },
+      },
+    ],
+    grid: [
+      { left: 46, right: 16, top: 30, height: '43%' },
+      { left: 46, right: 16, top: '56%', height: '12%' },
+      { left: 46, right: 32, top: '75%', bottom: 18 },
+    ],
+    xAxis: [0, 1, 2].map((gridIndex) => ({
+      type: 'category',
+      gridIndex,
+      data: dates,
+      boundaryGap: true,
+      axisTick: { show: false },
+      axisLine: { show: gridIndex === 2, lineStyle: { color: axisLineColor } },
+      axisLabel: gridIndex === 2
+        ? { show: true, color: axisTextColor, fontSize: 9, formatter: v => (typeof v === 'number' ? '' : (v || '').slice(5)), interval: axisLabelInterval }
+        : { show: false },
+      splitLine: { show: false },
+      axisPointer: { show: true, snap: true },
+    })),
+    yAxis: [
+      {
+        gridIndex: 0,
+        scale: true,
+        splitNumber: 5,
+        axisTick: { show: false },
+        axisLine: { show: false },
+        axisLabel: { color: axisTextColor, fontSize: 9, formatter: v => Number(v).toFixed(2) },
+        splitLine: { lineStyle: { color: splitLineColor, type: 'dashed' } },
+      },
+      {
+        gridIndex: 1,
+        splitNumber: 2,
+        axisTick: { show: false },
+        axisLine: { show: false },
+        axisLabel: { color: axisTextColor, fontSize: 8, formatter: v => `${(v / 10000).toFixed(0)}万` },
+        splitLine: { show: false },
+      },
+      {
+        gridIndex: 2,
+        scale: true,
+        splitNumber: 3,
+        axisTick: { show: false },
+        axisLine: { show: false },
+        axisLabel: { color: axisTextColor, fontSize: 8 },
+        splitLine: { lineStyle: { color: splitLineColor, type: 'dashed' } },
+      },
+      {
+        gridIndex: 2,
+        position: 'right',
+        min: kdjAxis.min,
+        max: kdjAxis.max,
+        splitNumber: 2,
+        axisTick: { show: false },
+        axisLine: { show: false },
+        axisLabel: { color: axisTextColor, fontSize: 8, formatter: value => Number(value).toFixed(0) },
+        splitLine: { show: false },
+      },
+    ],
+    dataZoom: [
+      {
+        type: 'inside',
+        xAxisIndex: [0, 1, 2],
+        start: zoomStart,
+        end: 100,
+        zoomOnMouseWheel: false,
+        moveOnMouseWheel: false,
+        moveOnMouseMove: true,
+      },
+    ],
     series: [
-      { name: 'MACD', type: 'bar', data: indicators.macd.map(v => ({ value: v, itemStyle: { color: v >= 0 ? hexToRgba(upColor, 0.6) : hexToRgba(downColor, 0.6) } })) },
-      { name: 'DIF', type: 'line', data: indicators.dif, symbol: 'none', lineStyle: { width: 1, color: '#ffffff' } },
-      { name: 'DEA', type: 'line', data: indicators.dea, symbol: 'none', lineStyle: { width: 1, color: '#f97316' } },
-      { name: 'K', type: 'line', data: indicators.kdj_k, yAxisIndex: 1, symbol: 'none', lineStyle: { width: 1, color: '#fbbf24' } },
-      { name: 'D', type: 'line', data: indicators.kdj_d, yAxisIndex: 1, symbol: 'none', lineStyle: { width: 1, color: '#22d3ee' } },
-      { name: 'J', type: 'line', data: indicators.kdj_j, yAxisIndex: 1, symbol: 'none', lineStyle: { width: 1, color: '#f43f5e' } },
+      ...priceOption.series.map(series => ({ ...series, xAxisIndex: 0, yAxisIndex: 0 })),
+      {
+        name: '成交量',
+        type: 'bar',
+        xAxisIndex: 1,
+        yAxisIndex: 1,
+        barMaxWidth: 12,
+        data: volumeSeriesData,
+        markPoint: { data: volumeMarks, animation: false },
+      },
+      {
+        name: 'MACD',
+        type: 'bar',
+        xAxisIndex: 2,
+        yAxisIndex: 2,
+        barMaxWidth: 12,
+        data: indicators.macd.map(v => ({ value: v, itemStyle: { color: v >= 0 ? hexToRgba(upColor, 0.62) : hexToRgba(downColor, 0.62) } })),
+        markLine: { silent: true, symbol: 'none', label: { show: false }, lineStyle: { color: axisLineColor, width: 1 }, data: [{ yAxis: 0 }] },
+      },
+      { name: 'DIF', type: 'line', xAxisIndex: 2, yAxisIndex: 2, data: indicators.dif, symbol: 'none', lineStyle: { width: 1.3, color: '#38bdf8' } },
+      { name: 'DEA', type: 'line', xAxisIndex: 2, yAxisIndex: 2, data: indicators.dea, symbol: 'none', lineStyle: { width: 1.3, color: '#f59e0b' } },
+      { name: 'K', type: 'line', xAxisIndex: 2, yAxisIndex: 3, data: indicators.kdj_k, symbol: 'none', lineStyle: { width: 1.15, color: '#fbbf24' }, z: 4 },
+      { name: 'D', type: 'line', xAxisIndex: 2, yAxisIndex: 3, data: indicators.kdj_d, symbol: 'none', lineStyle: { width: 1.15, color: '#22d3ee' }, z: 4 },
+      { name: 'J', type: 'line', xAxisIndex: 2, yAxisIndex: 3, data: indicators.kdj_j, symbol: 'none', lineStyle: { width: 1.15, color: '#f43f5e' }, z: 4 },
     ],
   };
-
-  const ChartBox = ({ title, children, className = '' }) => (
-    <div className={`rounded-lg border flex flex-col overflow-hidden ${className}`} style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)', minHeight: 0 }}>
-      <div className="text-[10px] font-bold px-2 pt-1.5 pb-0.5 flex-shrink-0 flex items-center justify-between" style={{ color: 'var(--text-secondary)' }}>
-        <span>{title}</span>
-      </div>
-      <div className="flex-1" style={{ minHeight: 0 }}>
-        {children}
-      </div>
-    </div>
-  );
-
-  const wrapperStyle = height ? { height } : undefined;
 
   // compact 模式：小图场景（WatchlistPage 右侧），只渲染单个 K 线主图
   if (compact) {
@@ -406,16 +484,8 @@ export default function KLineChart({ stockCode, stockName, code, height, onSumma
   }
 
   return (
-    <div className="grid gap-1.5 h-full" style={{ gridTemplateRows: '1fr 0.6fr 0.8fr', ...wrapperStyle }}>
-      <ChartBox title="K线主图">
-        <ReactECharts echarts={echarts} option={priceOption} notMerge={true} key={`${sc}-price`} style={{ height: '100%', width: '100%' }} opts={{ renderer: 'canvas' }} />
-      </ChartBox>
-      <ChartBox title="成交量">
-        <ReactECharts echarts={echarts} option={volumeOption} notMerge={true} key={`${sc}-vol`} style={{ height: '100%', width: '100%' }} opts={{ renderer: 'canvas' }} />
-      </ChartBox>
-      <ChartBox title="MACD + KDJ">
-        <ReactECharts echarts={echarts} option={macdKdjOption} notMerge={true} key={`${sc}-macd`} style={{ height: '100%', width: '100%' }} opts={{ renderer: 'canvas' }} />
-      </ChartBox>
+    <div className="h-full rounded-xl border overflow-hidden" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)', boxShadow: 'inset 0 1px 0 rgba(148,163,184,0.06)' }}>
+      <ReactECharts echarts={echarts} option={fullOption} notMerge={true} key={`${sc}-terminal`} style={{ height: '100%', width: '100%' }} opts={{ renderer: 'canvas' }} />
     </div>
   );
 }

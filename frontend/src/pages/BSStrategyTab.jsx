@@ -1,6 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import StrategySignalCard from '../components/trading/StrategySignalCard';
-import StrategyResultsTable from '../components/StrategyResultsTable';
+import WatchlistResultsTable from '../components/WatchlistResultsTable';
 import { apiFetch } from '../utils/request';
 
 /**
@@ -139,20 +138,11 @@ export default function BSStrategyTab({ strategy }) {
             扫描 {result.scanned} · 命中 <strong style={{ color: '#ef4444' }}>{result.summary?.total || 0}</strong>
           </div>
           {result.signals?.length > 0 ? (
-            <StrategyResultsTable
-              rows={result.signals}
-              getRowKey={(row, i) => row.ts_code || i}
-              columns={[
-                { key: 'code', label: '代码', render: r => r.ts_code, width: '75px' },
-                { key: 'name', label: '名称', render: r => r.name, width: '80px' },
-                { key: 'signal', label: '信号', render: r => r.signal_type || 'B', width: '50px' },
-                { key: 'price', label: '触发价', render: r => r.price, type: 'number', align: 'right', width: '65px' },
-                { key: 'changePct', label: '涨跌幅', render: r => r.change_pct, type: 'percent', align: 'right', width: '70px' },
-                { key: 'atrUpper', label: 'ATR上轨', render: r => r.atr_upper, type: 'number', align: 'right', width: '75px' },
-                { key: 'sector', label: '板块', render: r => r.sector, width: '80px' },
-              ]}
-              cardComponent={StrategySignalCard}
-              cardProps={{ mode: 'watchlist', showWatchBtn: true, showAnalysisButton: true }}
+            <WatchlistResultsTable
+              items={result.signals}
+              viewModeKey={`bs-${strategy?.id ?? 'strategy'}`}
+              defaultViewMode="table"
+              emptyText="今日无符合条件的B点信号"
             />
           ) : (
             <div className="text-center py-8 text-sm" style={{ color: 'var(--text-muted)' }}>

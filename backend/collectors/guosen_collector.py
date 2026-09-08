@@ -7,6 +7,8 @@
 - 关联板块
 """
 import sys, os
+import threading
+from datetime import date
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import logging
 
@@ -20,6 +22,8 @@ sys.path.insert(0, _SKILL_SCRIPT_DIR)
 from config import GS_API_KEY
 os.environ['GS_API_KEY'] = GS_API_KEY  # skill 脚本从环境变量读取
 logger = logging.getLogger(__name__)
+_GUOSEN_FUND_FLOW_QUOTA_EXHAUSTED_DATE = None
+_GUOSEN_FUND_FLOW_LOCK = threading.Lock()
 
 try:
     from get_data import (
@@ -41,6 +45,46 @@ def _set_code_from_ts_code(ts_code):
     if ts_code.endswith('.BJ'):
         return 2
     return 0
+
+
+def _first_mapping(value):
+    """兼容国信接口把结果包成对象或列表的两种响应形态。"""
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, list):
+        return next((item for item in value if isinstance(item, dict)), None)
+    return None
+
+
+def _extract_fund_flow_payload(response):
+    """返回含资金流字段的记录；上游无有效记录时返回 None。"""
+    if not isinstance(response, dict):
+        return None
+
+    result = response.get('result')
+    if isinstance(result, dict):
+        code = result.get('code')
+        if code not in (None, 0, '0'):
+            return None
+        candidates = (response.get('object'), response.get('data'), result.get('object'), result.get('data'), result)
+    else:
+        candidates = (response.get('object'), response.get('data'), result)
+
+    for candidate in candidates:
+        payload = _first_mapping(candidate)
+        if payload and any(key in payload for key in ('mainNetInflow', 'netInflow')):
+            return payload
+    return None
+
+
+def _fund_flow_quota_exhausted(response) -> bool:
+    """国信返回 197006 时表示当天额度耗尽，不能继续逐股重试。"""
+    if not isinstance(response, dict):
+        return False
+    result = _first_mapping(response.get('result'))
+    if not result:
+        return False
+    return str(result.get('code', '')) == '197006' or '超过日限额' in str(result.get('msg', ''))
 
 
 def guosen_batch_realtime_quotes(ts_codes, batch_size=10):
@@ -90,23 +134,33 @@ def guosen_single_fund_flow(ts_code, period=1):
     """
     if not GUOSEN_AVAILABLE:
         return None
-    code = ts_code.replace('.SH', '').replace('.SZ', '').replace('.BJ', '')
-    set_code = _set_code_from_ts_code(ts_code)
-    try:
-        resp = query_fund_flow(code, set_code=set_code, period=period)
-        if resp.get('result', {}).get('code') == 0:
-            obj = resp.get('object', {})
-            # mainNetInflow 单位是元，转万元
-            main_inflow = float(obj.get('mainNetInflow', 0) or 0) / 10000
-            net_inflow = float(obj.get('netInflow', 0) or 0)  # 已经是万元
-            return {
-                'ts_code': ts_code,
-                'main_force_inflow': main_inflow,
-                'net_inflow': net_inflow,
-                'source': 'guosen',
-            }
-    except Exception as e:
-        logger.warning(f'[guosen] fund_flow error for {ts_code}: {e}', exc_info=True)
+    global _GUOSEN_FUND_FLOW_QUOTA_EXHAUSTED_DATE
+    # 该接口有日额度。锁覆盖请求和额度标记，避免并发任务在收到 197006 前重复穿透。
+    with _GUOSEN_FUND_FLOW_LOCK:
+        today = date.today()
+        if _GUOSEN_FUND_FLOW_QUOTA_EXHAUSTED_DATE == today:
+            return None
+        code = ts_code.replace('.SH', '').replace('.SZ', '').replace('.BJ', '')
+        set_code = _set_code_from_ts_code(ts_code)
+        try:
+            resp = query_fund_flow(code, set_code=set_code, period=period)
+            if _fund_flow_quota_exhausted(resp):
+                _GUOSEN_FUND_FLOW_QUOTA_EXHAUSTED_DATE = today
+                logger.warning('[guosen] fund-flow daily quota exhausted; skip further requests until tomorrow')
+                return None
+            obj = _extract_fund_flow_payload(resp)
+            if obj is not None:
+                # mainNetInflow 单位是元，转万元
+                main_inflow = float(obj.get('mainNetInflow', 0) or 0) / 10000
+                net_inflow = float(obj.get('netInflow', 0) or 0)  # 已经是万元
+                return {
+                    'ts_code': ts_code,
+                    'main_force_inflow': main_inflow,
+                    'net_inflow': net_inflow,
+                    'source': 'guosen',
+                }
+        except Exception as e:
+            logger.warning(f'[guosen] fund_flow error for {ts_code}: {e}', exc_info=True)
     return None
 
 

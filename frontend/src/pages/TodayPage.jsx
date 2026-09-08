@@ -66,7 +66,7 @@ export default function TodayPage() {
     <div className="space-y-3">
       {/* 日期选择 + 标题 */}
       <div className="flex items-center justify-between flex-wrap gap-2">
-        <h2 className="text-xl font-bold" style={{ color: 'var(--text-primary)' }}>盘中实时</h2>
+        <h2 className="text-xl font-bold" style={{ color: 'var(--text-primary)' }}>市场总览</h2>
         <div className="flex items-center gap-2">
           <input type="date" value={selectedDate} onChange={e => setSelectedDate(e.target.value)}
             className="px-2 py-1 rounded border text-xs" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)', color: 'var(--text-primary)' }} />

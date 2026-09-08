@@ -1,12 +1,12 @@
-import { useState, useEffect, useMemo, useRef } from 'react';
+import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { useDatePicker } from '../hooks/useDatePicker';
 import DateNavigator from '../components/DateNavigator';
 import StrategySignalCard from '../components/trading/StrategySignalCard';
-import StrategyResultsTable from '../components/StrategyResultsTable';
+import WatchlistResultsTable from '../components/WatchlistResultsTable';
 import { fmtFlow } from '../utils/format';
 import { apiFetch } from '../utils/request';
 
-const PAGE_SIZE = 20;
+
 
 const DIM_COLORS = {
   shadow: '#ef4444',     // 下影线 - 红
@@ -36,7 +36,6 @@ export default function ScreenerPage({ initialStrategy, hideStrategySelector }) 
   // 白虎V3.0筛选
   const [sectorFilter, setSectorFilter] = useState('全部');
   const [searchText, setSearchText] = useState('');
-  const [currentPage, setCurrentPage] = useState(0);
   // 白虎V3.0独立数据
   const [baihuData, setBaihuData] = useState(null);
   const [baihuLoading, setBaihuLoading] = useState(false);
@@ -95,7 +94,7 @@ export default function ScreenerPage({ initialStrategy, hideStrategySelector }) 
   };
 
   // 多因子量化选股
-  const handleMfFilter = async (e) => {
+  const handleMfFilter = useCallback(async (e) => {
     e?.preventDefault();
     setMfLoading(true); setMfError(null); setMfResults(null);
     try {
@@ -116,7 +115,7 @@ export default function ScreenerPage({ initialStrategy, hideStrategySelector }) 
       setMfError('请求失败: ' + err.message);
     }
     setMfLoading(false);
-  };
+  }, [mfGmMin, mfInstMin, mfLimit, mfMarket, mfNetInflow, mfPeMax, mfRoeMin, mfSector, mfSortBy]);
 
   // 多因子自动加载（页面打开时先跑一次默认条件）
   const mfAutoRef = useRef(false);
@@ -124,7 +123,7 @@ export default function ScreenerPage({ initialStrategy, hideStrategySelector }) 
     if (mfAutoRef.current) return;
     mfAutoRef.current = true;
     setTimeout(() => handleMfFilter(), 100); // 稍延后让页面渲染优先级优先
-  }, []);
+  }, [handleMfFilter]);
 
   // 主数据请求（只在 date+strategy 变化时触发一次）
   useEffect(() => {
@@ -148,7 +147,7 @@ export default function ScreenerPage({ initialStrategy, hideStrategySelector }) 
       setLoading(false);
     })();
     return () => controller.abort();
-  }, [selectedDate, strategy]);
+  }, [data, selectedDate, strategy]);
 
   // 白虎V3.0独立请求
   useEffect(() => {
@@ -169,7 +168,7 @@ export default function ScreenerPage({ initialStrategy, hideStrategySelector }) 
       setBaihuLoading(false);
     })();
     return () => controller.abort();
-  }, [selectedDate, strategy]);
+  }, [baihuData, selectedDate, strategy]);
 
   // 量价报告独立请求
   useEffect(() => {
@@ -189,9 +188,9 @@ export default function ScreenerPage({ initialStrategy, hideStrategySelector }) 
       setLiangjiaLoading(false);
     })();
     return () => controller.abort();
-  }, [selectedDate, strategy]);
+  }, [liangjiaData, selectedDate, strategy]);
 
-  useEffect(() => { setCurrentPage(0); setSectorFilter('全部'); setSearchText(''); }, [strategy, selectedDate]);
+  useEffect(() => { setSectorFilter('全部'); setSearchText(''); }, [strategy, selectedDate]);
 
   const handleBackfill = async () => {
     const token = prompt('请输入采集令牌:');
@@ -236,8 +235,8 @@ export default function ScreenerPage({ initialStrategy, hideStrategySelector }) 
     return result;
   }, [baihuData, sectorFilter, searchText]);
 
-  const totalPages = Math.ceil(filteredBaihuStocks.length / PAGE_SIZE);
-  const pagedBaihuStocks = filteredBaihuStocks.slice(currentPage * PAGE_SIZE, (currentPage + 1) * PAGE_SIZE);
+
+
 
   if (!selectedDate) {
     return (
@@ -617,20 +616,12 @@ export default function ScreenerPage({ initialStrategy, hideStrategySelector }) 
             {loading ? (
               <div className="flex items-center justify-center h-48 text-sm" style={{ color: 'var(--text-muted)' }}>加载中...</div>
             ) : data?.stocks && data.stocks.length > 0 ? (
-              <StrategyResultsTable
-                rows={data.stocks}
-                getRowKey={(row, i) => row.secCode || i}
-                columns={[
-                  { key: 'code', label: '代码', render: r => r.secCode, width: '70px' },
-                  { key: 'name', label: '名称', render: r => r.secName, width: '80px' },
-                  { key: 'close', label: '最新价', render: r => r.close, type: 'number', align: 'right', width: '65px' },
-                  { key: 'changePct', label: '涨跌幅', render: r => r.changePct, type: 'percent', align: 'right', width: '70px' },
-                  { key: 'score', label: '得分', render: r => r.score ?? r.totalScore, type: 'number', align: 'right', width: '55px' },
-                  { key: 'sector', label: '板块', render: r => r.sector, width: '80px' },
-                  { key: 'netInflow', label: '主力净流入', render: r => r.netInflow ?? r.mainNetIn, type: 'money', align: 'right', width: '85px' },
-                ]}
-                cardComponent={StrategySignalCard}
-                cardProps={{ mode: 'watchlist', showWatchBtn: true, showAnalysisButton: true }}
+              <WatchlistResultsTable
+                items={data.stocks}
+                viewModeKey={`screener-${strategy}`}
+                loading={loading}
+                defaultViewMode="table"
+                emptyText="当日暂无命中结果，盘后自动扫描生成；可切换交易日查看"
               />
             ) : (
               <div className="flex items-center justify-center h-48 text-sm" style={{ color: 'var(--text-muted)' }}>暂无选股结果，请手动采集数据</div>
@@ -693,21 +684,12 @@ export default function ScreenerPage({ initialStrategy, hideStrategySelector }) 
             {baihuLoading ? (
               <div className="flex items-center justify-center h-96 text-sm" style={{ color: 'var(--text-muted)' }}>加载中...</div>
             ) : filteredBaihuStocks.length > 0 ? (
-              <StrategyResultsTable
-                rows={filteredBaihuStocks}
-                getRowKey={(row, i) => row.secCode || i}
-                columns={[
-                  { key: 'code', label: '代码', render: r => r.secCode, width: '70px' },
-                  { key: 'name', label: '名称', render: r => r.secName, width: '80px' },
-                  { key: 'close', label: '最新价', render: r => r.close, type: 'number', align: 'right', width: '65px' },
-                  { key: 'changePct', label: '涨跌幅', render: r => r.changePct, type: 'percent', align: 'right', width: '70px' },
-                  { key: 'score', label: '得分', render: r => r.totalScore ?? r.score, type: 'number', align: 'right', width: '55px' },
-                  { key: 'sector', label: '板块', render: r => r.sector, width: '80px' },
-                  { key: 'dimScore', label: '维度分', render: r => r.dimScore ?? r.dimensionScore, width: '90px' },
-                ]}
-                cardComponent={StrategySignalCard}
-                cardProps={{ mode: 'watchlist', showWatchBtn: true, showAnalysisButton: true }}
-                searchPlaceholder="搜索代码 / 名称 / 板块..."
+              <WatchlistResultsTable
+                items={filteredBaihuStocks}
+                viewModeKey="screener-baihu"
+                loading={baihuLoading}
+                defaultViewMode="table"
+                emptyText={baihuData?.stocks?.length > 0 ? '无匹配结果，请调整筛选条件' : '暂无选股结果 — 白虎策略在缩量回踩守20日线或放量突破不破5/10日线时触发，请切换日期查看'}
               />
             ) : (
               <div className="flex items-center justify-center h-96 text-sm" style={{ color: 'var(--text-muted)' }}>
@@ -789,22 +771,12 @@ export default function ScreenerPage({ initialStrategy, hideStrategySelector }) 
             {liangjiaLoading ? (
               <div className="flex items-center justify-center h-96 text-sm" style={{ color: 'var(--text-muted)' }}>加载中...</div>
             ) : (liangjiaData?.groups?.[liangjiaTier] || []).length > 0 ? (
-              <StrategyResultsTable
-                rows={liangjiaData.groups[liangjiaTier] || []}
-                getRowKey={(row, i) => row.secCode || i}
-                columns={[
-                  { key: 'code', label: '代码', render: r => r.secCode, width: '70px' },
-                  { key: 'name', label: '名称', render: r => r.secName, width: '80px' },
-                  { key: 'pattern', label: '形态', render: r => r.patternDesc || r.pattern, width: '75px' },
-                  { key: 'close', label: '最新价', render: r => r.close, type: 'number', align: 'right', width: '65px' },
-                  { key: 'changePct', label: '涨跌幅', render: r => r.changePct, type: 'percent', align: 'right', width: '70px' },
-                  { key: 'gain5d', label: '5日涨幅', render: r => r.gain5d, type: 'percent', align: 'right', width: '70px' },
-                  { key: 'volRatio', label: '量比', render: r => r.volRatio20, type: 'number', align: 'right', width: '55px' },
-                  { key: 'distHigh', label: '距高点', render: r => r.distanceToHigh20 ? `${Number(r.distanceToHigh20).toFixed(0)}%` : '-', align: 'right', width: '65px' },
-                ]}
-                cardComponent={StrategySignalCard}
-                cardProps={{ mode: 'watchlist', showWatchBtn: true, showAnalysisButton: true }}
-                defaultView="table"
+              <WatchlistResultsTable
+                items={liangjiaData.groups[liangjiaTier] || []}
+                viewModeKey="screener-liangjia"
+                loading={liangjiaLoading}
+                defaultViewMode="table"
+                emptyText={liangjiaData ? `当前层级无股票，切换其他层级查看` : '暂无数据'}
               />
             ) : (
               <div className="flex items-center justify-center h-96 text-sm" style={{ color: 'var(--text-muted)' }}>

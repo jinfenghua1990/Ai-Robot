@@ -11,14 +11,13 @@ BS点生成逻辑（SuperTrend单信号源）：
 - 单信号源天然交替(B→S→B→S)，无需去噪
 """
 import time
+import asyncio
 from datetime import datetime
+from typing import Optional
 from fastapi import APIRouter, HTTPException, Query
-from config import MX_APIKEY, MX_API_URL
-from db.connection import get_db
 from db.session import get_db_session
 from db.models import StockFlow
 from analyzers.strategy_engine import _find_sector_for_stock, _get_sector_trend
-from utils import stock_code_to_sina
 from utils.cache import BoundedDict
 from services.indicators import (
     calc_ma as _calc_ma_impl,
@@ -29,8 +28,12 @@ from services.indicators import (
 )
 
 import logging
-from utils.http_constants import SINA_HEADERS_SHORT
-from api.watchlist._shared import _get_http_client
+from api.watchlist._shared import (
+    _candidate_ts_codes,
+    batch_get_quotes,
+    fetch_kline_cached,
+    get_quote,
+)
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
@@ -40,124 +43,8 @@ CALC_DATALEN = 150
 
 
 async def _fetch_kline(stock_code: str, datalen: int = CALC_DATALEN):
-    """从本地 stock_daily_kline 表读 K线，不足时回退到 Tushare daily 接口
-    之前完全依赖新浪 API（常 502/TLS阻断），现优先本地+回退
-    """
-    import asyncio
-    from datetime import datetime, timedelta
-    from db.models import StockDailyKline
-
-    # 复用 market_state 中的格式转换（避免重复实现）
-    from analyzers.market_state import _stock_code_to_tushare
-    ts_code = _stock_code_to_tushare(stock_code)
-
-    # 1) 优先本地 stock_daily_kline
-    try:
-        with get_db_session() as db:
-            rows = db.query(StockDailyKline).filter(
-                StockDailyKline.ts_code == ts_code
-            ).order_by(StockDailyKline.trade_date.desc()).limit(datalen).all()
-        if rows and len(rows) >= 60:
-            klines = [{
-                'date': str(r.trade_date),
-                'open': float(r.open or 0), 'close': float(r.close or 0),
-                'high': float(r.high or 0), 'low': float(r.low or 0),
-                'volume': int(r.volume or 0),
-            } for r in reversed(rows)]
-            return klines
-    except Exception as e:
-        logger.debug(f'[bs_signals] 本地 K线查询失败 {stock_code}: {e}')
-
-    # 2) 本地不足，Tushare daily 回退
-    try:
-        from collectors.tdx_collector import call_tushare_mcp
-        end_date = datetime.now().strftime('%Y%m%d')
-        start_date = (datetime.now() - timedelta(days=datalen * 2)).strftime('%Y%m%d')
-        ts_data = await asyncio.to_thread(
-            call_tushare_mcp, 'daily',
-            {'ts_code': ts_code, 'start_date': start_date, 'end_date': end_date},
-            ['ts_code', 'trade_date', 'open', 'high', 'low', 'close', 'vol']
-        )
-        if ts_data:
-            klines = []
-            for item in ts_data:
-                try:
-                    klines.append({
-                        'date': str(item['trade_date'])[:10],
-                        'open': float(item['open']),
-                        'close': float(item['close']),
-                        'high': float(item['high']),
-                        'low': float(item['low']),
-                        'volume': int(float(item.get('vol', 0) or 0)),
-                    })
-                except (KeyError, ValueError, TypeError):
-                    continue
-            klines.sort(key=lambda x: x['date'])
-            return klines[-datalen:]
-    except Exception as e:
-        logger.debug(f'[bs_signals] Tushare 回退失败 {stock_code}: {e}')
-
-    # 3) 最后兜底：新浪 API（最不可靠）
-    import os, json as _json
-    cache_dir = '/tmp/kline_cache'
-    os.makedirs(cache_dir, exist_ok=True)
-    cache_file = f"{cache_dir}/{stock_code}.json"
-    if os.path.exists(cache_file):
-        try:
-            with open(cache_file, 'r', encoding='utf-8') as f:
-                klines = _json.load(f)
-            if klines and len(klines) >= 100:
-                return klines[:datalen] if datalen < len(klines) else klines
-        except Exception:
-            logger.debug("bs_signals: cache op failed", exc_info=False)
-
-    sina_code = _stock_code_to_sina(stock_code)
-    url = f"https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData?symbol={sina_code}&scale=240&ma=no&datalen={datalen}"
-    try:
-        client = _get_http_client()
-        resp = await client.get(url)
-        data = resp.json()
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"获取K线数据失败: {str(e)}")
-
-    if not data:
-        raise HTTPException(status_code=404, detail="未找到K线数据")
-
-    klines = []
-    for k in data:
-        klines.append({
-            'date': k['day'][:10],
-            'open': float(k['open']),
-            'close': float(k['close']),
-            'high': float(k['high']),
-            'low': float(k['low']),
-            'volume': int(float(k['volume'])),
-        })
-
-    if klines and len(klines) >= 100:
-        try:
-            with open(cache_file, 'w', encoding='utf-8') as f:
-                _json.dump(klines, f, ensure_ascii=False)
-        except Exception:
-            logger.debug("bs_signals: cache op failed", exc_info=False)
-
-    return klines
-
-
-def _calc_ma(klines, period):
-    """DEPRECATED: use services.indicators.calc_ma directly
-    仍有外部引用: api/bs_screener/core.py, api/bs_backtest/engine.py
-    """
-    closes = [k['close'] for k in klines]
-    return _calc_ma_impl(closes, period)
-
-
-def _calc_rsi(klines, period=14):
-    """DEPRECATED: use services.indicators.calc_rsi directly
-    仍有外部引用: api/bs_screener/core.py, api/bs_backtest/engine.py
-    """
-    closes = [k['close'] for k in klines]
-    return _calc_rsi_impl(closes, period)
+    """只读取 stock_daily_kline；数据不足时返回已有行，不触发外采。"""
+    return await fetch_kline_cached(stock_code, datalen)
 
 
 def _generate_bs_signals(klines, period=10, multiplier=1.0):
@@ -235,65 +122,84 @@ def _generate_bs_signals(klines, period=10, multiplier=1.0):
 
 
 async def _fetch_trade_records(stock_code: str):
-    """从东方财富获取该股票的交易记录"""
-    if not MX_APIKEY:
+    """从已落库的妙想委托快照读取成交记录。"""
+    bare, _ = _candidate_ts_codes(stock_code)
+    if not bare:
         return []
 
-    try:
-        client = _get_http_client()
-        resp = await client.post(
-            f"{MX_API_URL}/api/claw/mockTrading/orders",
-            json={'fltOrderDrt': 0, 'fltOrderStatus': 0},
-            headers={"apikey": MX_APIKEY, "Content-Type": "application/json; charset=UTF-8"},
-        )
-        data = resp.json()
-    except Exception:
-        logger.debug(f"_fetch_trade_records failed", exc_info=True)
-        return []
+    def _read():
+        from db.models import SimOrder
+        with get_db_session() as db:
+            rows = db.query(SimOrder).filter(
+                SimOrder.sec_code == bare,
+                SimOrder.status.in_((3, 4)),
+            ).order_by(SimOrder.time.asc(), SimOrder.id.asc()).all()
+            return [{
+                "date": row.time.date().isoformat() if row.time else "",
+                "type": "B" if int(row.drt or 0) == 1 else "S",
+                "price": float(row.trade_price if row.trade_price is not None else row.price or 0),
+                "quantity": int(row.trade_count or 0),
+                "order_id": row.external_order_id or str(row.id),
+            } for row in rows]
 
-    if str(data.get('code', '')) not in ('0', '200'):
-        return []
-
-    orders = data.get('data', {}).get('orders') or []
-    records = []
-    for o in orders:
-        if o.get('secCode') != stock_code:
-            continue
-        price_dec = o.get('priceDec', 2)
-        trade_price = o.get('tradePrice')
-        if trade_price:
-            trade_price = trade_price / (10 ** price_dec)
-        order_price = o.get('price', 0) / (10 ** price_dec)
-        # 只记录已成交的
-        if o.get('status') in (4, 3):  # 已成、部成
-            records.append({
-                'date': '',  # 需要从时间戳转换
-                'type': 'B' if o.get('drt') == 1 else 'S',
-                'price': trade_price or order_price,
-                'quantity': o.get('tradeCount', 0),
-                'order_id': o.get('id', ''),
-            })
-    return records
+    return await asyncio.to_thread(_read)
 
 
 @router.get("/api/trading/bs-signals")
 async def get_bs_signals(
     stockCode: str = Query(..., description="6位股票代码"),
     datalen: int = Query(60, description="返回K线天数，默认60天"),
+    as_of: Optional[str] = Query(None, description="日线计算截止日 YYYY-MM-DD"),
 ):
     """
     获取BS点信号数据
     返回: K线 + 技术指标BS点 + 交易记录BS点 + MACD/MA/KDJ数据
     内部获取150天数据用于EMA收敛，返回最近datalen天
     """
+    cutoff = None
+    if as_of:
+        try:
+            cutoff = datetime.strptime(as_of[:10], '%Y-%m-%d').date()
+        except ValueError:
+            raise HTTPException(status_code=400, detail='as_of 必须为 YYYY-MM-DD')
+
     try:
         # 1. 获取K线数据（多取用于计算）
         all_klines = await _fetch_kline(stockCode, CALC_DATALEN)
+        # 个股分析页的评分、关键位和日K必须来自同一份已完成日度快照。
+        # 盘中已写入的当日半成品 K 线不能参与 B/S、MACD、KDJ 的日线计算。
+        if cutoff:
+            all_klines = [row for row in all_klines if row.get('date') and row['date'] <= cutoff.isoformat()]
+
+        # MACD/SuperTrend 至少需要一段稳定历史。数据不足时保留数据库已有
+        # K 线给前端展示，但不把缺失指标伪装成可用结果。
+        if len(all_klines) < 60:
+            trade_records = await _fetch_trade_records(stockCode)
+            return {
+                'stockCode': stockCode,
+                'klines': all_klines[-datalen:],
+                'indicators': {},
+                'techSignals': [],
+                'tradeRecords': trade_records,
+                'source': 'database',
+                'dataAsOf': all_klines[-1]['date'] if all_klines else None,
+                'status': 'INSUFFICIENT',
+                'summary': {
+                    'status': 'INSUFFICIENT',
+                    'requiredKlineCount': 60,
+                    'availableKlineCount': len(all_klines),
+                    'klineCount': min(len(all_klines), datalen),
+                    'techSignalCount': 0,
+                    'latestSignal': None,
+                    'tradeRecordCount': len(trade_records),
+                    'detail': f'数据库仅有 {len(all_klines)} 根日线，至少需要 60 根计算技术指标',
+                },
+            }
 
         # 2. 计算技术指标BS点（在全量数据上计算）
         tech_signals, dif, dea, macd, ma5, ma20, k_vals, d_vals, j_vals, support, resistance, trend = _generate_bs_signals(all_klines)
 
-        # 3. 获取交易记录（外部API，单独保护不阻断主流程）
+        # 3. 获取已经落库的交易记录
         try:
             trade_records = await _fetch_trade_records(stockCode)
         except Exception as e:
@@ -331,6 +237,9 @@ async def get_bs_signals(
         return {
             'stockCode': stockCode,
             'klines': klines,
+            'source': 'database',
+            'dataAsOf': klines[-1]['date'] if klines else None,
+            'status': 'READY',
             'indicators': {
                 'dif': [round(d, 4) if d is not None else None for d in dif_show],
                 'dea': [round(d, 4) if d is not None else None for d in dea_show],
@@ -345,6 +254,9 @@ async def get_bs_signals(
             'techSignals': tech_signals_show,
             'tradeRecords': trade_records,
             'summary': {
+                'status': 'READY',
+                'requiredKlineCount': 60,
+                'availableKlineCount': len(all_klines),
                 'klineCount': len(klines),
                 'techSignalCount': len(tech_signals_show),
                 'latestSignal': tech_signals_show[-1] if tech_signals_show else None,
@@ -403,39 +315,22 @@ async def _fetch_sector_today_intraday(sector: str):
         logger.debug(f'[bs_signals] 板块成分股查询失败 {sector}: {e}')
         return []
 
-    sina_codes = [c for c in (stock_code_to_sina(c) for c in codes) if c]
-    if not sina_codes:
+    if not codes:
         return []
 
-    # 批量拉取行情（hq.sinajs.cn 支持多个 code，用逗号分隔）
+    # 行情来自同一批数据库快照，避免板块折线与个股价格使用不同截止时间。
     avg_chg = None
     try:
-        quotes_url = f"https://hq.sinajs.cn/list={','.join(sina_codes)}"
-        client = _get_http_client()
-        resp = await client.get(quotes_url, headers=SINA_HEADERS_SHORT)
-        resp.encoding = 'gbk'
-        text = resp.text
-        chgs = []
-        for line in text.split(';'):
-            if '"' not in line:
-                continue
-            parts = line.split('"')
-            if len(parts) < 2:
-                continue
-            vals = parts[1].split(',')
-            if len(vals) < 5:
-                continue
-            try:
-                price = float(vals[3])
-                yclose = float(vals[2])
-                if yclose:
-                    chgs.append((price - yclose) / yclose * 100)
-            except Exception:
-                logger.debug(f"function item failed", exc_info=True)
-                continue
+        quotes = await batch_get_quotes(codes)
+        chgs = [
+            float(quote['changePct'])
+            for quote in quotes.values()
+            if quote is not None and quote.get('changePct') is not None
+        ]
+        if chgs:
             avg_chg = round(sum(chgs) / len(chgs), 3)
-    except Exception:
-        logger.warning(f"function failed", exc_info=True)
+    except Exception as exc:
+        logger.warning('[bs_signals] 板块数据库行情读取失败 %s: %s', sector, exc)
 
     if avg_chg is None:
         return []
@@ -458,64 +353,93 @@ async def _fetch_sector_today_intraday(sector: str):
 _intraday_cache = BoundedDict(maxsize=200)  # code -> (data, ts)
 
 
+def _read_intraday_from_db(code: str) -> tuple[list[dict], str | None]:
+    """从分钟资金流快照聚合最近两个交易日的 5 分钟 OHLC。"""
+    from db.models import RealtimeStockFlow
+
+    bare, candidates = _candidate_ts_codes(code)
+    if not bare:
+        return [], None
+    rows = []
+    with get_db_session() as db:
+        for ts_code in candidates:
+            dates = db.query(RealtimeStockFlow.trade_date).filter(
+                RealtimeStockFlow.ts_code == ts_code,
+                RealtimeStockFlow.price.isnot(None),
+            ).distinct().order_by(RealtimeStockFlow.trade_date.desc()).limit(2).all()
+            if not dates:
+                continue
+            rows = db.query(
+                RealtimeStockFlow.snapshot_time,
+                RealtimeStockFlow.price,
+            ).filter(
+                RealtimeStockFlow.ts_code == ts_code,
+                RealtimeStockFlow.trade_date.in_([item[0] for item in dates]),
+                RealtimeStockFlow.price.isnot(None),
+            ).order_by(RealtimeStockFlow.snapshot_time.asc()).all()
+            if rows:
+                break
+
+    buckets = {}
+    for row in rows:
+        timestamp = row.snapshot_time
+        if timestamp is None:
+            continue
+        bucket_time = timestamp.replace(
+            minute=(timestamp.minute // 5) * 5,
+            second=0,
+            microsecond=0,
+        )
+        price = float(row.price)
+        item = buckets.get(bucket_time)
+        if item is None:
+            buckets[bucket_time] = {
+                "time": bucket_time.strftime("%Y-%m-%d %H:%M:%S"),
+                "open": price,
+                "close": price,
+                "high": price,
+                "low": price,
+            }
+        else:
+            item["close"] = price
+            item["high"] = max(item["high"], price)
+            item["low"] = min(item["low"], price)
+    bars = [buckets[key] for key in sorted(buckets)][-48:]
+    data_as_of = rows[-1].snapshot_time.isoformat() if rows else None
+    return bars, data_as_of
+
+
 @router.get("/api/trading/intraday/{code}")
 async def get_intraday(code: str):
     """获取当天分时K线（5分钟线）+ 大盘指数实时数据
     用于K线BS点弹窗右侧：当日分时走势 + 指数参数
     """
     # 30秒缓存（分时数据秒级变化，30秒足够）
-    cached = _intraday_cache.get(code)
+    bare, _ = _candidate_ts_codes(code)
+    if not bare:
+        raise HTTPException(status_code=400, detail="无效的股票代码")
+    cached = _intraday_cache.get(bare)
     if cached and time.time() - cached[1] < 30:
         return cached[0]
 
-    sina_code = stock_code_to_sina(code)
-    if not sina_code:
-        raise HTTPException(status_code=400, detail="无效的股票代码")
-
-    # 1. 拉取5分钟K线（48根 = 2个交易日）
-    intraday_url = f"https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData?symbol={sina_code}&scale=5&ma=no&datalen=48"
-    intraday = []
+    # 1. 从已落库的分钟快照聚合 5 分钟 K 线（48 根 = 2 个交易日）
     try:
-        client = _get_http_client()
-        resp = await client.get(intraday_url)
-        raw = resp.json()
-        for k in raw:
-            intraday.append({
-                'time': k['day'],
-                'open': float(k['open']),
-                'close': float(k['close']),
-                'high': float(k['high']),
-                'low': float(k['low']),
-            })
+        intraday, data_as_of = await asyncio.to_thread(_read_intraday_from_db, bare)
     except Exception as e:
-        logger.debug(f'[bs_signals] 分时K线解析失败 {code}: {e}')
+        logger.warning('[bs_signals] 分时数据库读取失败 %s: %s', bare, e)
+        intraday, data_as_of = [], None
 
-    # 2. 拉取个股实时行情（新浪 hq.sinajs.cn）
-    quotes_url = f"https://hq.sinajs.cn/list={sina_code}"
-    stock_quote = None
-    try:
-        client = _get_http_client()
-        resp = await client.get(quotes_url, headers=SINA_HEADERS_SHORT)
-        resp.encoding = 'gbk'
-        text = resp.text
-        if '"' in text:
-            parts = text.split('"')[1].split(',')
-            if len(parts) >= 10:
-                price = float(parts[3])
-                yclose = float(parts[2])
-                chg_pct = (price - yclose) / yclose * 100 if yclose else 0
-                stock_quote = {
-                    'name': parts[0], 'price': price, 'changePct': round(chg_pct, 2),
-                }
-    except Exception as e:
-        logger.debug(f'[bs_signals] 个股实时行情拉取失败 {code}: {e}')
+    # 2. 个股行情与列表页使用同一个数据库批次。
+    stock_quote = await get_quote(bare)
 
     # 3. 查询该股所属板块的近期热度趋势（7天折线图数据）
     sector_info = {"name": "", "heat_series": [], "latest_heat": 0, "heat_trend": ""}
     sector_today_series = []
     try:
         with get_db_session() as db:
-            ts_code = f"{code}.SH" if code[0] in ('6', '9') else f"{code}.SZ"
+            ts_code = f"{bare}.SH" if bare[0] in ('5', '6', '9') else (
+                f"{bare}.BJ" if bare[0] in ('4', '8') else f"{bare}.SZ"
+            )
             sector = _find_sector_for_stock(db, ts_code)
             if sector:
                 trend = _get_sector_trend(db, sector, 7)
@@ -526,17 +450,21 @@ async def get_intraday(code: str):
                         'latest_heat': trend.get('latest_heat', 0),
                         'heat_trend': trend.get('heat_trend', ''),
                     }
-                # 板块当天实时热度（成分股实时行情合成）
+        if sector:
+            sector_today_series = await _fetch_sector_today_intraday(sector)
     except Exception as e:
         logger.debug(f'[bs_signals] 板块热度查询失败 {code}: {e}')
 
     result = {
-        'stockCode': code,
+        'stockCode': bare,
         'intraday': intraday,
         'stockQuote': stock_quote,
         'sector': sector_info,
         'sector_today_series': sector_today_series,
+        'source': 'database',
+        'status': 'READY' if intraday or stock_quote else 'MISSING',
+        'dataAsOf': data_as_of or (stock_quote or {}).get('dataAsOf'),
         'fetchedAt': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
     }
-    _intraday_cache[code] = (result, time.time())
+    _intraday_cache[bare] = (result, time.time())
     return result

@@ -1,4 +1,4 @@
-import ReactECharts from 'echarts-for-react/lib/core';
+import ReactECharts from 'echarts-for-react/esm/core';
 import echarts from '../../lib/echarts';
 import { tooltipStyle } from '../../utils/chartConfig';
 import { getSectorColorHex } from '../../utils/sectorColors';
@@ -7,7 +7,7 @@ import { getSectorColorHex } from '../../utils/sectorColors';
 const COLOR_INFLOW = '#ef4444';   // 红色 - 流入
 const COLOR_OUTFLOW = '#22c55e';  // 绿色 - 流出
 
-export default function SankeyChart({ data, onNodeClick, selectedSector, height = '500px' }) {
+export default function SankeyChart({ data, onNodeClick, selectedSector }) {
   if (!data || !data.nodes || data.nodes.length === 0) {
     return (
       <div className="flex items-center justify-center h-96 text-sm" style={{ color: 'var(--text-muted)' }}>

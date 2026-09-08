@@ -20,7 +20,7 @@ export default function RiskPanel({ riskStatus, loading }) {
     );
   }
 
-  const { total_position_pct, total_cap_pct, sentiment, single_risk_pct,
+  const { total_position_pct, total_cap_pct, single_risk_pct,
           high_position_stocks = [], warnings = [], config = {} } = riskStatus;
 
   const usagePct = total_cap_pct > 0 ? (total_position_pct / total_cap_pct) * 100 : 0;

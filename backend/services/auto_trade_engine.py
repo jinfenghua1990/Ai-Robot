@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import asyncio
 from datetime import date, datetime
 from typing import Dict, List, Optional
 
@@ -87,12 +88,19 @@ def aggregate_signals(
 
 
 async def get_account_overview(db) -> Dict:
-    """Fetch the configured Miaoxiang trading account."""
+    """交易执行前采集妙想账户，随后只从已落库快照读取。"""
 
-    from api.mx_trading import get_balance, get_positions
+    from api.trading import (
+        collect_trading_snapshot,
+        read_balance_from_db,
+        read_positions_from_db,
+    )
 
-    balance = await get_balance(force=1)
-    positions_resp = await get_positions(force=1)
+    await collect_trading_snapshot(force=True)
+    balance, positions_resp = await asyncio.gather(
+        asyncio.to_thread(read_balance_from_db),
+        asyncio.to_thread(read_positions_from_db),
+    )
     return {
         "balance": balance,
         "positions": positions_resp.get("positions", []),
@@ -146,6 +154,8 @@ async def execute_auto_trade(db, dry_run: bool = False) -> List[Dict]:
         return [{"status": "skipped", "reason": "配置未初始化"}]
     if not config.enabled and not dry_run:
         return [{"status": "skipped", "reason": "V2自动交易已关闭"}]
+    if config.paused and not dry_run:
+        return [{"status": "skipped", "reason": f"自动交易已暂停：{config.pause_reason or '人工暂停'}"}]
 
     # Use all ranked snapshots for held-position exits; the execution loop
     # applies the max-buy/max-position limits after the signal gate.
@@ -170,6 +180,21 @@ async def execute_auto_trade(db, dry_run: bool = False) -> List[Dict]:
         logger.error("[auto_trade] account unavailable: %s", exc)
         return [{"status": "failed", "reason": f"账户数据不可用: {exc}"}]
 
+    # 当日已提交（submitted）但可能尚未成交的订单去重：
+    # 提交失败（failed）不在此列，允许下一轮重试；已成交由持仓快照体现。
+    # 防止卖出单提交后未成交/未撤时，下一轮 5 分钟扫描重复提交同方向订单。
+    try:
+        pending_codes = {
+            r.ts_code
+            for r in db.query(AutoTradeLog).filter(
+                AutoTradeLog.trade_date == date.today(),
+                AutoTradeLog.status == "submitted",
+            ).all()
+        }
+    except Exception as exc:
+        logger.warning("[auto_trade] pending order dedup lookup failed: %s", exc)
+        pending_codes = set()
+
     balance = account["balance"]
     positions = account["positions"]
     total_assets = float(balance.get("totalAssets", 0) or 0)
@@ -186,18 +211,27 @@ async def execute_auto_trade(db, dry_run: bool = False) -> List[Dict]:
     # 1. Exits: fixed thresholds remain configurable, but signal invalidation
     # is now an independent V2 exit reason.  A-share T+1 is enforced through
     # availCount, not total count.
-    sell_qty = max(int(config.sell_quantity or 100), 100)
+    sell_qty = max(int(config.sell_quantity or 100) // 100 * 100, 100)
     for position in positions:
         code = _code6(position.get("secCode", ""))
+        signal = signal_map.get(position.get("secCode")) or signal_map.get(code)
         cost = float(position.get("costPrice", 0) or 0)
         current = float(position.get("price", 0) or 0)
         total_count = int(position.get("count", 0) or 0)
         available_count = int(position.get("availCount", total_count) or 0)
         if cost <= 0 or current <= 0 or total_count <= 0:
             continue
+        # 当日已有该股票的 submitted 订单（可能未成交/未撤），跳过避免重复下单
+        if code in pending_codes:
+            append_log(_make_log(
+                signal_date, code, position.get("secName", ""), "skip",
+                "当日已有待成交订单（submitted），等待成交或撤单后再处理",
+                0, current, 0,
+                _signal_context(signal), status="skipped",
+            ))
+            continue
 
         profit_pct = (current - cost) / cost * 100
-        signal = signal_map.get(position.get("secCode")) or signal_map.get(code)
         reasons = []
         if profit_pct <= float(config.stop_loss_pct):
             reasons.append(f"止损：盈亏{profit_pct:.1f}%≤{config.stop_loss_pct}%")
@@ -268,6 +302,14 @@ async def execute_auto_trade(db, dry_run: bool = False) -> List[Dict]:
         code = _code6(signal["ts_code"])
         if code in held_codes:
             continue
+        if code in pending_codes:
+            append_log(_make_log(
+                signal_date, code, signal.get("name", ""), "skip",
+                "当日已有待成交订单（submitted），等待成交或撤单后再处理",
+                signal.get("resonance_count", 0), 0, 0,
+                _signal_context(signal), status="skipped",
+            ))
+            continue
 
         from api.trading import get_realtime_quote
         try:
@@ -283,7 +325,7 @@ async def execute_auto_trade(db, dry_run: bool = False) -> List[Dict]:
         if current_price <= 0:
             continue
 
-        buy_qty = max(int(config.buy_quantity or 100), 100)
+        buy_qty = max(int(config.buy_quantity or 100) // 100 * 100, 100)
         target_max = base_assets * float(config.single_position_pct or 10) / 100
         quantity = min(buy_qty, int(target_max / current_price / 100) * 100)
         if quantity < 100 or quantity * current_price > available_balance:
@@ -323,10 +365,13 @@ async def execute_auto_trade(db, dry_run: bool = False) -> List[Dict]:
         else:
             entry.update({"status": "skipped", "fill_status": "dry_run"})
         append_log(entry)
-        bought_count += 1
-        position_count += 1
-        held_codes.add(code)
-        available_balance -= quantity * current_price
+        # 仅在下单成功（submitted）或模拟预览（dry_run/skipped）时更新预算与持仓；
+        # 下单失败（failed）不扣预算，否则后续信号会因资金/仓位不足被误跳过。
+        if entry.get("status") != "failed":
+            bought_count += 1
+            position_count += 1
+            held_codes.add(code)
+            available_balance -= quantity * current_price
 
     return logs
 

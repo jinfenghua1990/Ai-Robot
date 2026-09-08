@@ -7,7 +7,7 @@
   main_force_inflow = net_mf_amount（主力净流入 = 超大单净额 + 大单净额）
   net_inflow        = net_mf_amount（保持一致）
   retail_flow       = buy_sm_amount - sell_sm_amount（小单/散户净额）
-  name / sector     = 从 pro.stock_basic 补
+  name             = 从 pro.stock_basic 补；sector = SW2021 L2 有效期映射
 """
 import os
 import sys
@@ -21,6 +21,7 @@ from db.session import get_db_session
 from db.models import StockFlow
 from config import TUSHARE_TOKEN
 import tushare as ts
+from industry_stage.registry import load_sector_map
 
 ts.set_token(TUSHARE_TOKEN)
 pro = ts.pro_api()
@@ -47,7 +48,7 @@ def backfill(days=365):
     trade_dates = sorted(cal['cal_date'].tolist())
     print(f'[backfill] 共 {len(trade_dates)} 个交易日')
 
-    # 2. 股票基础信息（name, industry）
+    # 2. 股票基础信息（仅补名称；行业统一从 SW2021 归属表读取）
     print('[backfill] 获取股票基础信息...')
     basic = pro.stock_basic(exchange='', list_status='L', fields='ts_code,name,industry')
     basic_map = {r['ts_code']: {'name': r['name'], 'industry': r['industry']} for _, r in basic.iterrows()}
@@ -91,6 +92,12 @@ def backfill(days=365):
 
         # 过滤科创+创业
         df = df[df['ts_code'].apply(is_target)]
+        with get_db_session() as mapping_db:
+            sw_sector_map = load_sector_map(
+                mapping_db,
+                as_of=date.fromisoformat(d_iso),
+                level='L2',
+            )
         day_count = 0
         try:
             with get_db_session() as db:
@@ -108,13 +115,13 @@ def backfill(days=365):
                         if not rec.name:
                             rec.name = info.get('name')
                         if not rec.sector:
-                            rec.sector = info.get('industry')
+                            rec.sector = sw_sector_map.get(ts_code, '')
                     else:
                         db.add(StockFlow(
                             trade_date=d_iso,
                             ts_code=ts_code,
                             name=info.get('name'),
-                            sector=info.get('industry'),
+                            sector=sw_sector_map.get(ts_code, ''),
                             net_inflow=net_mf,
                             main_force_inflow=net_mf,
                             retail_flow=retail,

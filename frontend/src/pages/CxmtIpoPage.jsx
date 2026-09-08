@@ -2,10 +2,13 @@ import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { apiFetch } from '../utils/request';
 import TradeModal from '../components/trading/TradeModal';
-import { useTrading } from '../context/TradingContext';
+import { useTrading } from '../context/tradingContextCore';
 import { TOAST_DURATION } from '../utils/constants';
 import { IPO_PROJECTS } from '../data/ipoProjects';
-import { IpoTimeline, IpoListingCard, computeIpoProgress } from '../components/IpoTracker';
+import { IpoTimeline, IpoListingCard } from '../components/IpoTracker';
+import { computeIpoProgress } from '../utils/ipoProgress';
+
+const IPO_NOW = Date.now();
 
 /* ─── 长鑫科技IPO关联标的分类 ───
    评估说明：
@@ -152,12 +155,12 @@ export default function CxmtIpoPage() {
 
   // 当前 IPO 阶段（用于状态卡，整页渲染时计算一次）
   const ipoStatus = useMemo(() => {
-    const p = computeIpoProgress(project, Date.now());
+    const p = computeIpoProgress(project, IPO_NOW);
     const next = p.nextIdx >= 0 ? p.stages[p.nextIdx] : null;
     const allDone = p.stages.every((s) => s.status === 'done');
     if (project.listed && allDone) return { icon: '🚀', label: '已上市', color: '#22c55e', sub: '后跟踪进行中' };
     if (next) {
-      const diff = next.ms - Date.now();
+      const diff = next.ms - IPO_NOW;
       const dd = Math.floor(diff / 86400000);
       const hh = Math.floor((diff % 86400000) / 3600000);
       return { icon: '⏳', label: next.label, color: '#3b82f6', sub: dd > 0 ? `${dd}天${hh}小时` : `${hh}小时` };

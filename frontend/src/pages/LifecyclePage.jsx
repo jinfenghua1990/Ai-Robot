@@ -4,6 +4,8 @@ import StrategySignalCard from '../components/trading/StrategySignalCard';
 import DateNavigator from '../components/DateNavigator';
 import { STAGE_COLORS } from '../constants/stages';
 import { leaderToSignal } from '../utils/format';
+import { useViewMode } from '../hooks/useViewMode';
+import StockListContainer from '../components/StockListContainer';
 
 export default function LifecyclePage() {
   const {
@@ -20,6 +22,7 @@ export default function LifecyclePage() {
   } = useLifecycleData('/api/lifecycle');
 
   const [showHelp, setShowHelp] = useState(false);
+  const [viewMode, setViewMode] = useViewMode('lifecycle', 'card');
 
   // 市场概览统计
   const marketOverview = useMemo(() => {
@@ -52,6 +55,9 @@ export default function LifecyclePage() {
       { label: '1板', count: tiers[1], color: '#3b82f6', desc: '启动初期' },
     ].filter(t => t.count > 0);
   }, [data]);
+
+  // 表格视图数据：把生命周期龙头映射为 WatchlistTable 需要的 signal 结构
+  const tableSignals = useMemo(() => filteredLeaders.map(leaderToSignal), [filteredLeaders]);
 
   // 板块热度Top（按龙头数量）
   const sectorTopList = useMemo(() => {
@@ -314,10 +320,27 @@ export default function LifecyclePage() {
       </div>
 
       {/* 趋势阶段列表 */}
-      <div>
-        {loading ? (
-          <div className="flex items-center justify-center h-96 text-sm" style={{ color: 'var(--text-muted)' }}>加载中...</div>
-        ) : pagedLeaders.length > 0 ? (
+      <StockListContainer
+        viewModeKey="lifecycle"
+        viewMode={viewMode}
+        onViewModeChange={setViewMode}
+        loading={loading}
+        items={pagedLeaders}
+        tableItems={tableSignals}
+        groupBy="sector"
+        tableProps={{
+          selectedCode: null,
+          onSelect: () => {},
+          onRemove: () => {},
+          onSell: null,
+          onRefresh: retry,
+          onAnalyze: () => {},
+          batchMode: false,
+          selectedIds: [],
+          onToggleCheck: () => {},
+          strategyPicks: [],
+        }}
+        cardRenderer={() => (
           <>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               {pagedLeaders.map((leader) => (
@@ -348,12 +371,10 @@ export default function LifecyclePage() {
               </div>
             )}
           </>
-        ) : (
-          <div className="flex items-center justify-center h-96 text-sm" style={{ color: 'var(--text-muted)' }}>
-            {data?.leaders?.length > 0 ? '无匹配结果，请调整筛选条件' : '暂无龙头数据'}
-          </div>
         )}
-      </div>
+        emptyText={data?.leaders?.length > 0 ? '无匹配结果，请调整筛选条件' : '暂无龙头数据'}
+        loadingText="加载中..."
+      />
     </div>
   );
 }

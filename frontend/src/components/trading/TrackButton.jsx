@@ -17,7 +17,7 @@ async function getTrackerList() {
       if (ok && Array.isArray(data)) {
         _trackerCache = data;
       }
-    } catch (e) { /* silent */ }
+    } catch { /* silent */ }
     _trackerCachePromise = null;
     return _trackerCache || [];
   })();
@@ -55,7 +55,7 @@ export default function TrackButton({ stockCode, stockName, size = 'sm', classNa
           const found = list.find(s => String(s.stock_code) === code);
           if (found) setTracked(true);
         }
-      } catch (e) { /* silent */ }
+      } catch { /* silent */ }
     })();
   }, [code]);
 
@@ -81,7 +81,7 @@ export default function TrackButton({ stockCode, stockName, size = 'sm', classNa
         if (error && error.includes('已在跟踪列表')) setTracked(true);
         else setErr(error || '失败');
       }
-    } catch (e) { setErr('网络错误'); }
+    } catch { setErr('网络错误'); }
     setLoading(false);
   };
 

@@ -6,11 +6,13 @@ from datetime import datetime
 from typing import Dict, List, Optional
 
 from fastapi import APIRouter
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from db.session import get_db_session
-from db.models import YuziSeatDaily, YuziDict
+from db.models import StockDailyKline, YuziSeatDaily, YuziDict
 from api.watchlist.core import get_watchlist
+from api.watchlist._shared import normalize_stock_code, normalize_ts_code
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -18,6 +20,15 @@ logger = logging.getLogger(__name__)
 
 # === 天气配置 ===
 WEATHER_CONFIG = {
+    'insufficient': {
+        'key': 'insufficient',
+        'label': '数据不足',
+        'emoji': '⚠️',
+        'action': '等待数据补齐',
+        'color': '#64748b',
+        'bg': 'rgba(100,116,139,0.08)',
+        'border': 'rgba(100,116,139,0.25)',
+    },
     'storm': {
         'key': 'storm',
         'label': '雷暴风雨',
@@ -91,7 +102,7 @@ def _classify_weather(
     technical: Optional[dict],
     inst_net_5d: float,
     yuzi_net_5d: float,
-    change_5d: float,
+    change_5d: Optional[float],
 ) -> str:
     """返回天气 key"""
     breakdown = _is_breakdown(technical)
@@ -106,7 +117,7 @@ def _classify_weather(
         return 'cloudy_to_sunny'
 
     # 台风：暴涨 + 游资爆买 + 机构出货
-    if change_5d > RISE_THRESHOLD and yuzi_net_5d > YUZI_THRESHOLD and inst_net_5d < -INSTITUTION_THRESHOLD:
+    if change_5d is not None and change_5d > RISE_THRESHOLD and yuzi_net_5d > YUZI_THRESHOLD and inst_net_5d < -INSTITUTION_THRESHOLD:
         return 'typhoon'
 
     # 艳阳：技术多头 + 机构买入 + 游资买入
@@ -114,6 +125,21 @@ def _classify_weather(
         return 'sunny'
 
     return 'cloudy'
+
+
+def _missing_classification_inputs(
+    technical: Optional[dict],
+    change_5d: Optional[float],
+    quote: Optional[dict],
+) -> List[str]:
+    missing = []
+    if not technical:
+        missing.append('technical')
+    if change_5d is None:
+        missing.append('change_5d')
+    if not quote or quote.get('status') not in (None, 'READY'):
+        missing.append('quote')
+    return missing
 
 
 def _fmt_wan(v: float) -> str:
@@ -180,6 +206,35 @@ def _load_seat_flow_map(db: Session, stock_codes: List[str], days: int = 5) -> D
     return result
 
 
+def _load_5d_change_map(db: Session, stock_codes: List[str]) -> Dict[str, float]:
+    """从本地日 K 表计算 5 个交易日涨幅；不足 6 根 K 线的股票不返回。"""
+    if not stock_codes:
+        return {}
+    recent_dates = db.query(StockDailyKline.trade_date).distinct()\
+        .order_by(StockDailyKline.trade_date.desc()).limit(6).all()
+    dates = [item[0] for item in recent_dates]
+    if len(dates) < 6:
+        return {}
+    rows = db.query(
+        StockDailyKline.ts_code,
+        StockDailyKline.trade_date,
+        StockDailyKline.close,
+    ).filter(
+        StockDailyKline.ts_code.in_(stock_codes),
+        StockDailyKline.trade_date.in_(dates),
+    ).order_by(StockDailyKline.ts_code, StockDailyKline.trade_date).all()
+    grouped: Dict[str, list] = {}
+    for ts_code, trade_date, close in rows:
+        if close is not None:
+            grouped.setdefault(ts_code, []).append((trade_date, float(close)))
+    result: Dict[str, float] = {}
+    for ts_code, bars in grouped.items():
+        if len(bars) != 6 or bars[0][1] <= 0:
+            continue
+        result[ts_code.split('.')[0]] = round((bars[-1][1] / bars[0][1] - 1) * 100, 4)
+    return result
+
+
 @router.get("/api/fund-weather")
 async def get_fund_weather():
     """资金气象雷达：按机构/游资双轨博弈把自选股分组
@@ -210,57 +265,66 @@ async def get_fund_weather():
 
     signals = watchlist_data.get('signals') or []
     if not signals:
-        return {'weather_groups': [], 'generated_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+        return {
+            'weather_groups': [],
+            'generated_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'data_as_of': watchlist_data.get('data_as_of'),
+            'source': 'database',
+            'status': 'MISSING',
+            'message': '数据库中没有可分类的自选股数据',
+            'coverage': {'total': 0},
+        }
 
     # 批量查询近 5 日席位资金流
-    raw_codes = [s['secCode'] for s in signals if s.get('secCode')]
-    ts_codes = [f"{c}.SH" if c[0] in ('6', '9') else f"{c}.SZ" for c in raw_codes if len(c) == 6]
+    raw_codes = [normalize_stock_code(s['secCode']) for s in signals if normalize_stock_code(s.get('secCode'))]
+    ts_codes = [normalize_ts_code(code) for code in raw_codes]
 
     with get_db_session() as db:
         seat_map = _load_seat_flow_map(db, ts_codes, days=5)
-
-    # 计算近 5 日涨幅（从 signal.quote 没有历史，用 changePct 近似当日，或用 moneyFlow inflow_5d 相关）
-    # MVP：先使用当日涨幅作为 proxy，后续可从 StockDailyKline 取 5 日涨幅
-    def _estimate_5d_change(s):
-        quote = s.get('quote') or {}
-        # 如果有近5日累计主力净流入方向与涨幅同向，用当日涨幅 proxy
-        return float(quote.get('changePct') or 0)
+        change_5d_map = _load_5d_change_map(db, ts_codes)
+        latest_kline_date = db.query(func.max(StockDailyKline.trade_date)).scalar()
+        latest_seat_date = db.query(func.max(YuziSeatDaily.trade_date)).scalar()
 
     # 按天气分组
     groups = {key: [] for key in WEATHER_CONFIG}
     for s in signals:
-        code = s.get('secCode', '')
-        ts_code = f"{code}.SH" if code and code[0] in ('6', '9') else f"{code}.SZ"
+        code = normalize_stock_code(s.get('secCode', ''))
         seat = seat_map.get(code, {'inst_net': 0, 'yuzi_net': 0})
         technical = s.get('technical')
-        change_5d = _estimate_5d_change(s)
+        change_5d = change_5d_map.get(code)
+        quote = s.get('quote') or {}
+        missing_inputs = _missing_classification_inputs(technical, change_5d, quote)
 
-        weather_key = _classify_weather(
+        weather_key = 'insufficient' if missing_inputs else _classify_weather(
             technical,
             seat.get('inst_net', 0),
             seat.get('yuzi_net', 0),
             change_5d,
         )
 
-        quote = s.get('quote') or {}
         cfg = WEATHER_CONFIG[weather_key]
         groups[weather_key].append({
             'code': code,
             'name': s.get('secName', ''),
             'sector': s.get('sector', ''),
             'technical_stage': technical.get('stage') if technical else '-',
-            'change_pct': round(float(quote.get('changePct') or 0), 2),
-            'price': round(float(quote.get('price') or 0), 2),
+            'change_pct': round(float(quote['changePct']), 2) if quote.get('changePct') is not None else None,
+            'change_5d': round(change_5d, 2) if change_5d is not None else None,
+            'change_5d_status': 'READY' if change_5d is not None else 'INSUFFICIENT_DATA',
+            'price': round(float(quote['price']), 2) if quote.get('price') is not None else None,
             'inst_net_5d': seat.get('inst_net', 0),
             'yuzi_net_5d': seat.get('yuzi_net', 0),
             'inst_net_5d_fmt': _fmt_wan(seat.get('inst_net', 0)),
             'yuzi_net_5d_fmt': _fmt_wan(seat.get('yuzi_net', 0)),
             'action': cfg['action'],
             'weather': weather_key,
+            'classification_status': 'INSUFFICIENT' if missing_inputs else 'READY',
+            'missing_inputs': missing_inputs,
+            'seat_observed': code in seat_map,
         })
 
     weather_groups = []
-    for key in ['storm', 'cloudy_to_sunny', 'typhoon', 'sunny', 'cloudy']:
+    for key in ['insufficient', 'storm', 'cloudy_to_sunny', 'typhoon', 'sunny', 'cloudy']:
         cfg = WEATHER_CONFIG[key]
         weather_groups.append({
             'weather': key,
@@ -274,7 +338,36 @@ async def get_fund_weather():
             'stocks': groups[key],
         })
 
+    total = len(signals)
+    technical_ready = sum(1 for s in signals if s.get('technical'))
+    change_5d_ready = sum(1 for s in signals if s.get('secCode') in change_5d_map)
+    quote_ready = sum(
+        1 for s in signals
+        if s.get('quote') and (s['quote'].get('status') in (None, 'READY'))
+    )
+    ready = sum(group['count'] for group in weather_groups if group['weather'] != 'insufficient')
+    latest_kline = latest_kline_date.isoformat() if latest_kline_date else None
+    latest_seat = str(latest_seat_date) if latest_seat_date else None
+    status = 'READY' if ready == total and watchlist_data.get('status') == 'READY' else 'PARTIAL'
+
     return {
         'weather_groups': weather_groups,
         'generated_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'data_as_of': latest_kline or watchlist_data.get('data_as_of'),
+        'source': 'database',
+        'status': status,
+        'message': None if status == 'READY' else f'{total - ready} 只股票缺少完整分类输入',
+        'component_dates': {
+            'watchlist': watchlist_data.get('data_as_of'),
+            'daily_kline': latest_kline,
+            'seat_flow': latest_seat,
+        },
+        'coverage': {
+            'total': total,
+            'classification_ready': ready,
+            'quote_ready': quote_ready,
+            'technical_ready': technical_ready,
+            'change_5d_ready': change_5d_ready,
+            'seat_observation_count': len(seat_map),
+        },
     }

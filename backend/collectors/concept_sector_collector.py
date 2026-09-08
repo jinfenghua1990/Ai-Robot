@@ -3,11 +3,13 @@
 - 直接拿概念板块维度资金流，不再依赖成分股实时快照的覆盖完整性
 - 返回结构与 get_sector_money_flow 一致，便于复用写入逻辑
 """
+import logging
 import os
 import sys
 import requests
 from utils.http_constants import SINA_HEADERS
 
+logger = logging.getLogger(__name__)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # SINA_HEADERS imported from utils.http_constants
@@ -48,7 +50,7 @@ def get_concept_sector_money_flow_realtime(pages=10, per_page=100):
             if len(data) < per_page:
                 break
         except Exception as e:
-            logger.warning(f'[concept_sector_collector] sina page {page} error: {e}', exc_info=True)
+            logger.warning(f'[concept_sector_collector] sina page {page} error: {e}')
             break
 
     print(f'[concept_sector_collector] fetched {len(items)} concept sectors from sina')

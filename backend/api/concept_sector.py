@@ -1,3 +1,4 @@
+import logging
 import time
 from fastapi import APIRouter, Query, HTTPException, Response
 from db.connection import get_db
@@ -7,6 +8,7 @@ from db.concept_descriptions import ALL_CONCEPT_DESCRIPTIONS
 from datetime import datetime, date, timedelta
 from sqlalchemy import func, select
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 _cache = {}

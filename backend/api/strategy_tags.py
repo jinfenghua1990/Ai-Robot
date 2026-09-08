@@ -177,8 +177,12 @@ def get_stock_strategies(code: str, days: int = Query(10, description="返回近
         ]
         history.sort(key=lambda x: x['trade_date'], reverse=True)
 
+        # 最近有数据的交易日（用于前端「数据截至」标注）
+        latest_trade_date = max(by_date.keys()) if by_date else None
+
         return {
             'code': code,
+            'latest_trade_date': latest_trade_date,
             'today_strategies': today_strategies,
             'today_count': len(today_strategies),
             'history': history,

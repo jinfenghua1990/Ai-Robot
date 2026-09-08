@@ -1,56 +1,50 @@
-import React, { useState, useRef, useEffect, useMemo, memo, useCallback } from 'react';
-import ReactECharts from 'echarts-for-react';
-import StockActionButtons from './StockActionButtons';
+import React, { useState, useMemo } from 'react';
 import OrderHistoryModal from './OrderHistoryModal';
 import SinaLink from '../SinaLink';
-import { HIT_TAG_CONFIG } from './HitTagBar';
+import { HIT_TAG_CONFIG } from './hitTagConfig';
 import { UP_COLOR, DOWN_COLOR, DOWN_DARK, REDUCE_COLOR } from '../../utils/colors';
-import { formatWan, fmtPct2, fmtAmount, fmtMissing, hasValue } from '../../utils/format';
+import { formatWan, fmtPct2, fmtAmount, fmtMissing, hasValue, toFiniteNumber } from '../../utils/format';
 import AiDiagnosisModule from './AiDiagnosisModule';
-import { apiFetch } from '../../utils/request';
+
 import { useNavigate } from 'react-router-dom';
+import { openStockAnalysis } from '../../utils/openStockAnalysis';
 import { MODULE_HEADER_CONFIG, stripRealtimePrefix, getRealtimeHeader as formatRealtimeHeader, getTechConclusion, getOrgConclusion, getFlowConclusion, getMarketConclusion } from './moduleHeaderConfig';
-import { fmtWanYi, scoreColor, calcEma, calcIntradayMacd, calcIntradayKdj } from './SignalCardUtils';
-import { DimPill, LEADER_STAGE_MAP, ModuleHeader } from './SignalCardHeader';
+import { fmtWanYi, scoreColor, calcIntradayMacd, calcIntradayKdj } from './SignalCardUtils';
+import { DimPill, ModuleHeader } from './SignalCardHeader';
+import { LEADER_STAGE_MAP } from './leaderStageConfig';
 import { IntradaySparkline, BSRangeSparkline } from './SignalCardSparklines';
+
+const fmtCardNumber = (value, digits = 2) => {
+  const n = toFiniteNumber(value);
+  return n == null ? '--' : n.toFixed(digits);
+};
+
 function SignalCardTuned({
   signal,
   orders = [],
-  onSell,
-  onRemove,
-  onRefresh,
-  showWatchBtn = true,
-  showBuyBtn,
   mode = 'trading',
-  showAnalysisButton = false,
-  showActionButton = true,
   strategyTags = [],
   realtimeFlow = null,
-  showRealtimeDetail = true,
   dash = null,
 }) {
   const [orderOpen, setOrderOpen] = useState(false);
   const navigate = useNavigate();
   // 点击模块标题跳转到个股详情页对应模块
   const goToSection = (sectionId) => {
-    if (secCode) navigate(`/stock-analysis?code=${secCode}#${sectionId}`);
+    if (secCode) window.open(`/stock-analysis?code=${encodeURIComponent(secCode)}#${sectionId}`, '_blank', 'noopener,noreferrer');
   };
 
-  if (!signal || !signal.secCode) {
-    return null;
-  }
   const {
     secCode, secName, signalLabel, signalColor,
     riskLevel, sector, sectorTrend, position = {},
     score,
-    marketState,
-  } = signal;
+  } = signal || {};
 
   // ===== B 模式：资金模块统一读 dash（与底部 v4 仪表盘同一数据源）=====
   // 顶部 v3 资金模块优先消费 dash（元单位），无 dash 时回退 signal（v3 独立模式仍可用）。
   const mfDash = dash?.institution_flow || null;
   const sfDash = dash?.sector_flow || null;
-  const cumDash = dash?.main_net_cumulative || null;
+
   const rtDash = dash?.realtime || null;
 
   // ===== 实时头部缓存 =====
@@ -60,9 +54,10 @@ function SignalCardTuned({
 
   // ===== hitTags 缓存 =====
   // 原代码每次 render 都 new Set + filter，命中标签不变时无谓重算
+  const hitTags = signal?.hitTags;
   const hitCfgs = useMemo(
-    () => signal.hitTags ? HIT_TAG_CONFIG.filter(cfg => signal.hitTags.includes(cfg.key)) : [],
-    [signal.hitTags]
+    () => hitTags ? HIT_TAG_CONFIG.filter(cfg => hitTags.includes(cfg.key)) : [],
+    [hitTags]
   );
 
   // ===== 饼图 option 缓存 =====
@@ -70,76 +65,10 @@ function SignalCardTuned({
   // 拆为左饼图（5档盘后）和右饼图（3档实时）两份独立 memo
 
   // 左饼图：5档盘后（dash.institution_flow 优先，回退 signal.moneyFlow）
-  const leftPieOption = useMemo(() => {
-    if (!signal.moneyFlow?.available) return null;
-    const useDash = !!dash && dash.institution_flow != null;
-    const inst = dash?.institution_flow || {};
-    const mf = signal.moneyFlow;
-    let pieData = [];
-    if (useDash) {
-      const abs = (v) => Math.abs(v || 0);
-      pieData = [
-        { value: abs(inst.super_large_net), name: '特大', itemStyle: { color: '#ef4444' } },
-        { value: abs(inst.large_net), name: '大单', itemStyle: { color: '#f97316' } },
-        { value: abs(inst.medium_net), name: '中单', itemStyle: { color: '#eab308' } },
-        { value: abs(inst.small_net), name: '小单', itemStyle: { color: '#3b82f6' } },
-        { value: abs(inst.tiny_net), name: '散单', itemStyle: { color: '#94a3b8' } },
-      ].filter(d => d.value > 0);
-    } else {
-      const mainBuy = mf.main_buy || 0;
-      const mainSell = mf.main_sell || 0;
-      const retailBuy = mf.retail_buy;
-      const retailSell = mf.retail_sell;
-      const hasRetail = retailBuy != null && retailSell != null;
-      pieData = [
-        { value: Math.max(mainBuy, 0), name: '主力买入', itemStyle: { color: '#ef4444' } },
-        { value: Math.max(mainSell, 0), name: '主力卖出', itemStyle: { color: '#22c55e' } },
-        ...(hasRetail ? [
-          { value: Math.max(retailBuy, 0), name: '散户买入', itemStyle: { color: '#ff7043' } },
-          { value: Math.max(retailSell, 0), name: '散户卖出', itemStyle: { color: '#8bc34a' } },
-        ] : []),
-      ].filter(d => d.value > 0);
-    }
-    if (pieData.length === 0) return 'empty';
-    return {
-      tooltip: { trigger: 'item', formatter: '{b}: {c}万 ({d}%)' },
-      legend: { show: false },
-      series: [{
-        type: 'pie',
-        radius: ['30%', '55%'],
-        center: ['50%', '50%'],
-        label: { show: true, fontSize: 9, formatter: '{b}\n{d}%' },
-        labelLine: { length: 4, length2: 4 },
-        data: pieData,
-      }],
-    };
-  }, [signal.moneyFlow, dash]);
+
 
   // 右饼图：3档实时（main_net/retail_net/sector_net）
-  const rightPieOption = useMemo(() => {
-    const rtAvailable = !!rtDash?.available;
-    const rt = rtDash || {};
-    if (!rtAvailable) return null;
-    const abs = (v) => Math.abs(v || 0);
-    const pieData = [
-      { value: abs(rt.main_net), name: '主力', itemStyle: { color: '#ef4444' } },
-      { value: abs(rt.retail_net), name: '散户', itemStyle: { color: '#3b82f6' } },
-      { value: abs(rt.sector_net), name: '板块', itemStyle: { color: '#a855f7' } },
-    ].filter(d => d.value > 0);
-    if (pieData.length === 0) return 'empty';
-    return {
-      tooltip: { trigger: 'item', formatter: '{b}: {c} ({d}%)' },
-      legend: { show: false },
-      series: [{
-        type: 'pie',
-        radius: ['30%', '55%'],
-        center: ['50%', '50%'],
-        label: { show: true, fontSize: 9, formatter: '{b}\n{d}%' },
-        labelLine: { length: 4, length2: 4 },
-        data: pieData,
-      }],
-    };
-  }, [rtDash]);
+
 
   // ===== 5档横条数据缓存 =====
   // 原代码在 IIFE 内每次 render 新建 10 个对象（leftRows 5 + rightRows 5）
@@ -157,13 +86,13 @@ function SignalCardTuned({
       ];
     }
     return [
-      { label: '特大', val: signal.moneyFlow?.super_large || 0, color: '#ef4444' },
-      { label: '大单', val: signal.moneyFlow?.large || 0, color: '#f97316' },
+      { label: '特大', val: signal?.moneyFlow?.super_large || 0, color: '#ef4444' },
+      { label: '大单', val: signal?.moneyFlow?.large || 0, color: '#f97316' },
       null, // 中单档：signal.moneyFlow 无此数据，隐藏占位
-      { label: '小单', val: signal.moneyFlow?.small || 0, color: '#3b82f6' },
-      { label: '散单', val: signal.moneyFlow?.tiny || 0, color: '#64748b' },
+      { label: '小单', val: signal?.moneyFlow?.small || 0, color: '#3b82f6' },
+      { label: '散单', val: signal?.moneyFlow?.tiny || 0, color: '#64748b' },
     ];
-  }, [mfDash, signal.moneyFlow]);
+  }, [mfDash, signal?.moneyFlow]);
 
   // 右5档数据（实时3档真实 + 2档空占位，与左栏行对齐）
   // 维度对齐映射：左盘后5档 → 右实时对应位置
@@ -180,6 +109,8 @@ function SignalCardTuned({
     ];
   }, [rtDash]);
 
+  if (!signal || !secCode) return null;
+
   const isWatchlistStyle = mode === 'watchlist' || mode === 'sim_watchlist';
   // 风险等级：仅在 high/medium/low 时显示，其他值（含 null）一律显示"无数据"
   const riskColor = riskLevel === 'high' ? '#dc2626' : riskLevel === 'medium' ? '#f97316' : riskLevel === 'low' ? '#6b7280' : 'var(--text-muted)';
@@ -187,7 +118,7 @@ function SignalCardTuned({
   // 盈亏：null 即空值，不做 0 降级（显示逻辑改为 -- / 无数据）
   const profitPct = position?.profitPct ?? null;
   const dayProfitPct = position?.dayProfitPct ?? null;
-  const profitColor = profitPct == null ? 'var(--text-muted)' : profitPct >= 0 ? UP_COLOR : DOWN_COLOR;
+
   const changeColor = dayProfitPct == null ? 'var(--text-muted)' : dayProfitPct >= 0 ? UP_COLOR : DOWN_COLOR;
   const hasOrders = (orders || []).length > 0;
   const scoreColorValue = (score == null) ? '#6b7280' : score <= -5 ? DOWN_DARK : score <= -2 ? REDUCE_COLOR : score >= 3 ? UP_COLOR : '#6b7280';
@@ -262,7 +193,7 @@ function SignalCardTuned({
                   </span>
                 )}
                 <span className="text-xs font-medium" style={{ color: 'var(--text-primary)' }}>
-                  {position?.price == null ? '--' : position.price.toFixed(2)}
+                  {fmtCardNumber(position?.price)}
                 </span>
               </div>
               {/* 行1.5：持仓信息行（仅持仓股显示，标准化：自选股/持仓页统一渲染） */}
@@ -275,7 +206,7 @@ function SignalCardTuned({
                   }}>
                     总 {fmtPct2(profitPct)}
                     {position?.profit != null && (
-                      <span className="ml-1">({position.profit >= 0 ? '+' : ''}{position.profit.toFixed(0)})</span>
+                      <span className="ml-1">({Number(position.profit) >= 0 ? '+' : ''}{fmtCardNumber(position.profit, 0)})</span>
                     )}
                   </span>
                   <span className="px-1.5 py-0.5 rounded text-[10px] font-bold" style={{
@@ -285,14 +216,14 @@ function SignalCardTuned({
                   }}>
                     当日 {fmtPct2(dayProfitPct)}
                     {position?.dayProfit != null && (
-                      <span className="ml-1">({position.dayProfit >= 0 ? '+' : ''}{position.dayProfit.toFixed(0)})</span>
+                      <span className="ml-1">({Number(position.dayProfit) >= 0 ? '+' : ''}{fmtCardNumber(position.dayProfit, 0)})</span>
                     )}
                   </span>
                   {[
                     { label: '持仓', value: `${position?.count ?? 0}股`, color: 'var(--text-secondary)' },
-                    { label: '成本', value: (position?.costPrice ?? 0).toFixed(2), color: 'var(--text-muted)' },
+                    { label: '成本', value: fmtCardNumber(position?.costPrice ?? 0), color: 'var(--text-muted)' },
                     { label: '市值', value: formatWan(position?.value ?? 0), color: 'var(--text-secondary)' },
-                    { label: '仓位', value: `${(position?.posPct ?? 0).toFixed(1)}%`, color: 'var(--text-secondary)' },
+                    { label: '仓位', value: `${fmtCardNumber(position?.posPct ?? 0, 1)}%`, color: 'var(--text-secondary)' },
                   ].map((m, mi) => (
                     <span key={mi} className="px-1.5 py-0.5 rounded text-[10px]" style={{
                       background: 'var(--bg-surface)',
@@ -493,7 +424,7 @@ function SignalCardTuned({
             <div className={rowClass} style={rowStyleL}>
               <span className="text-[10px] flex-shrink-0 font-medium w-12" style={{ color: 'var(--text-muted)' }}>KDJ</span>
               <span style={{ color: kdjColor }} className="font-mono">
-                K{ind?.kdj_k?.toFixed(1)} D{ind?.kdj_d?.toFixed(1)} J{kdjJ.toFixed(1)}
+                K{fmtCardNumber(ind?.kdj_k, 1)} D{fmtCardNumber(ind?.kdj_d, 1)} J{fmtCardNumber(kdjJ, 1)}
               </span>
               {kdjJ >= 80 && <span className="text-[9px] px-1 rounded" style={{ background: 'rgba(239,68,68,0.15)', color: '#ef4444' }}>超买</span>}
               {kdjJ <= 20 && <span className="text-[9px] px-1 rounded" style={{ background: 'rgba(34,197,94,0.15)', color: '#22c55e' }}>超卖</span>}
@@ -516,7 +447,7 @@ function SignalCardTuned({
             <div className={rowClass} style={rowStyleL}>
               <span className="text-[10px] flex-shrink-0 font-medium w-12" style={{ color: 'var(--text-muted)' }}>MACD</span>
               <span style={{ color: macdColor }} className="font-mono">
-                {macdVal.toFixed(3)} / DIF{dif?.toFixed(3)} DEA{dea?.toFixed(3)}
+                {fmtCardNumber(macdVal, 3)} / DIF{fmtCardNumber(dif, 3)} DEA{fmtCardNumber(dea, 3)}
               </span>
               {isGoldenCross && <span className="text-[9px] px-1 rounded" style={{ background: 'rgba(239,68,68,0.15)', color: '#ef4444' }}>金叉</span>}
               {isDeathCross && <span className="text-[9px] px-1 rounded" style={{ background: 'rgba(34,197,94,0.15)', color: '#22c55e' }}>死叉</span>}
@@ -528,7 +459,7 @@ function SignalCardTuned({
             <div className={rowClass} style={rowStyleL}>
               <span className="text-[10px] flex-shrink-0 font-medium w-12" style={{ color: 'var(--text-muted)' }}>MA</span>
               <span style={{ color: ind.ma5 >= ind.ma20 ? '#ef4444' : '#22c55e' }} className="font-mono">
-                MA5 {ind.ma5?.toFixed(2)} / MA20 {ind.ma20?.toFixed(2)}
+                MA5 {fmtCardNumber(ind.ma5)} / MA20 {fmtCardNumber(ind.ma20)}
               </span>
               {ind.ma5 > ind.ma20 && <span className="text-[9px] px-1 rounded" style={{ background: 'rgba(239,68,68,0.1)', color: '#ef4444' }}>多头</span>}
               {ind.ma5 < ind.ma20 && <span className="text-[9px] px-1 rounded" style={{ background: 'rgba(34,197,94,0.1)', color: '#22c55e' }}>空头</span>}
@@ -539,9 +470,9 @@ function SignalCardTuned({
           const srRow = (ind?.support != null || ind?.resistance != null) ? (
             <div className={rowClass} style={rowStyleL}>
               <span className="text-[10px] flex-shrink-0 font-medium w-12" style={{ color: 'var(--text-muted)' }}>支撑</span>
-              <span style={{ color: '#22c55e' }} className="font-mono">{ind?.support?.toFixed(2) ?? '--'}</span>
+              <span style={{ color: '#22c55e' }} className="font-mono">{fmtCardNumber(ind?.support)}</span>
               <span style={{ color: 'var(--text-muted)' }}>/ 阻力</span>
-              <span style={{ color: '#ef4444' }} className="font-mono">{ind?.resistance?.toFixed(2) ?? '--'}</span>
+              <span style={{ color: '#ef4444' }} className="font-mono">{fmtCardNumber(ind?.resistance)}</span>
             </div>
           ) : emptyRow;
 
@@ -551,7 +482,7 @@ function SignalCardTuned({
           const rsiRow = rsiVal != null ? (
             <div className={rowClass} style={rowStyleL}>
               <span className="text-[10px] flex-shrink-0 font-medium w-12" style={{ color: 'var(--text-muted)' }}>RSI</span>
-              <span className="font-mono" style={{ color: rsiColor }}>{rsiVal.toFixed(1)}</span>
+              <span className="font-mono" style={{ color: rsiColor }}>{fmtCardNumber(rsiVal, 1)}</span>
               {rsiVal >= 70 && <span className="text-[9px] px-1 rounded" style={{ background: 'rgba(239,68,68,0.15)', color: '#ef4444' }}>超买</span>}
               {rsiVal <= 30 && <span className="text-[9px] px-1 rounded" style={{ background: 'rgba(34,197,94,0.15)', color: '#22c55e' }}>超卖</span>}
               {rsiVal > 30 && rsiVal < 70 && (
@@ -568,16 +499,17 @@ function SignalCardTuned({
           const vrRow = vrVal != null ? (
             <div className={rowClass} style={rowStyleL}>
               <span className="text-[10px] flex-shrink-0 font-medium w-12" style={{ color: 'var(--text-muted)' }}>量比</span>
-              <span className="font-mono" style={{ color: vrColor }}>{vrVal.toFixed(2)}</span>
+              <span className="font-mono" style={{ color: vrColor }}>{fmtCardNumber(vrVal)}</span>
               {vrVal >= 1.5 && <span className="text-[9px] px-1 rounded" style={{ background: 'rgba(239,68,68,0.15)', color: '#ef4444' }}>放量</span>}
               {vrVal <= 0.5 && <span className="text-[9px] px-1 rounded" style={{ background: 'rgba(34,197,94,0.15)', color: '#22c55e' }}>缩量</span>}
               {vrVal > 0.5 && vrVal < 1.5 && <span className="text-[9px] px-1 rounded" style={{ background: 'rgba(148,163,184,0.15)', color: 'var(--text-muted)' }}>正常</span>}
             </div>
           ) : emptyRow;
 
-          // 左盘后 — BIAS 乖离率（现价 vs MA5/MA20 偏离%）
+          // 左盘后 — BIAS 乖离率（现价 vs MA5/MA20 偏离%）+ MA20 斜率（dash.features，与个股页一致）
           const biasMa5 = (ind?.ma5 != null && curPrice) ? (curPrice - ind.ma5) / ind.ma5 * 100 : null;
           const biasMa20 = (ind?.ma20 != null && curPrice) ? (curPrice - ind.ma20) / ind.ma20 * 100 : null;
+          const ma20Slope = dash?.features?.ma20_slope ?? null;
           const biasRow = (biasMa5 != null && biasMa20 != null) ? (
             <div className={rowClass} style={rowStyleL}>
               <span className="text-[10px] flex-shrink-0 font-medium w-12" style={{ color: 'var(--text-muted)' }}>乖离</span>
@@ -588,6 +520,11 @@ function SignalCardTuned({
               <span className="font-mono" style={{ color: biasMa20 >= 0 ? '#ef4444' : '#22c55e' }}>
                 MA20{fmtPct2(biasMa20)}
               </span>
+              {ma20Slope != null && (
+                <span className="text-[9px] px-1 rounded font-mono" style={{ background: ma20Slope > 0.5 ? 'rgba(239,68,68,0.12)' : ma20Slope < -0.5 ? 'rgba(34,197,94,0.12)' : 'rgba(148,163,184,0.15)', color: ma20Slope > 0.5 ? '#ef4444' : ma20Slope < -0.5 ? '#22c55e' : 'var(--text-muted)' }}>
+                  {ma20Slope > 0.5 ? '↑' : ma20Slope < -0.5 ? '↓' : '→'}{Number(ma20Slope) >= 0 ? '+' : ''}{fmtCardNumber(ma20Slope, 1)}%
+                </span>
+              )}
               {(Math.abs(biasMa5) >= 5 || Math.abs(biasMa20) >= 10) && (
                 <span className="text-[9px] px-1 rounded" style={{ background: 'rgba(245,158,11,0.15)', color: '#f59e0b' }}>⚠回拉</span>
               )}
@@ -606,7 +543,7 @@ function SignalCardTuned({
             <div className={rowClass} style={rowStyleRt}>
               <span className="text-[10px] flex-shrink-0 font-medium w-12" style={{ color: 'var(--text-muted)' }} title="基于当日分时序列计算，与盘后日级 KDJ 口径不同">分KDJ</span>
               <span className="font-mono flex-shrink-0" style={{ color: rtKdj.j >= 80 ? '#ef4444' : rtKdj.j <= 20 ? '#22c55e' : 'var(--text-primary)' }}>
-                K{rtKdj.k.toFixed(1)} D{rtKdj.d.toFixed(1)} J{rtKdj.j.toFixed(1)}
+                K{fmtCardNumber(rtKdj.k, 1)} D{fmtCardNumber(rtKdj.d, 1)} J{fmtCardNumber(rtKdj.j, 1)}
               </span>
               {rtKdj.j >= 80 && <span className="text-[9px] px-1 rounded flex-shrink-0" style={{ background: 'rgba(239,68,68,0.15)', color: '#ef4444' }}>超买</span>}
               {rtKdj.j <= 20 && <span className="text-[9px] px-1 rounded flex-shrink-0" style={{ background: 'rgba(34,197,94,0.15)', color: '#22c55e' }}>超卖</span>}
@@ -619,7 +556,7 @@ function SignalCardTuned({
             <div className={rowClass} style={rowStyleRt}>
               <span className="text-[10px] flex-shrink-0 font-medium w-12" style={{ color: 'var(--text-muted)' }} title="基于当日分时序列计算，与盘后日级 MACD 口径不同">分MACD</span>
               <span className="font-mono flex-shrink-0" style={{ color: rtMacd.macd >= 0 ? '#ef4444' : '#22c55e' }}>
-                {rtMacd.macd.toFixed(3)} / DIF{rtMacd.dif.toFixed(3)} DEA{rtMacd.dea.toFixed(3)}
+                {fmtCardNumber(rtMacd.macd, 3)} / DIF{fmtCardNumber(rtMacd.dif, 3)} DEA{fmtCardNumber(rtMacd.dea, 3)}
               </span>
               {rtMacd.dif > rtMacd.dea && <span className="text-[9px] px-1 rounded flex-shrink-0" style={{ background: 'rgba(239,68,68,0.15)', color: '#ef4444' }}>金叉</span>}
               {rtMacd.dif < rtMacd.dea && <span className="text-[9px] px-1 rounded flex-shrink-0" style={{ background: 'rgba(34,197,94,0.15)', color: '#22c55e' }}>死叉</span>}
@@ -703,7 +640,7 @@ function SignalCardTuned({
               ) : (
                 <>
                   <span className="font-mono font-bold" style={{ color: rtMainRatio >= 50 ? '#ef4444' : '#22c55e' }}>
-                    {rtMainRatio.toFixed(1)}%
+                    {fmtCardNumber(rtMainRatio, 1)}%
                   </span>
                   <span className="text-[9px] px-1 rounded" style={{
                     background: rtMainRatio >= 60 ? 'rgba(239,68,68,0.15)' : rtMainRatio >= 50 ? 'rgba(239,68,68,0.08)' : rtMainRatio <= 40 ? 'rgba(34,197,94,0.15)' : 'rgba(34,197,94,0.08)',
@@ -765,9 +702,9 @@ function SignalCardTuned({
                     conclusion={(() => {
                       if (!curPrice) return null;
                       const dayPct = rtDash?.intraday?.length ? rtDash.intraday[rtDash.intraday.length - 1]?.pct_chg : null;
-                      if (dayPct == null) return `现价 ${curPrice.toFixed(2)}`;
-                      const color = dayPct >= 9.8 ? '#dc2626' : dayPct >= 0 ? '#ef4444' : '#22c55e';
-                      return `${curPrice.toFixed(2)} ${fmtPct2(dayPct)}`;
+                      if (dayPct == null) return `现价 ${fmtCardNumber(curPrice)}`;
+
+                      return `${fmtCardNumber(curPrice)} ${fmtPct2(dayPct)}`;
                     })()}
                     conclusionColor={(() => {
                       const dayPct = rtDash?.intraday?.length ? rtDash.intraday[rtDash.intraday.length - 1]?.pct_chg : null;
@@ -825,9 +762,9 @@ function SignalCardTuned({
                         </span>
                       </div>
                       <div className="text-[10px] tabular-nums" style={{ color: 'var(--text-secondary)' }} title={`B 起点 ${sd} @ ${sp} → ${isHolding ? '当前' : 'S 终点 ' + ed} @ ${ep}`}>
-                        <span style={{ color: 'var(--text-muted)' }}>B</span> {sd} <span style={{ color: stateColor }}>{sp.toFixed(2)}</span>
+                        <span style={{ color: 'var(--text-muted)' }}>B</span> {sd} <span style={{ color: stateColor }}>{fmtCardNumber(sp)}</span>
                         <span style={{ color: 'var(--text-muted)' }}> → </span>
-                        <span style={{ color: 'var(--text-muted)' }}>{isHolding ? '今' : 'S'}</span> {ed} <span style={{ color: stateColor }}>{ep.toFixed(2)}</span>
+                        <span style={{ color: 'var(--text-muted)' }}>{isHolding ? '今' : 'S'}</span> {ed} <span style={{ color: stateColor }}>{fmtCardNumber(ep)}</span>
                       </div>
                       <div className="flex items-center justify-between gap-1 px-1 py-0.5 rounded" style={{ background: `${pnlColor}10` }}>
                         <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>持 {hd} 天</span>
@@ -851,7 +788,7 @@ function SignalCardTuned({
               <div className="flex-1 min-w-0 pl-2.5 flex flex-col gap-0.5">
                 {(() => {
                   // rtHdr 已在组件顶部 useMemo 缓存，此处直接复用
-                  const isHolding = bsInt.state === 'holding';
+
                   // 当前价：优先 intraday 末尾点 price，其次 signal.quote.price
                   const idArrBs = rtDash?.intraday || [];
                   const lastIntraday = idArrBs.length ? idArrBs[idArrBs.length - 1] : null;
@@ -871,7 +808,7 @@ function SignalCardTuned({
                       <div className="flex items-center justify-between gap-1 text-[10px] tabular-nums">
                         <span style={{ color: 'var(--text-muted)' }}>实时价</span>
                         {curPrice ? (
-                          <span className="font-bold" style={{ color: dayColor }}>现 {curPrice.toFixed(2)}</span>
+                          <span className="font-bold" style={{ color: dayColor }}>现 {fmtCardNumber(curPrice)}</span>
                         ) : (
                           <span className="font-bold" style={{ color: 'var(--text-muted)' }}>--</span>
                         )}
@@ -907,7 +844,7 @@ function SignalCardTuned({
           const rowClass = "flex items-center gap-1 px-2 rounded text-[10px] tabular-nums min-h-[20px] whitespace-nowrap flex-nowrap";
           const rowStyleL = { background: 'rgba(59,130,246,0.04)' };
           const rowStyleR = { background: 'rgba(34,197,94,0.04)' };
-          const emptyRow = <div className={rowClass} style={{ visibility: 'hidden' }}>&nbsp;</div>;
+
 
           // 机构信号评分 → 颜色 + 进度条
           const instScore = dash?.institution_signal;
@@ -972,7 +909,7 @@ function SignalCardTuned({
           // 右实时 — 行2: 实时散户净流（与左侧行2 游资 严格对齐，补齐散户评分进度条）
           // 散户评分 = 100 - rtInstScore（散户与主力对冲：主力流入则散户流出）
           const rtRetailScore = rtInstScore != null ? (100 - rtInstScore) : null;
-          let rtRetailRow = emptyRow;
+          let rtRetailRow;
           if (useDash && rtDash?.retail_net != null) {
             const r = rtDash.retail_net;
             const rColor = r >= 0 ? '#ef4444' : '#22c55e';
@@ -1051,7 +988,7 @@ function SignalCardTuned({
                     const rtMainNet = rtDash?.main_net;
                     if (rtMainNet != null) {
                       const abs = Math.abs(rtMainNet);
-                      const str = abs >= 1e8 ? (rtMainNet / 1e8).toFixed(2) + '亿' : (rtMainNet / 1e4).toFixed(0) + '万';
+                      const str = abs >= 1e8 ? fmtCardNumber(Number(rtMainNet) / 1e8) + '亿' : fmtCardNumber(Number(rtMainNet) / 1e4, 0) + '万';
                       return `主力 ${rtMainNet >= 0 ? '+' : ''}${str}`;
                     }
                     return time || null;
@@ -1109,7 +1046,7 @@ function SignalCardTuned({
                       📊 盘后 {afterDateStr}
                     </span>
                   )}
-                
+
                   onClick={() => goToSection('sec-capital')}
                 />
               );
@@ -1313,32 +1250,16 @@ function SignalCardTuned({
               )}
               {heatVal != null && (
                 <span className="font-bold tabular-nums flex-shrink-0" style={{ color: heatColor }}>
-                  {heatVal.toFixed(1)}<span className="text-[9px] ml-0.5">{heatTrendIcon}{declineStr}</span>
+                  {fmtCardNumber(heatVal, 1)}<span className="text-[9px] ml-0.5">{heatTrendIcon}{declineStr}</span>
                 </span>
               )}
             </div>
           );
           // 右：板块资金净流入（实时）
           const rtSecFlowVal = rtDash?.sector_net;
-          const secFlowColor = (v) => v == null ? 'var(--text-muted)' : v >= 0 ? '#ef4444' : '#22c55e';
-          const secFlowFmt = sfDash ? fmtAmount : fmtWanYi;
-          const rtSecFlow = rtSecFlowVal != null ? (
-            <div className={rowClass} style={rowStyleR}>
-              <span className="text-[10px] flex-shrink-0 font-medium w-16" style={{ color: 'var(--text-muted)' }}>板块资金</span>
-              <span className="font-bold" style={{ color: secFlowColor(rtSecFlowVal) }}>{rtSecFlowVal >= 0 ? '净流入' : '净流出'}</span>
-              <span className="ml-auto font-mono tabular-nums" style={{ color: secFlowColor(rtSecFlowVal) }}>
-                {rtSecFlowVal >= 0 ? '+' : ''}{fmtAmount(rtSecFlowVal)}
-              </span>
-            </div>
-          ) : (sectorNetFlowVal != null ? (
-            <div className={rowClass} style={rowStyleR}>
-              <span className="text-[10px] flex-shrink-0 font-medium w-16" style={{ color: 'var(--text-muted)' }}>板块资金</span>
-              <span className="font-bold" style={{ color: secFlowColor(sectorNetFlowVal) }}>{sectorNetFlowVal >= 0 ? '净流入' : '净流出'}</span>
-              <span className="ml-auto font-mono tabular-nums" style={{ color: secFlowColor(sectorNetFlowVal) }}>
-                {sectorNetFlowVal >= 0 ? '+' : ''}{secFlowFmt(sectorNetFlowVal)}
-              </span>
-            </div>
-          ) : emptyRow);
+
+
+
 
           // 行2: 左=赚钱效应（基于涨停+涨幅+资金，sectorEffect替代软stage标签） / 右=板块涨幅+个股超额
           const leftTrend = (
@@ -1349,7 +1270,7 @@ function SignalCardTuned({
               {sectorScore != null && (
                 <span className="ml-auto flex items-center gap-0.5 flex-shrink-0" style={{ minWidth: '44px', justifyContent: 'flex-end' }}>
                   <span className="text-[9px]" style={{ color: 'var(--text-muted)' }}>共振</span>
-                  <span className="font-bold tabular-nums" style={{ color: scoreColor(sectorScore) }}>{sectorScore.toFixed(0)}</span>
+                  <span className="font-bold tabular-nums" style={{ color: scoreColor(sectorScore) }}>{fmtCardNumber(sectorScore, 0)}</span>
                 </span>
               )}
             </div>
@@ -1406,7 +1327,7 @@ function SignalCardTuned({
               <span className="font-bold flex-shrink-0 whitespace-nowrap px-1 rounded" style={{ color: participationEffect.color, background: `${participationEffect.color}15` }}>{participationEffect.label}</span>
               {riseRatio != null && (
                 <span className="ml-auto font-bold tabular-nums flex-shrink-0 whitespace-nowrap" style={{ color: riseRatio >= 50 ? '#ef4444' : '#22c55e' }}>
-                  {riseRatio.toFixed(0)}%涨
+                  {fmtCardNumber(riseRatio, 0)}%涨
                 </span>
               )}
             </div>
@@ -1426,7 +1347,7 @@ function SignalCardTuned({
                 {rtResonance >= 70 ? '同向·加仓' : rtResonance >= 50 ? '弱共振·持有' : '背离·谨慎'}
               </span>
               <span className="font-bold tabular-nums flex-shrink-0" style={{ color: scoreColor(rtResonance), minWidth: '20px', textAlign: 'right' }}>
-                {rtResonance.toFixed(0)}
+                {fmtCardNumber(rtResonance, 0)}
               </span>
             </div>
           ) : emptyRow;
@@ -1459,7 +1380,7 @@ function SignalCardTuned({
               )}
               {heatScore != null && (
                 <span className="font-bold tabular-nums flex-shrink-0 whitespace-nowrap" style={{ color: heatColor }}>
-                  {heatScore.toFixed(0)}
+                  {fmtCardNumber(heatScore, 0)}
                 </span>
               )}
             </div>
@@ -1509,7 +1430,7 @@ function SignalCardTuned({
               <span className="ml-auto font-bold flex-shrink-0 whitespace-nowrap px-1 rounded" style={{ color: leaderEffect.color, background: `${leaderEffect.color}15` }}>{leaderEffect.label}</span>
               {leaderStrength != null && (
                 <span className="font-bold tabular-nums flex-shrink-0" style={{ color: scoreColor(leaderStrength * 10), minWidth: '20px', textAlign: 'right' }}>
-                  {leaderStrength.toFixed(1)}
+                  {fmtCardNumber(leaderStrength, 1)}
                 </span>
               )}
             </div>
@@ -1522,7 +1443,7 @@ function SignalCardTuned({
                 <div className="h-full rounded-full" style={{ width: `${leaderStrength * 10}%`, background: scoreColor(leaderStrength * 10) }} />
               </div>
               <span className="font-bold tabular-nums flex-shrink-0" style={{ color: scoreColor(leaderStrength * 10), minWidth: '20px', textAlign: 'right' }}>
-                {leaderStrength.toFixed(1)}
+                {fmtCardNumber(leaderStrength, 1)}
               </span>
             </div>
           ) : emptyRow;
@@ -1600,7 +1521,7 @@ function SignalCardTuned({
               <span className="text-[10px] flex-shrink-0 font-medium w-16" style={{ color: 'var(--text-muted)' }}>量价配合</span>
               {vpVR != null && (
                 <span className="font-bold tabular-nums flex-shrink-0 whitespace-nowrap" style={{ color: vpVR >= 1.5 ? '#ef4444' : vpVR <= 0.5 ? '#22c55e' : 'var(--text-primary)', minWidth: '32px' }}>
-                  {vpVR.toFixed(2)}
+                  {fmtCardNumber(vpVR)}
                 </span>
               )}
               <div className="flex-1 h-1.5 rounded-full overflow-hidden min-w-0" style={{ background: 'rgba(107,114,128,0.15)' }}>
@@ -1623,13 +1544,13 @@ function SignalCardTuned({
               {relScore != null && (
                 <span className="flex items-center gap-0.5 flex-shrink-0 ml-auto">
                   <span className="text-[9px]" style={{ color: 'var(--text-muted)' }}>盘</span>
-                  <span className="font-bold tabular-nums" style={{ color: scoreColor(relScore) }}>{relScore.toFixed(0)}</span>
+                  <span className="font-bold tabular-nums" style={{ color: scoreColor(relScore) }}>{fmtCardNumber(relScore, 0)}</span>
                 </span>
               )}
               {rtRelScore != null && (
                 <span className="flex items-center gap-0.5 flex-shrink-0">
                   <span className="text-[9px]" style={{ color: 'var(--text-muted)' }}>实</span>
-                  <span className="font-bold tabular-nums" style={{ color: scoreColor(rtRelScore) }}>{rtRelScore.toFixed(0)}</span>
+                  <span className="font-bold tabular-nums" style={{ color: scoreColor(rtRelScore) }}>{fmtCardNumber(rtRelScore, 0)}</span>
                 </span>
               )}
             </div>
@@ -1733,4 +1654,3 @@ function SignalCardTuned({
 }
 
 export default SignalCardTuned;
-

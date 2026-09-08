@@ -13,6 +13,7 @@
   POST /generate-recaps-batch   批量补最近5个交易日复盘
 """
 import json
+import logging
 import os
 import uuid
 from datetime import datetime, timedelta
@@ -23,6 +24,7 @@ from sqlalchemy import select, desc
 from db.connection import SessionLocal
 from db.models import AnalysisRequest, AnalysisReport, Notification
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/analysis", tags=["analysis"])
 
 

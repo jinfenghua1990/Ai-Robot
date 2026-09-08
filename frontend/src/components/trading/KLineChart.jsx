@@ -1,4 +1,4 @@
-import { memo, useEffect, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import { createChart, CandlestickSeries, LineSeries, AreaSeries } from 'lightweight-charts';
 import { UP_COLOR, DOWN_COLOR, B_SIGNAL_COLOR, S_SIGNAL_COLOR } from '../../utils/colors';
 import { apiFetch } from '../../utils/request';
@@ -11,6 +11,18 @@ import { apiFetch } from '../../utils/request';
  *  - 板块趋势线（紫色 Area）：该股所属板块的近期热量走势，独立 Y 轴
  *  - B/S 买卖点 markers
  */
+function buildSectorSeries(code, klines) {
+  const data = window.__wlSectorCache || {};
+  const heatSeries = data[code];
+  if (!heatSeries || heatSeries.length === 0) return null;
+  const tail = klines.slice(-heatSeries.length);
+  if (tail.length === 0) return null;
+  return tail.map((k, i) => ({
+    time: k.date,
+    value: heatSeries[i]?.heat ?? 0,
+  })).filter(p => p.value != null);
+}
+
 function KLineChart({ code, height = 260 }) {
   const containerRef = useRef(null);
   const chartRef = useRef(null);
@@ -18,36 +30,16 @@ function KLineChart({ code, height = 260 }) {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
 
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    setErr('');
-
-    (async () => {
-      try {
-        const { ok, data, error } = await apiFetch(`/api/trading/bs-signals?stockCode=${code}&datalen=120`);
-        if (cancelled) return;
-        if (!ok) { setErr(error || '加载失败'); setLoading(false); return; }
-        if (data.detail) throw new Error(data.detail);
-        render(data);
-        setLoading(false);
-      } catch (e) {
-        if (!cancelled) { setErr(e.message); setLoading(false); }
-      }
-    })();
-
-    return () => { cancelled = true; cleanup(); };
-  }, [code]);
-
-  function cleanup() {
+  const cleanup = useCallback(() => {
+    seriesRef.current._ro?.disconnect();
     if (chartRef.current) {
       try { chartRef.current.remove(); } catch {}
       chartRef.current = null;
-      seriesRef.current = {};
     }
-  }
+    seriesRef.current = {};
+  }, []);
 
-  function render(data) {
+  const render = useCallback((data) => {
     cleanup();
     if (!containerRef.current) return;
     const klines = data.klines || [];
@@ -131,24 +123,28 @@ function KLineChart({ code, height = 260 }) {
     });
     ro.observe(containerRef.current);
     seriesRef.current._ro = ro;
-  }
+  }, [cleanup, code, height]);
 
-  // 7 天板块热度序列对齐到 K线时间轴（最近一天对齐到 K线最后一天）
-  function buildSectorSeries(code, klines) {
-    // 同步拿一下 watchlist 缓存里的 sectorTrend
-    // 简单做法：直接 fetch /api/watchlist 拿到 selected 的 sectorTrend
-    // 但这里为了避免 race condition，直接从全局 fetch
-    const data = window.__wlSectorCache || {};
-    const heatSeries = data[code];
-    if (!heatSeries || heatSeries.length === 0) return null;
-    // 对齐：板块 series 7 天 → 摊到 K线最后 7 根上
-    const tail = klines.slice(-heatSeries.length);
-    if (tail.length === 0) return null;
-    return tail.map((k, i) => ({
-      time: k.date,
-      value: heatSeries[i]?.heat ?? 0,
-    })).filter(p => p.value != null);
-  }
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setErr('');
+
+    (async () => {
+      try {
+        const { ok, data, error } = await apiFetch(`/api/trading/bs-signals?stockCode=${code}&datalen=120`);
+        if (cancelled) return;
+        if (!ok) { setErr(error || '加载失败'); setLoading(false); return; }
+        if (data.detail) throw new Error(data.detail);
+        render(data);
+        setLoading(false);
+      } catch (e) {
+        if (!cancelled) { setErr(e.message); setLoading(false); }
+      }
+    })();
+
+    return () => { cancelled = true; cleanup(); };
+  }, [cleanup, code, render]);
 
   if (err) return <div className="h-full flex items-center justify-center text-xs" style={{ color: '#ef4444' }}>{err}</div>;
   return (

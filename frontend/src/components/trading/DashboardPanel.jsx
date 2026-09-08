@@ -12,6 +12,7 @@ const DIMENSIONS = [
 ];
 
 function barColor(v) {
+  if (v == null) return 'var(--text-muted)';
   if (v >= 70) return '#22c55e';
   if (v >= 50) return '#eab308';
   if (v >= 30) return '#f97316';
@@ -48,13 +49,10 @@ export default function DashboardPanel({ dashboard, loading }) {
 
   const {
     action_label, action_color,
-    trend_strength, capital_momentum, sector_resonance,
-    volume_health, volatility_health, relative_strength, drawdown_status,
-    institution_signal,
     sector_flow, institution_flow, date,
   } = dashboard;
 
-  const hasFlow = sector_flow || (institution_flow && Object.keys(institution_flow).length > 0);
+  const hasFlow = sector_flow?.net_flow != null || institution_flow?.has_data;
 
   return (
     <div className="rounded-lg border p-4 space-y-3"
@@ -86,10 +84,16 @@ export default function DashboardPanel({ dashboard, loading }) {
         )}
       </div>
 
+      {dashboard.status === 'PARTIAL' && (
+        <div className="rounded-md px-2 py-1.5 text-[10px]" style={{ background: 'rgba(245,158,11,0.08)', color: '#b45309' }}>
+          数据不完整：{(dashboard.missing_dimensions || []).map(key => DIMENSIONS.find(item => item.key === key)?.label || key).join('、') || '部分维度缺失'}。缺失维度不按 50 分处理。
+        </div>
+      )}
+
       {/* 8 维进度条 */}
       <div className="grid grid-cols-2 gap-x-3 gap-y-2">
         {DIMENSIONS.map(d => {
-          const val = dashboard[d.key] ?? 50;
+          const val = dashboard[d.key];
           const c = barColor(val);
           return (
             <div key={d.key} className="flex items-center gap-1.5 min-w-0">
@@ -100,11 +104,11 @@ export default function DashboardPanel({ dashboard, loading }) {
               <div className="flex-1 h-1.5 rounded-full overflow-hidden min-w-0" style={{ background: 'var(--bg-muted)' }}>
                 <div
                   className="h-full rounded-full transition-all"
-                  style={{ width: `${val}%`, background: c }}
+                  style={{ width: `${val ?? 0}%`, background: c }}
                 />
               </div>
               <span className="text-[10px] font-medium w-7 text-right flex-shrink-0" style={{ color: c }}>
-                {Math.round(val)}
+                {val == null ? '—' : Math.round(val)}
               </span>
             </div>
           );
@@ -120,9 +124,9 @@ export default function DashboardPanel({ dashboard, loading }) {
                 📡 板块：{sector_flow.sector}
               </span>
               <div className="grid grid-cols-3 gap-2 text-[10px]" style={{ color: 'var(--text-muted)' }}>
-                <div>净流入 <span style={{ color: sector_flow.net_flow >= 0 ? '#22c55e' : '#ef4444', fontWeight: 600 }}>{fmtWan(sector_flow.net_flow)}</span></div>
-                <div>平均涨幅 <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{sector_flow.avg_chg?.toFixed(2)}%</span></div>
-                <div>涨停数 <span style={{ fontWeight: 600, color: '#f97316' }}>{sector_flow.limit_up_count || 0}</span></div>
+                <div>净流入 <span style={{ color: sector_flow.net_flow == null ? 'var(--text-muted)' : sector_flow.net_flow >= 0 ? '#22c55e' : '#ef4444', fontWeight: 600 }}>{fmtWan(sector_flow.net_flow)}</span></div>
+                <div>平均涨幅 <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{sector_flow.avg_chg == null ? '—' : `${sector_flow.avg_chg.toFixed(2)}%`}</span></div>
+                <div>涨停数 <span style={{ fontWeight: 600, color: '#f97316' }}>{sector_flow.limit_up_count ?? '—'}</span></div>
               </div>
             </div>
           )}

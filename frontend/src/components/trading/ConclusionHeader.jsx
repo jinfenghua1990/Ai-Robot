@@ -52,9 +52,11 @@ export default function ConclusionHeader({ signal, dash }) {
   const afterColor = verdictColor(signalLabel);
   const techText = !after
     ? '技术面：盘后仪表盘不可用'
+    : dash.trend_strength == null
+      ? '技术面：数据库数据不足'
     : after.riskTriggered
       ? '技术面：破位，必须减仓'
-      : (dash.trend_strength ?? 0) >= 60
+      : dash.trend_strength >= 60
         ? '技术面：走强，趋势健康'
         : '技术面：中性，未见破位';
 

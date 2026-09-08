@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { qualityOrder, qualityColors } from '../StageBar';
+import { qualityOrder, qualityColors } from '../../utils/stageConfig';
 import { apiFetch } from '../../utils/request';
 
 /**
@@ -44,7 +44,7 @@ export default function QualityPicker({ stockCode, value = '中性', onChange })
       if (ok && data?.success) {
         onChange?.(q);
       }
-    } catch (e) {
+    } catch {
       /* silent */
     } finally {
       setLoading(false);

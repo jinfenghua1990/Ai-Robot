@@ -30,6 +30,10 @@ class MarketContext:
     broken_rate: float = 0.0
     market_return_20d: Optional[float] = None
     market_data_available: bool = False
+    # A/HK/US are scored independently.  The default keeps all existing
+    # A-share callers and positional test fixtures backward compatible.
+    market: str = "A"
+    benchmark: str = ""
 
 
 @dataclass(frozen=True)

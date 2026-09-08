@@ -233,6 +233,11 @@ def get_klines(symbol: str, days: int = 252) -> list[dict] | None:
             "low": float(parts[4]) if parts[4] else None,
             "close": close,
             "volume": int(float(parts[5])) if parts[5] else 0,
+            # 东财扩展字段（f57=f61）
+            "amount": float(parts[6]) if len(parts) > 6 and parts[6] else None,
+            "amplitude": float(parts[7]) if len(parts) > 7 and parts[7] else None,
+            "change_pct": float(parts[8]) if len(parts) > 8 and parts[8] else None,
+            "turnover": float(parts[10]) if len(parts) > 10 and parts[10] else None,
         })
     
     # 东财返回降序，需要反转

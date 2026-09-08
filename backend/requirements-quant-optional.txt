@@ -1,0 +1,10 @@
+# Optional dependencies for the embedded Quant routes in api/quant_embedded.py.
+# The 9000 service starts without these packages and reports Phase0 readiness.
+# Install only when the Qlib/VectorBT data pipeline is ready.
+pyqlib
+vectorbt
+lightgbm
+pyyaml
+pandas
+numpy
+scipy

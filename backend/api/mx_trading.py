@@ -11,10 +11,7 @@ from fastapi import APIRouter, HTTPException, Query, Depends
 from api.auth import verify_api_key
 from pydantic import BaseModel
 from config import MX_TRADING_APIKEY, MX_API_URL
-from utils import stock_code_to_sina as _stock_code_to_sina
 from utils.cache import BoundedDict
-from api.watchlist._shared import _get_http_client
-from utils.http_constants import SINA_HEADERS_SHORT
 from sqlalchemy import select
 from db.connection import SessionLocal
 from db.models import SimPositionCost
@@ -22,6 +19,9 @@ from db.models import SimPositionCost
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+_MX_HTTP_TIMEOUT = 10
+_MX_HTTP_LIMITS = httpx.Limits(max_connections=5, max_keepalive_connections=2)
 
 # 内存缓存（仅缓存查询类接口）
 _cache = BoundedDict(maxsize=50)
@@ -84,16 +84,18 @@ async def _proxy(endpoint: str, payload: dict, cache_key: str = None, api_key: s
             return cached[0]
 
     try:
-        client = _get_http_client()
-        resp = await client.post(
-            f"{MX_API_URL}{endpoint}",
-            json=payload,
-            headers={
-                "apikey": key,
-                "Content-Type": "application/json; charset=UTF-8",
-            },
-        )
-        data = resp.json()
+        # 调度器会在不同线程中用 asyncio.run 创建独立事件循环；
+        # AsyncClient 不能跨事件循环复用，因此每次外部采集/交易调用独立管理连接。
+        async with httpx.AsyncClient(timeout=_MX_HTTP_TIMEOUT, limits=_MX_HTTP_LIMITS) as client:
+            resp = await client.post(
+                f"{MX_API_URL}{endpoint}",
+                json=payload,
+                headers={
+                    "apikey": key,
+                    "Content-Type": "application/json; charset=UTF-8",
+                },
+            )
+            data = resp.json()
     except httpx.TimeoutException:
         raise HTTPException(status_code=504, detail="东方财富API请求超时")
     except Exception as e:
@@ -102,11 +104,12 @@ async def _proxy(endpoint: str, payload: dict, cache_key: str = None, api_key: s
     code = str(data.get('code', ''))
     if code not in ('0', '200'):
         msg = data.get('message', '未知错误')
+        logger.warning('[mx_trading] _proxy error: endpoint=%s code=%s message=%s data=%s', endpoint, code, msg, data)
         # 特殊错误码处理
         if code == '113':
-            raise HTTPException(status_code=429, detail="今日调用次数已达上限")
+            raise HTTPException(status_code=429, detail="妙想账户已休眠，调用次数降至10次/天。请前往东方财富APP搜索「妙想skill」激活账户后重试。")
         if code in ('114', '115', '116'):
-            raise HTTPException(status_code=401, detail="API密钥无效，请检查MX_APIKEY配置")
+            raise HTTPException(status_code=401, detail="妙想 API 密钥无效，请检查 MX_TRADING_APIKEY 配置")
         if code == '404':
             raise HTTPException(status_code=404, detail="未绑定模拟组合账户，请前往妙想Skills页面创建并绑定")
         raise HTTPException(status_code=400, detail=msg)
@@ -306,15 +309,21 @@ async def fetch_orders(api_key: str = None, drt: int = 0, status: int = 0) -> di
 async def place_trade(api_key: str = None, type: str = None, stock_code: str = None,
                       quantity: int = 0, use_market_price: bool = False,
                       price: Optional[float] = None) -> dict:
-    """东财模拟盘买入/卖出（可指定 api_key）"""
+    """东财模拟盘买入/卖出（可指定 api_key）
+
+    市价委托在非交易时间会因妙想无法获取实时买一价而失败，
+    此时自动回退为限价委托（用数据库最新收盘价）重试一次。
+    """
     if type not in ('buy', 'sell'):
         raise HTTPException(status_code=400, detail="type必须为buy或sell")
-    if not stock_code or len(stock_code) != 6:
+    if not stock_code or len(stock_code) != 6 or not stock_code.isdigit():
         raise HTTPException(status_code=400, detail="stockCode必须为6位数字")
-    if quantity % 100 != 0:
-        raise HTTPException(status_code=400, detail="数量必须为100的整数倍")
+    if quantity <= 0 or quantity % 100 != 0:
+        raise HTTPException(status_code=400, detail="数量必须为正数且是100的整数倍")
     if not use_market_price and price is None:
         raise HTTPException(status_code=400, detail="限价委托必须提供price")
+    if not use_market_price and float(price) <= 0:
+        raise HTTPException(status_code=400, detail="限价委托价格必须大于0")
 
     payload = {
         'type': type,
@@ -323,12 +332,50 @@ async def place_trade(api_key: str = None, type: str = None, stock_code: str = N
         'useMarketPrice': use_market_price,
     }
     if not use_market_price and price is not None:
-        decimal_places = 2 if stock_code[0] in ('6', '9') else 3
-        payload['price'] = int(round(price * (10 ** decimal_places)))
+        # 妙想 API 期望浮点数价格（如 53.87），不是放大后的整数
+        payload['price'] = round(float(price), 4)
 
-    result = await _proxy('/api/claw/mockTrading/trade', payload, api_key=api_key)
-    _clear_cache(api_key)
-    return result
+    logger.info('[mx_trading] place_trade request: type=%s stock_code=%s quantity=%s use_market_price=%s price=%s',
+                type, stock_code, quantity, use_market_price, price)
+    try:
+        result = await _proxy('/api/claw/mockTrading/trade', payload, api_key=api_key)
+        logger.info('[mx_trading] place_trade response: %s', result)
+        _clear_cache(api_key)
+        return result
+    except HTTPException as e:
+        # 市价委托在非交易时间会失败（妙想无法获取实时买一价），自动回退为限价委托
+        fallback_msg = '获取行情买一价失败'
+        if use_market_price and e.status_code == 400 and fallback_msg in str(e.detail):
+            logger.warning('[mx_trading] 市价委托失败(%s)，回退为限价委托重试', e.detail)
+            # 用数据库最新收盘价作为限价
+            from api.trading import _get_realtime_price
+            rt = await _get_realtime_price(stock_code)
+            fb_price = rt.get('price')
+            if not fb_price or fb_price <= 0:
+                raise HTTPException(status_code=400, detail=f"市价委托失败且无法获取现价回退：{e.detail}")
+            fb_payload = {
+                'type': type,
+                'stockCode': stock_code,
+                'quantity': quantity,
+                'useMarketPrice': False,
+                'price': round(float(fb_price), 4),
+            }
+            logger.info('[mx_trading] 限价回退 request: price=%s (现价%.4f)', fb_payload['price'], fb_price)
+            try:
+                result = await _proxy('/api/claw/mockTrading/trade', fb_payload, api_key=api_key)
+                logger.info('[mx_trading] 限价回退 response: %s', result)
+                _clear_cache(api_key)
+                if isinstance(result, dict):
+                    result['_fallback'] = f'市价失败已自动回退限价({fb_price:.2f})'
+                return result
+            except HTTPException as e2:
+                # 限价回退也失败：返回合并错误信息，提示可能是妙想账户休眠
+                logger.warning('[mx_trading] 限价回退也失败: %s', e2.detail)
+                raise HTTPException(
+                    status_code=e2.status_code,
+                    detail=f"市价委托失败({e.detail})，限价回退也失败({e2.detail})。妙想账户可能已休眠，请前往东方财富APP搜索「妙想skill」激活后重试。"
+                )
+        raise
 
 
 async def place_cancel(api_key: str = None, type: str = "order",
@@ -350,14 +397,16 @@ async def place_cancel(api_key: str = None, type: str = "order",
 
 @router.get("/api/mx-trading/balance")
 async def get_balance(force: int = Query(0, description="1=跳过缓存强制刷新")):
-    """查询东财模拟盘账户资金"""
-    return await fetch_balance(force=force)
+    """读取数据库中的东财模拟盘账户资金。"""
+    from api.trading import get_balance as get_database_balance
+    return await get_database_balance()
 
 
 @router.get("/api/mx-trading/positions")
 async def get_positions(force: int = Query(0, description="1=跳过缓存强制刷新")):
-    """查询东财模拟盘持仓明细"""
-    return await fetch_positions(force=force)
+    """读取数据库中的东财模拟盘持仓明细。"""
+    from api.trading import get_positions as get_database_positions
+    return await get_database_positions()
 
 
 @router.get("/api/mx-trading/orders")
@@ -365,92 +414,70 @@ async def get_orders(
     drt: int = Query(0, description="0=全部, 1=买入, 2=卖出"),
     status: int = Query(0, description="0=全部, 2=已报, 4=已成"),
 ):
-    """查询东财模拟盘委托记录"""
-    return await fetch_orders(drt=drt, status=status)
+    """读取数据库中的东财模拟盘委托记录。"""
+    from api.trading import read_orders_from_db
+    import asyncio
+    return await asyncio.to_thread(read_orders_from_db, drt, status)
 
 
-@router.post("/api/mx-trading/trade")
+@router.post("/api/mx-trading/trade", dependencies=[Depends(verify_api_key)])
 async def trade(req: TradeRequest):
     """东财模拟盘买入/卖出"""
-    return await place_trade(
+    result = await place_trade(
         type=req.type,
         stock_code=req.stockCode,
         quantity=req.quantity,
         use_market_price=req.useMarketPrice,
         price=req.price,
     )
+    try:
+        from api.trading import collect_trading_snapshot
+        await collect_trading_snapshot(force=True)
+    except Exception as exc:
+        logger.warning("交易成功后账户快照刷新失败: %s", exc)
+    return result
 
 
 @router.post("/api/mx-trading/cancel", dependencies=[Depends(verify_api_key)])
 async def cancel(req: CancelRequest):
     """东财模拟盘撤单/一键撤单"""
-    return await place_cancel(
+    result = await place_cancel(
         type=req.type,
         order_id=req.orderId,
         stock_code=req.stockCode,
     )
+    try:
+        from api.trading import collect_trading_snapshot
+        await collect_trading_snapshot(force=True)
+    except Exception as exc:
+        logger.warning("撤单成功后账户快照刷新失败: %s", exc)
+    return result
 
 
 @router.get("/api/mx-trading/quote")
 async def get_realtime_quote(code: str = Query(..., description="6位股票代码")):
-    """获取新浪实时行情"""
-    sina_code = _stock_code_to_sina(code)
-    if not sina_code:
-        raise HTTPException(status_code=400, detail="无效的股票代码")
-
-    cache_key = f'mx_quote_{code}'
-    cached = _cache.get(cache_key)
-    if cached and time.time() - cached[1] < 3:
-        return cached[0]
-
-    url = f"https://hq.sinajs.cn/list={sina_code}"
-    try:
-        client = _get_http_client()
-        resp = await client.get(url, headers=SINA_HEADERS_SHORT)
-        resp.encoding = 'gbk'
-        text = resp.text
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"获取行情失败: {str(e)}")
-
-    try:
-        parts = text.split('"')[1].split(',')
-        if len(parts) < 10:
-            raise HTTPException(status_code=500, detail="行情数据格式异常")
-
-        name = parts[0]
-        # 新浪格式: name, 今开盘, 昨收盘, 当前价, ...
-        yesterday_close = float(parts[2])
-        open_price = float(parts[1])
-        current_price = float(parts[3])
-        high = float(parts[4])
-        low = float(parts[5])
-        volume = int(float(parts[8]))
-        amount = float(parts[9])
-
-        change = current_price - yesterday_close
-        change_pct = (change / yesterday_close * 100) if yesterday_close else 0
-
-        result = {
-            'code': code,
-            'name': name,
-            'price': current_price,
-            'yesterdayClose': yesterday_close,
-            'open': open_price,
-            'high': high,
-            'low': low,
-            'volume': volume,
-            'amount': amount,
-            'change': round(change, 3),
-            'changePct': round(change_pct, 2),
-        }
-        _cache[cache_key] = (result, time.time())
-        return result
-    except (IndexError, ValueError) as e:
-        raise HTTPException(status_code=500, detail=f"行情解析失败: {str(e)}")
+    """从数据库读取行情。"""
+    from api.trading import _get_realtime_price
+    quote = await _get_realtime_price(code)
+    return {
+        'code': code,
+        'name': quote['name'],
+        'price': quote['price'],
+        'yesterdayClose': quote['yesterday_close'],
+        'open': quote['open'],
+        'high': quote['high'],
+        'low': quote['low'],
+        'volume': quote['volume'],
+        'amount': quote['amount'],
+        'change': round(quote['change'], 3),
+        'changePct': round(quote['change_pct'], 2),
+        'source': 'database',
+        'dataAsOf': quote.get('data_as_of'),
+    }
 
 
 @router.get("/api/mx-trading/search")
-async def search_stock(q: str = Query(..., min_length=1, description="股票代码或名称")):
+def search_stock(q: str = Query(..., min_length=1, description="股票代码或名称")):
     """搜索股票（代码或名称模糊匹配）"""
     from db.session import get_db_session
     from db.models import StockFlow

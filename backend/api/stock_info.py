@@ -1,90 +1,136 @@
-"""个股级资讯接口（东财）。
+"""个股级资讯接口。
 
-提供给「个股分析页」使用，解决原新闻区调用通用研报流（与研报中心重复）的问题：
-返回该股票自身的东财新闻 + 公告，均为按代码拉取的个股专属数据。
-
-- 新闻：akshare.stock_news_em（东财搜索接口，懒导入并缓存）
-- 公告：东财公告公开接口，纯 requests，稳定
-异常时返回空列表而非 500，保证前端始终可渲染。
+查询接口只读取采集器已经写入 ``stock_news_search`` 的妙想资讯存档；
+缺少存档时明确返回 MISSING，不在页面请求期间调用任何外部数据源。
 """
-from fastapi import APIRouter, Query, HTTPException
-import requests
-import logging
 
-logger = logging.getLogger(__name__)
+import json
+from typing import Any
+
+from fastapi import APIRouter, HTTPException, Query
+
+from db.models import StockNewsSearch
+from db.session import get_db_session
+
+
 router = APIRouter()
 
-UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
 
-# akshare 懒导入缓存（首次调用时导入，约 1s）
-_AK = None
-
-
-def _ak():
-    global _AK
-    if _AK is None:
-        import akshare as ak  # noqa: F811
-        _AK = ak
-    return _AK
-
-
-def _fetch_news(code: str, limit: int = 10) -> list:
-    """个股东财新闻（最近 limit 条）。"""
+def _search_items(raw: str | None) -> list[dict[str, Any]]:
+    """Extract Miaoxiang search rows from the two observed response envelopes."""
+    if not raw:
+        return []
     try:
-        ak = _ak()
-        df = ak.stock_news_em(symbol=code)
-        if df is None or df.empty:
+        payload: Any = json.loads(raw)
+    except (TypeError, ValueError):
+        return []
+
+    for _ in range(3):
+        if not isinstance(payload, dict):
             return []
-        rows = df.head(limit).to_dict("records")
-        out = []
-        for r in rows:
-            out.append({
-                "title": (r.get("新闻标题") or "").strip(),
-                "summary": (r.get("新闻内容") or "").strip(),
-                "time": (r.get("发布时间") or "").strip(),
-                "source": (r.get("文章来源") or "").strip(),
-                "url": (r.get("新闻链接") or "").strip(),
-            })
-        return out
-    except Exception as e:
-        logger.warning(f"[stock_info] news failed for {code}: {e}", exc_info=False)
-        return []
+        response = payload.get("llmSearchResponse")
+        if isinstance(response, dict):
+            rows = response.get("data")
+            return [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
+        payload = payload.get("data")
+    return []
 
 
-def _fetch_announcements(code: str, limit: int = 15) -> list:
-    """个股东财公告（最近 limit 条）。"""
+def _search_error(raw: str | None) -> str | None:
+    if not raw:
+        return None
     try:
-        r = requests.get(
-            "https://np-anotice-stock.eastmoney.com/api/security/ann",
-            params={"sr": -1, "page_size": limit, "page_index": 1, "ann_type": "A",
-                    "client_source": "web", "stock_list": code, "f_node": 0, "s_node": 0},
-            headers={"User-Agent": UA}, timeout=20,
+        payload = json.loads(raw)
+    except (TypeError, ValueError):
+        return "INVALID_ARCHIVE"
+    if not isinstance(payload, dict):
+        return "INVALID_ARCHIVE"
+    code = payload.get("code")
+    message = str(payload.get("message") or "")
+    if code == 113 or "调用次数" in message or "免费版用户" in message:
+        return "UPSTREAM_LIMIT"
+    return "UPSTREAM_ERROR" if not _search_items(raw) else None
+
+
+def _database_news(code: str, limit: int) -> dict[str, Any]:
+    with get_db_session() as db:
+        searches = (
+            db.query(StockNewsSearch)
+            .filter(StockNewsSearch.stock_code == code)
+            .order_by(StockNewsSearch.search_time.desc(), StockNewsSearch.id.desc())
+            .limit(100)
+            .all()
         )
-        lst = (r.json().get("data") or {}).get("list") or []
-        out = []
-        for a in lst:
-            cols = [c.get("column_name") for c in (a.get("columns") or []) if c.get("column_name")]
-            art = a.get("art_code", "")
-            out.append({
-                "date": (a.get("notice_date", "") or "")[:10],
-                "title": (a.get("title", "") or "").strip(),
-                "type": cols[0] if cols else "",
-                "url": f"https://data.eastmoney.com/notices/detail/{code}/{art}.html" if art else "",
-            })
-        return out
-    except Exception as e:
-        logger.warning(f"[stock_info] announcements failed for {code}: {e}", exc_info=False)
-        return []
+
+        news: list[dict[str, Any]] = []
+        announcements: list[dict[str, Any]] = []
+        seen: set[tuple[str, str, str]] = set()
+        content_as_of = None
+        for search in searches:
+            items = _search_items(search.result_raw)
+            if items and content_as_of is None:
+                content_as_of = search.search_time
+            for item in items:
+                title = str(item.get("title") or "").strip()
+                date = str(item.get("date") or "").strip()
+                url = str(item.get("jumpUrl") or "").strip()
+                if not title:
+                    continue
+                identity = (title, date, url)
+                if identity in seen:
+                    continue
+                seen.add(identity)
+
+                info_type = str(item.get("informationType") or "").upper()
+                if info_type == "NOTICE":
+                    announcements.append({
+                        "date": date[:10],
+                        "title": title,
+                        "type": "公告",
+                        "url": url,
+                    })
+                else:
+                    news.append({
+                        "title": title,
+                        "summary": str(item.get("content") or item.get("showText") or "").strip(),
+                        "time": date,
+                        "source": info_type or "妙想资讯",
+                        "url": url,
+                    })
+
+        collection_as_of = searches[0].search_time if searches else None
+        latest_error = _search_error(searches[0].result_raw) if searches else None
+        has_data = bool(news or announcements)
+        if has_data and latest_error:
+            status = "STALE"
+        elif has_data:
+            status = "READY"
+        elif latest_error:
+            status = latest_error
+        else:
+            status = "MISSING"
+
+        return {
+            "news": news[:limit],
+            "announcements": announcements[:max(5, limit)],
+            "dataAsOf": content_as_of.isoformat() if content_as_of else None,
+            "collectionAsOf": collection_as_of.isoformat() if collection_as_of else None,
+            "status": status,
+            "message": (
+                "数据库中最近采集记录为妙想调用额度不足，暂无可用资讯数据"
+                if status == "UPSTREAM_LIMIT"
+                else "最近一次妙想采集失败，当前展示数据库中的较早存档"
+                if status == "STALE" and latest_error
+                else None
+            ),
+        }
 
 
 @router.get("/api/stock/{code}/news")
-def stock_news(code: str, limit: int = Query(10, le=30)):
-    """个股新闻 + 公告（东财，真实按代码拉取）。"""
+def stock_news(code: str, limit: int = Query(10, ge=1, le=30)):
+    """Return the latest persisted stock news and announcements."""
     base = "".join(ch for ch in str(code) if ch.isdigit())
     if not base:
         raise HTTPException(400, "invalid code")
-    return {
-        "code": base,
-        "news": _fetch_news(base, limit=limit),
-        "announcements": _fetch_announcements(base, limit=max(5, limit)),
-    }
+    result = _database_news(base, limit)
+    return {"code": base, "source": "database", **result}

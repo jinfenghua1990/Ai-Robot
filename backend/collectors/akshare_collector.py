@@ -3,6 +3,8 @@ AKShare 采集器 - 开源Python库，整合东财/新浪/同花顺等多源数�
 无额度限制，实时行情基于新浪（可用），资金流向基于东财push2his（可能受限）
 """
 import logging
+import threading
+import time
 from utils.http_constants import clear_proxy_env
 from utils.cache import BoundedDict
 
@@ -22,6 +24,9 @@ except ImportError:
 _spot_cache = BoundedDict(maxsize=6000)  # A股约5000+只，容量需大于此
 _spot_cache_time = 0
 _SPOT_CACHE_TTL = 60  # 60秒缓存
+_SPOT_FAILURE_UNTIL = 0.0
+_SPOT_REFRESH_LOCK = threading.Lock()
+_SPOT_FAILURE_COOLDOWN_SECONDS = 300
 
 
 def akshare_batch_prices(ts_codes):
@@ -33,41 +38,52 @@ def akshare_batch_prices(ts_codes):
     if not AKSHARE_AVAILABLE:
         return {}
 
-    import time
-    global _spot_cache, _spot_cache_time
+    global _spot_cache, _spot_cache_time, _SPOT_FAILURE_UNTIL
 
     now = time.time()
     if now - _spot_cache_time > _SPOT_CACHE_TTL:
-        # 缓存过期，重新拉取全市场行情
-        try:
-            df = ak.stock_zh_a_spot()
-            _spot_cache = BoundedDict(maxsize=6000)  # A股约5000+只，容量需大于此
-            for _, row in df.iterrows():
-                code = str(row['代码'])  # 如 bj920000, sh600519, sz000001
-                # 标准化为 ts_code 格式
-                if code.startswith('sh'):
-                    tc = f"{code[2:]}.SH"
-                elif code.startswith('sz'):
-                    tc = f"{code[2:]}.SZ"
-                elif code.startswith('bj'):
-                    tc = f"{code[2:]}.BJ"
-                else:
-                    continue
-                _spot_cache[tc] = {
-                    'price': float(row.get('最新价', 0) or 0),
-                    'change_pct': float(row.get('涨跌幅', 0) or 0),
-                    'open': float(row.get('今开', 0) or 0),
-                    'high': float(row.get('最高', 0) or 0),
-                    'low': float(row.get('最低', 0) or 0),
-                    'prev_close': float(row.get('昨收', 0) or 0),
-                    'volume': float(row.get('成交量', 0) or 0),
-                    'amount': float(row.get('成交额', 0) or 0),
-                }
-            _spot_cache_time = now
-            print(f'[akshare] Cached {len(_spot_cache)} stocks from stock_zh_a_spot')
-        except Exception as e:
-            logger.warning(f'[akshare] stock_zh_a_spot error: {e}', exc_info=True)
+        if now < _SPOT_FAILURE_UNTIL:
             return {}
+        with _SPOT_REFRESH_LOCK:
+            now = time.time()
+            if now - _spot_cache_time <= _SPOT_CACHE_TTL:
+                pass
+            elif now < _SPOT_FAILURE_UNTIL:
+                return {}
+            else:
+                # 缓存过期，重新拉取全市场行情。
+                try:
+                    df = ak.stock_zh_a_spot()
+                    _spot_cache = BoundedDict(maxsize=6000)  # A股约5000+只，容量需大于此
+                    for _, row in df.iterrows():
+                        code = str(row['代码'])  # 如 bj920000, sh600519, sz000001
+                        if code.startswith('sh'):
+                            tc = f"{code[2:]}.SH"
+                        elif code.startswith('sz'):
+                            tc = f"{code[2:]}.SZ"
+                        elif code.startswith('bj'):
+                            tc = f"{code[2:]}.BJ"
+                        else:
+                            continue
+                        _spot_cache[tc] = {
+                            'price': float(row.get('最新价', 0) or 0),
+                            'change_pct': float(row.get('涨跌幅', 0) or 0),
+                            'open': float(row.get('今开', 0) or 0),
+                            'high': float(row.get('最高', 0) or 0),
+                            'low': float(row.get('最低', 0) or 0),
+                            'prev_close': float(row.get('昨收', 0) or 0),
+                            'volume': float(row.get('成交量', 0) or 0),
+                            'amount': float(row.get('成交额', 0) or 0),
+                        }
+                    _spot_cache_time = now
+                    print(f'[akshare] Cached {len(_spot_cache)} stocks from stock_zh_a_spot')
+                except Exception as e:
+                    _SPOT_FAILURE_UNTIL = now + _SPOT_FAILURE_COOLDOWN_SECONDS
+                    logger.warning(
+                        '[akshare] stock_zh_a_spot unavailable; pause retries for %ss (%s)',
+                        _SPOT_FAILURE_COOLDOWN_SECONDS, type(e).__name__,
+                    )
+                    return {}
 
     # 从缓存中提取请求的股票
     result = {}

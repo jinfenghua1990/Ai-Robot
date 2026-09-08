@@ -1,0 +1,53 @@
+{
+  "include": [
+      "backend/**/*.py",
+      "frontend/src/**/*",
+      "frontend/package.json",
+      "frontend/vite.config.*",
+      "research/**/*.py",
+      "research/**/*.md",
+      "tests/**/*.py",
+      "v2_app/**/*.py",
+      "docs/**/*.md",
+      "AGENTS.md"
+  ],
+  "ignore": {
+    "useGitignore": true,
+    "useDotIgnore": true,
+    "useDefaultPatterns": true,
+    "customPatterns": [
+      "**/.git/**",
+      "**/node_modules/**",
+      "**/__pycache__/**",
+      "**/.pytest_cache/**",
+      "**/.cache/**",
+      "**/dist/**",
+      "**/dist.*/**",
+      "**/backups/**",
+      "**/.trash/**",
+      "**/*.db",
+      "**/*.sqlite",
+      "**/*.sqlite3",
+      "**/*.log",
+      "**/.env*",
+      "**/analysis_reports/**",
+      "research/external/**",
+      "backend/static/**",
+      "frontend/dist*/**",
+      "**/*.map",
+      "**/*.ipynb",
+      "**/watchlist.json"
+    ]
+  },
+  "output": {
+    "filePath": "docs/repomix-output.xml",
+    "style": "xml",
+    "removeComments": false,
+    "removeEmptyLines": true,
+    "showLineNumbers": true,
+    "truncateBase64": true
+  },
+  "security": {
+    "enableSecurityCheck": true
+  }
+}

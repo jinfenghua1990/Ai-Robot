@@ -136,6 +136,20 @@ table td, table th {
   70% { box-shadow: 0 0 0 7px rgba(74, 222, 128, 0); }
   100% { box-shadow: 0 0 0 0 rgba(74, 222, 128, 0); }
 }
+
+@keyframes tradeActivityTicker {
+  from { transform: translateX(0); }
+  to { transform: translateX(-50%); }
+}
+
+.trade-activity-ticker {
+  width: max-content;
+  animation: tradeActivityTicker 28s linear infinite;
+}
+
+.trade-activity-ticker:hover {
+  animation-play-state: paused;
+}
 .gradient-text {
   background: linear-gradient(120deg, var(--accent-blue), color-mix(in srgb, var(--accent-blue) 55%, #a78bfa));
   -webkit-background-clip: text;
@@ -188,6 +202,405 @@ table td, table th {
 }
 .scrollbar-thin::-webkit-scrollbar-track {
   background: transparent;
+}
+
+/* 个股分析左侧自选池等需要精致滚动条 */
+.custom-scroll::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+.custom-scroll::-webkit-scrollbar-thumb {
+  background: var(--text-muted);
+  border-radius: 3px;
+  opacity: 0.35;
+}
+.custom-scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--text-secondary);
+}
+.custom-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* 个股分析页使用全宽工作区；窗口变窄时侧栏自动移到详情上方 */
+.stock-analysis-layout {
+  width: 100%;
+  min-width: 0;
+}
+
+.stock-analysis-sidebar,
+.stock-analysis-detail {
+  min-width: 0;
+}
+
+/* 美股个股分析：列表与详情自适应铺满，不保留历史空占位列 */
+.us-stock-analysis-page {
+  min-width: 0;
+}
+
+.us-analysis-shell,
+.us-analysis-detail {
+  min-width: 0;
+}
+
+/* 27 英寸/宽屏：K 线与技术指标并排，避免 SVG 随整行宽度无限放大。 */
+@media (min-width: 1680px) {
+  .us-analysis-chart-panel {
+    grid-column: span 7 !important;
+    align-self: start;
+  }
+
+  .us-analysis-tech-panel {
+    grid-column: span 5 !important;
+    align-self: start;
+  }
+
+  .us-analysis-tech-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+  }
+}
+
+@media (min-width: 2300px) {
+  .us-analysis-tech-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+  }
+}
+
+/* 美股跟踪页保留紧凑结构，同时避免关键交易数据小于可读字号。 */
+.us-tracking-page .text-\[8px\] {
+  font-size: 10px;
+  line-height: 1.3;
+}
+
+.us-tracking-page .text-\[9px\] {
+  font-size: 11px;
+  line-height: 1.3;
+}
+
+.us-tracking-page .text-\[10px\],
+.us-tracking-page .text-\[11px\] {
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.us-tracking-page .text-xs {
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+/* 美股 30 日策略跟踪：保留横向日线矩阵，但把首列和摘要做成紧凑研究表。 */
+.strategy-tracking-page {
+  min-width: 0;
+  padding: 10px 16px 16px;
+}
+
+.strategy-track-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.strategy-track-title-row {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+}
+
+.strategy-track-title-row h1 {
+  margin: 0;
+  font-size: 19px;
+  line-height: 1.2;
+}
+
+.strategy-track-mark {
+  padding: 2px 5px;
+  border: 1px solid rgba(59, 130, 246, .35);
+  border-radius: 5px;
+  color: var(--accent-blue);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: .04em;
+}
+
+.strategy-track-subtitle,
+.strategy-track-header p,
+.strategy-track-table-head span,
+.strategy-track-note {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.strategy-track-header p {
+  margin: 3px 0 0;
+  color: var(--text-secondary);
+}
+
+.strategy-track-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.strategy-track-actions button {
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.strategy-track-actions button:disabled {
+  cursor: default;
+  opacity: .55;
+}
+
+.strategy-track-primary {
+  border: 1px solid var(--accent-blue);
+  background: var(--accent-blue);
+  color: #fff;
+}
+
+.strategy-track-secondary {
+  border: 1px solid var(--border-color);
+  background: var(--bg-card);
+  color: var(--text-secondary);
+}
+
+.strategy-track-message,
+.strategy-track-error,
+.strategy-track-note {
+  margin-bottom: 7px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  background: var(--bg-hover);
+}
+
+.strategy-track-error {
+  border: 1px solid rgba(239, 68, 68, .3);
+  color: var(--flow-down);
+  font-size: 11px;
+}
+
+.strategy-track-summary {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 6px;
+  margin-bottom: 7px;
+}
+
+.strategy-track-summary-card {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  padding: 7px 9px;
+  border: 1px solid var(--border-color);
+  border-radius: 7px;
+  background: var(--bg-card);
+}
+
+.strategy-track-summary-card span {
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.strategy-track-summary-card strong {
+  font-size: 17px;
+  line-height: 1;
+}
+
+.strategy-track-note {
+  margin-bottom: 7px;
+  padding: 4px 8px;
+}
+
+.strategy-track-table-shell {
+  overflow: hidden;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-card);
+}
+
+.strategy-track-table-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 9px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.strategy-track-table-head strong {
+  font-size: 12px;
+}
+
+.strategy-track-table-scroll {
+  position: relative;
+  max-width: 100%;
+  overflow: auto;
+}
+
+.strategy-track-table {
+  width: 100%;
+  min-width: 1960px;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 11px;
+}
+
+.strategy-track-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  height: 30px;
+  padding: 5px 6px;
+  border-bottom: 1px solid var(--border-color);
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-weight: 700;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.strategy-track-table td {
+  height: 48px;
+  padding: 5px 6px;
+  border-bottom: 1px solid var(--border-light);
+  color: var(--text-primary);
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.strategy-track-table tbody tr:hover td {
+  background: var(--bg-hover);
+}
+
+.strategy-track-stock-col { width: 190px; min-width: 190px; }
+.strategy-track-strategy-col { width: 112px; min-width: 112px; }
+.strategy-track-entry-col { width: 110px; min-width: 110px; }
+.strategy-track-progress-col { width: 112px; min-width: 112px; }
+.strategy-track-return-col { width: 92px; min-width: 92px; }
+.strategy-track-day-col { width: 48px; min-width: 48px; text-align: center !important; }
+.strategy-track-status-col { width: 88px; min-width: 88px; }
+
+.strategy-track-stock-name,
+.strategy-track-cell-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.strategy-track-stock-name {
+  flex-direction: row;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.strategy-track-stock-name b {
+  overflow: hidden;
+  max-width: 137px;
+  font-size: 12px;
+  text-overflow: ellipsis;
+}
+
+.strategy-track-stock-name span,
+.strategy-track-stock-meta,
+.strategy-track-entry-col span,
+.strategy-track-progress-col span,
+.strategy-track-source-code {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.strategy-track-stock-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.strategy-track-source,
+.strategy-track-source-code {
+  display: block;
+}
+
+.strategy-track-source {
+  color: var(--text-primary);
+  font-weight: 700;
+}
+
+.strategy-track-progress {
+  width: 76px;
+  height: 3px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--border-light);
+}
+
+.strategy-track-progress i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent-blue);
+}
+
+.strategy-track-return-col {
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.strategy-track-day-col {
+  font-variant-numeric: tabular-nums;
+}
+
+.strategy-track-active { color: var(--accent-blue); }
+.strategy-track-complete { color: var(--flow-up); }
+
+.strategy-track-empty {
+  padding: 28px 12px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  text-align: center;
+}
+
+@media (max-width: 900px) {
+  .strategy-tracking-page { padding: 8px; }
+  .strategy-track-header { display: block; }
+  .strategy-track-actions { margin-top: 8px; }
+  .strategy-track-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 900px) {
+  .us-analysis-shell {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+
+  .us-analysis-sidebar {
+    position: static !important;
+  }
+}
+
+@media (max-width: 900px) {
+  .stock-analysis-layout {
+    flex-direction: column;
+  }
+
+  .stock-analysis-sidebar {
+    width: 100% !important;
+    flex: 0 0 auto !important;
+    max-height: none !important;
+    position: static !important;
+    border-right: 0 !important;
+    border-bottom: 1px solid var(--border-color);
+  }
+
+  .stock-analysis-detail {
+    width: 100%;
+  }
 }
 
 /* 顶部一级菜单横向滚动时隐藏滚动条 */

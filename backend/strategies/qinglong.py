@@ -17,7 +17,8 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
 
-from .baihu_v30 import get_kline_from_tdx, calc_rsi
+from .data_feed import get_kline_from_tdx
+from ._shared import calc_rsi
 import logging
 logger = logging.getLogger(__name__)
 

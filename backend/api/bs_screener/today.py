@@ -13,6 +13,20 @@ router = APIRouter()
 
 LEADER_STAGES = ['突破', '加速', '启动', '发酵']
 
+# strategy-picks 读的是盘后落库的 BSDailyScan 快照，对同一交易日天然不可变，
+# 因此按 trade_date 永久缓存即可（进程内），不需要 TTL。
+_picks_cache: dict = {}
+
+
+def _picks_cache_get(key):
+    return _picks_cache.get(key)
+
+
+def _picks_cache_set(key, data):
+    _picks_cache[key] = data
+    if len(_picks_cache) > 10:
+        _picks_cache.pop(next(iter(_picks_cache)), None)
+
 
 @router.get("/api/bs-screener/today")
 def bs_screener_today(backtest_id: int = Query(..., description="BSBacktestResult.id")):
@@ -36,10 +50,17 @@ def bs_screener_today(backtest_id: int = Query(..., description="BSBacktestResul
 
 
 @router.get("/api/bs-screener/strategy-picks")
-def strategy_picks_today():
+def strategy_picks_today(
+    light: bool = Query(False, description="只返回 code_to_strategies/summary，省掉体积最大的 picks 明细数组"),
+    nocache: bool = Query(False, description="跳过缓存强制重算"),
+):
     """返回当前 BS 策略今日命中的个股清单。
     动态读取 BSDailyScan 最新一日的所有 strategy_name，避免硬编码策略名导致配置漂移。
     前端用于在 Watchlist / 模拟盘 / 自动化页面上标记"策略命中"徽章。
+
+    性能说明：完整 payload 约 1.4MB，其中 `picks` 明细数组占 90%+，
+    而 Watchlist / Focus / Trading / BSScreener 四个页面实际只用 `code_to_strategies`。
+    传 light=1 可只取需要的部分，大幅减少传输与 JSON 解析开销。
     """
     with get_db_session() as db:
         # 1. 动态查询 BSDailyScan 最新一日的所有策略（不再硬编码 retained_names）
@@ -51,6 +72,13 @@ def strategy_picks_today():
                 'code_to_strategies': {},
                 'summary': {},
             }
+
+        cache_key = f"{latest_date}:{'light' if light else 'full'}"
+        if not nocache:
+            hit = _picks_cache_get(cache_key)
+            if hit is not None:
+                return hit
+
         today_rows = db.query(BSDailyScan).filter(
             BSDailyScan.trade_date == latest_date
         ).all()
@@ -110,9 +138,11 @@ def strategy_picks_today():
                 code_to_strategies[code].append(tag)
             summary[tag] = summary.get(tag, 0) + 1
 
-        return {
+        result = {
             'date': latest_date.strftime('%Y-%m-%d') if hasattr(latest_date, 'strftime') else str(latest_date),
-            'picks': picks,
+            'picks': [] if light else picks,
             'code_to_strategies': code_to_strategies,
             'summary': summary,
         }
+        _picks_cache_set(cache_key, result)
+        return result

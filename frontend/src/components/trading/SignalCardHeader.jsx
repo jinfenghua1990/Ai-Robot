@@ -1,5 +1,5 @@
-import React from 'react';
-import { scoreColor } from './SignalCardUtils';
+import 'react';
+
 
 // 维度评分 pill：内嵌在各分组标题行，显示该维度的盘后 / 实时评分（带颜色）
 export function DimPill({ label, afterVal, rtVal, rtAvail }) {
@@ -17,24 +17,6 @@ export function DimPill({ label, afterVal, rtVal, rtAvail }) {
     </span>
   );
 }
-
-// 游资阶段 → 犀利操作建议标签
-export const LEADER_STAGE_MAP = {
-  '主升': { label: '主升·加仓',     color: '#dc2626', icon: '🚀' },
-  '加速': { label: '加速·追涨',     color: '#fb923c', icon: '🚀' },
-  '突破': { label: '突破·跟进',     color: '#facc15', icon: '📈' },
-  '启动': { label: '启动·试仓',     color: '#f59e0b', icon: '🔥' },
-  '发酵': { label: '发酵·加仓',     color: '#ef4444', icon: '🔥' },
-  '分歧': { label: '分歧·减仓',     color: '#22c55e', icon: '⚠️' },
-  '蓄势': { label: '蓄势·潜伏',     color: '#3b82f6', icon: '⏳' },
-  '留意': { label: '留意·小仓试错', color: '#a78bfa', icon: '👀' },
-  '关注': { label: '关注·小仓试错', color: '#a78bfa', icon: '👀' },
-  '吸筹': { label: '吸筹·分批建仓', color: '#ef4444', icon: '💰' },
-  '跟随': { label: '跟随·轻仓',     color: '#64748b', icon: '👣' },
-  '观望': { label: '空仓·不追',     color: '#64748b', icon: '🛑' },
-  '衰退': { label: '衰退·清仓',     color: '#22c55e', icon: '🔻' },
-  '退潮': { label: '退潮·离场',     color: '#22c55e', icon: '🔻' },
-};
 
 // 统一的模块标题行组件：左侧色块标题 + 右侧结论标签 + 可选辅助数据
 export function ModuleHeader({ icon, name, conclusion, conclusionColor = '#64748b', extra = null, title = '', onClick = null }) {

@@ -6,6 +6,7 @@ a-stock-data 采集器（免费开源数据源）
 - mootdx：K线+五档盘口（TCP协议，不封IP）
 """
 import logging
+import threading
 import urllib.request
 import requests
 import time
@@ -13,16 +14,50 @@ import time
 logger = logging.getLogger(__name__)
 UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
 
-# 东财请求间隔（社区实测防封阈值）
-_EM_LAST_CALL = 0
+# 东财请求间隔（社区实测防封阈值）。实时采集会并发调用这里，故需用同一把锁
+# 串行化预约，避免多线程在同一时刻绕过间隔并触发上游断连。
+_EM_LAST_CALL = 0.0
+_EM_REQUEST_LOCK = threading.Lock()
+_EM_FAILURE_UNTIL = 0.0
+_EM_FAILURE_LOGGED_AT = 0.0
+_EM_MIN_INTERVAL_SECONDS = 1.2
+_EM_FAILURE_COOLDOWN_SECONDS = 60.0
+_SINA_FUND_FLOW_FAILURE_UNTIL = 0.0
+_SINA_FUND_FLOW_FAILURE_LOGGED_AT = 0.0
+_SINA_FUND_FLOW_LOCK = threading.Lock()
+_SINA_FUND_FLOW_FAILURE_COOLDOWN_SECONDS = 60.0
+
+
+class _EastmoneyTemporarilyUnavailable(Exception):
+    """Eastmoney push2 is in a short cooldown after a transport failure."""
+
+
+def _record_em_failure(operation, code, exc):
+    """Open a short circuit breaker and rate-limit noisy upstream failures."""
+    global _EM_FAILURE_UNTIL, _EM_FAILURE_LOGGED_AT
+    now = time.monotonic()
+    with _EM_REQUEST_LOCK:
+        _EM_FAILURE_UNTIL = max(_EM_FAILURE_UNTIL, now + _EM_FAILURE_COOLDOWN_SECONDS)
+        should_log = now - _EM_FAILURE_LOGGED_AT >= _EM_FAILURE_COOLDOWN_SECONDS
+        if should_log:
+            _EM_FAILURE_LOGGED_AT = now
+    if should_log:
+        logger.warning(
+            "[em-push2] %s unavailable for %s; fallback source will be used (%s)",
+            operation, code, type(exc).__name__,
+        )
 
 def _em_get(url, params=None, headers=None, timeout=10):
     """东财请求带限流（≥1.2秒间隔）"""
     global _EM_LAST_CALL
-    elapsed = time.time() - _EM_LAST_CALL
-    if elapsed < 1.2:
-        time.sleep(1.2 - elapsed)
-    _EM_LAST_CALL = time.time()
+    with _EM_REQUEST_LOCK:
+        now = time.monotonic()
+        if now < _EM_FAILURE_UNTIL:
+            raise _EastmoneyTemporarilyUnavailable()
+        elapsed = now - _EM_LAST_CALL
+        if elapsed < _EM_MIN_INTERVAL_SECONDS:
+            time.sleep(_EM_MIN_INTERVAL_SECONDS - elapsed)
+        _EM_LAST_CALL = time.monotonic()
     h = {"User-Agent": UA, "Referer": "https://quote.eastmoney.com/"}
     if headers:
         h.update(headers)
@@ -106,8 +141,10 @@ def eastmoney_fund_flow_minute(code):
     try:
         r = _em_get(url, params=params, headers=headers, timeout=10)
         d = r.json()
-    except Exception as e:
-        logger.warning(f"[em-push2] fund_flow error for {code}: {e}", exc_info=True)
+    except _EastmoneyTemporarilyUnavailable:
+        return []
+    except Exception as exc:
+        _record_em_failure("minute fund flow", code, exc)
         return []
 
     rows = []
@@ -145,8 +182,10 @@ def eastmoney_fund_flow_daily(code):
     try:
         r = _em_get(url, params=params, headers=headers, timeout=10)
         d = r.json()
-    except Exception as e:
-        logger.warning(f"[em-push2] daily fund_flow error for {code}: {e}", exc_info=True)
+    except _EastmoneyTemporarilyUnavailable:
+        return None
+    except Exception as exc:
+        _record_em_failure("daily fund flow", code, exc)
         return None
 
     klines = d.get("data", {}).get("klines", [])
@@ -194,6 +233,12 @@ def sina_stock_fund_flow(code):
     code: 6位股票代码
     返回: {main_net, super_net, big_net, mid_net, small_net} 单位：元
     """
+    global _SINA_FUND_FLOW_FAILURE_UNTIL, _SINA_FUND_FLOW_FAILURE_LOGGED_AT
+    now = time.monotonic()
+    with _SINA_FUND_FLOW_LOCK:
+        if now < _SINA_FUND_FLOW_FAILURE_UNTIL:
+            return None
+
     if code.startswith(("6", "9")):
         prefix = "sh"
     elif code.startswith("8"):
@@ -211,6 +256,7 @@ def sina_stock_fund_flow(code):
     headers = {"User-Agent": UA, "Referer": "https://vip.stock.finance.sina.com.cn/"}
     try:
         r = requests.get(url, params=params, headers=headers, timeout=10)
+        r.raise_for_status()
         data = r.json()
         if not data or len(data) == 0:
             return None
@@ -222,8 +268,19 @@ def sina_stock_fund_flow(code):
             "mid_net": float(d.get("r2_net", 0)),            # 中单净流入（元）
             "small_net": float(d.get("r3_net", 0)),          # 小单净流入（元）
         }
-    except Exception as e:
-        logger.warning(f"[sina] stock fund_flow error for {code}: {e}", exc_info=True)
+    except (requests.RequestException, ValueError) as e:
+        # 新浪偶尔返回 HTML 验证页。采集任务会继续尝试其他已配置来源，
+        # 本轮不再为每只股票重复发请求或打印堆栈，下一分钟自动恢复尝试。
+        with _SINA_FUND_FLOW_LOCK:
+            _SINA_FUND_FLOW_FAILURE_UNTIL = max(
+                _SINA_FUND_FLOW_FAILURE_UNTIL,
+                time.monotonic() + _SINA_FUND_FLOW_FAILURE_COOLDOWN_SECONDS,
+            )
+            should_log = time.monotonic() - _SINA_FUND_FLOW_FAILURE_LOGGED_AT >= _SINA_FUND_FLOW_FAILURE_COOLDOWN_SECONDS
+            if should_log:
+                _SINA_FUND_FLOW_FAILURE_LOGGED_AT = time.monotonic()
+        if should_log:
+            logger.warning("[sina] stock fund_flow unavailable; pause retries for 60 seconds (%s)", type(e).__name__)
         return None
 
 

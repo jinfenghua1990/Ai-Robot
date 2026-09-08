@@ -26,6 +26,13 @@ V2_READ_ONLY_PREFIXES = (
     "/api/v2/collection/status",
 )
 
+# 账户只读接口（余额/持仓）。Watchlist 等页面用 setInterval 轮询刷新账户面板，
+# 属正常浏览行为，且仅有 GET（无 POST 写操作），放行频率与并发限制，避免误报 429。
+ACCOUNT_READONLY_EXACT = (
+    "/api/trading/balance",
+    "/api/trading/positions",
+)
+
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
     """单 worker 语义的限流中间件。
@@ -54,7 +61,10 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         # 只对 GET/HEAD 生效；POST 的快照保存、系统检查和交易接口仍受限。
         skip_frequency_limit = (
             request.method in {"GET", "HEAD"}
-            and path.startswith(V2_READ_ONLY_PREFIXES)
+            and (
+                path.startswith(V2_READ_ONLY_PREFIXES)
+                or path in ACCOUNT_READONLY_EXACT
+            )
         )
 
         # 跳过：SSE 长连接 / 静态资源 / 健康检查 / 文档
@@ -66,7 +76,8 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             path == '/api/health/detailed' or
             path == '/openapi.json' or
             path.startswith('/docs') or
-            path == '/redoc'
+            path == '/redoc' or
+            path in ACCOUNT_READONLY_EXACT
         )
 
         # 1. 并发连接数限制（防止连接积压）

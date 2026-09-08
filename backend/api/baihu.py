@@ -156,7 +156,7 @@ async def baihu_screen(date: str = Query(None)):
                     s['distanceToHigh20'] = meta.get('distance_to_high_20', 0)
 
             # 补充自选股个股模块字段（moneyFlow/hitTags/actionHint），让 SignalCard 显示完整信息
-            await _enrich_signals_with_watchlist_extras(db, enriched_stocks)
+            await _enrich_signals_with_watchlist_extras(enriched_stocks)
 
             return {
                 'date': trade_date,

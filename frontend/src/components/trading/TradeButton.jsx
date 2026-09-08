@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import TradeModal from './TradeModal';
-import { useTrading } from '../../context/TradingContext';
+import { useTrading } from '../../context/tradingContextCore';
 
 /**
  * 可复用的买卖按钮组件

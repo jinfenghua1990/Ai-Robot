@@ -219,7 +219,7 @@ export default function IndexFlowPage() {
           </button>
         ))}
         <div className="ml-auto text-[9px]" style={{ color: 'var(--text-muted)' }}>
-          数据来源: {data.source === 'database' ? '数据库' : '数据库+东方财富'}
+          数据来源: {data.source === 'database' ? '数据库' : data.source === 'database:sector_flow' ? '数据库·行业板块' : '数据库+东方财富'}
         </div>
       </div>
 
@@ -250,7 +250,7 @@ export default function IndexFlowPage() {
                   </td>
                 </tr>
               ) : sortedAll.map((item) => {
-                const isInflow = (item.inflow_1d ?? 0) >= 0;
+
                 const trend = item.trend;
                 const isStrong = trend.level >= 2 || trend.level <= -2;
                 const pct = item.pct_change;

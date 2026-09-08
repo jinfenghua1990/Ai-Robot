@@ -22,6 +22,8 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from config import MX_APIKEY, MX_API_URL
+from db.models import Watchlist
+from db.session import get_db_session
 
 # ===== 加载 ~/skills/ 下的妙想 skill 模块 =====
 _SKILLS_ROOT = Path.home() / "skills"
@@ -73,6 +75,7 @@ async def _mx_post(endpoint: str, payload: dict, timeout: int = 30) -> dict:
                 "apikey": MX_APIKEY,
                 "Content-Type": "application/json; charset=UTF-8",
             },
+            timeout=timeout,
         )
         return resp.json()
     except httpx.TimeoutException:
@@ -184,17 +187,26 @@ def _parse_zixuan_list(raw: dict) -> list:
 
 @router.get("/api/mx/zixuan")
 async def mx_zixuan_query(force: int = Query(0, description="1=跳过缓存强制刷新")):
-    """查询妙想自选股列表"""
-    if not force:
-        cached = _cache_get("zixuan:list")
-        if cached:
-            return cached
-
-    raw = await _mx_post("/api/claw/self-select/get", {})
-    stocks = _parse_zixuan_list(raw)
-    response = {"count": len(stocks), "stocks": stocks, "raw": raw}
-    _cache_set("zixuan:list", response)
-    return response
+    """读取已同步入库的自选股；远端同步只允许由 POST 同步动作触发。"""
+    del force  # 保留旧参数兼容前端，数据库查询不使用远端强制刷新语义。
+    with get_db_session() as db:
+        rows = db.query(Watchlist).order_by(Watchlist.sort_order, Watchlist.id).all()
+        stocks = [{
+            "stock_code": row.stock_code,
+            "stock_name": row.stock_name or row.stock_code,
+            "market": (
+                "沪市" if str(row.stock_code).startswith(("6", "9"))
+                else "北交所" if str(row.stock_code).startswith(("4", "8"))
+                else "深市"
+            ),
+            "group_name": row.group_name,
+        } for row in rows]
+    return {
+        "count": len(stocks),
+        "stocks": stocks,
+        "source": "database",
+        "status": "READY" if stocks else "MISSING",
+    }
 
 
 @router.post("/api/mx/zixuan/manage")

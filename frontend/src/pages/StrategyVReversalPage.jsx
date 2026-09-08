@@ -4,6 +4,8 @@ import DateNavigator from '../components/DateNavigator';
 import StrategySignalCard from '../components/trading/StrategySignalCard';
 import CardSafetyBoundary from '../components/CardSafetyBoundary';
 import { apiFetch } from '../utils/request';
+import { useViewMode } from '../hooks/useViewMode';
+import StockListContainer from '../components/StockListContainer';
 
 /**
  * 抗跌深V反转策略 v2
@@ -50,6 +52,7 @@ export default function StrategyVReversalPage() {
   const { selectedDate, setSelectedDate, changeDate } = useDatePicker();
   // 默认参数对齐用户原始想法: 抗跌(区间跌幅≤20%) + 今日涨≥6% + 不限板块 + 不要求V形态
   const [view, setView] = useState('all');
+  const [viewMode, setViewMode] = useViewMode('vreversal', 'card');
   const [maxDrawdown, setMaxDrawdown] = useState(20);
   const [minCloseUp, setMinCloseUp] = useState(6);
   const [minIntradayDrop, setMinIntradayDrop] = useState(5);
@@ -147,6 +150,12 @@ export default function StrategyVReversalPage() {
     groupedSectors.forEach((s, i) => { m[s.sector] = colors[i % colors.length]; });
     return m;
   }, [groupedSectors]);
+
+  // 表格视图数据：把深V命中股票映射为 WatchlistTable 需要的 signal 结构（平铺，统一用默认色）
+  const tableSignals = useMemo(
+    () => (data?.stocks || []).map(s => buildVReversalSignal(s, '#6366f1', requireVShape)),
+    [data?.stocks, requireVShape]
+  );
 
   // 回测质量判定
   const btQuality = useMemo(() => {
@@ -407,13 +416,27 @@ export default function StrategyVReversalPage() {
       )}
 
       {/* 股票列表 */}
-      <div className="rounded-lg border p-2.5" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
-        {loading ? (
-          <div className="flex items-center justify-center h-64 gap-2">
-            <div className="w-5 h-5 border-2 rounded-full animate-spin" style={{ borderColor: '#6366f1', borderTopColor: 'transparent' }} />
-            <span className="text-xs" style={{ color: 'var(--text-muted)' }}>筛选抗跌深V反转...</span>
-          </div>
-        ) : data?.stocks?.length > 0 ? (
+      <StockListContainer
+        viewModeKey="vreversal"
+        viewMode={viewMode}
+        onViewModeChange={setViewMode}
+        loading={loading}
+        items={data?.stocks || []}
+        tableItems={tableSignals}
+        groupBy="sector"
+        tableProps={{
+          selectedCode: null,
+          onSelect: () => {},
+          onRemove: () => {},
+          onSell: null,
+          onRefresh: load,
+          onAnalyze: () => {},
+          batchMode: false,
+          selectedIds: [],
+          onToggleCheck: () => {},
+          strategyPicks: [],
+        }}
+        cardRenderer={() => (
           view === 'sector' ? (
             <div className="space-y-2">
               {groupedSectors.map(grp => (
@@ -473,12 +496,10 @@ export default function StrategyVReversalPage() {
               ))}
             </div>
           )
-        ) : (
-          <div className="flex items-center justify-center h-64 text-xs" style={{ color: 'var(--text-muted)' }}>
-            {data ? '当日无命中, 可尝试: ① 关闭V形态 ② 降低今日涨幅 ③ 放宽区间跌幅' : '暂无数据'}
-          </div>
         )}
-      </div>
+        emptyText={data ? '当日无命中, 可尝试: ① 关闭V形态 ② 降低今日涨幅 ③ 放宽区间跌幅' : '暂无数据'}
+        loadingText="筛选抗跌深V反转..."
+      />
     </div>
   );
 }
@@ -591,51 +612,55 @@ const BacktestDailyTable = ({ daily }) => {
 };
 
 /**
- * 单只命中股票卡片
- * - 把 strategy-vreversal API 的字段注入到 SignalCard 期望的 signal 结构
+ * 把 strategy-vreversal API 的股票对象转成 WatchlistTable / StrategySignalCard 需要的 signal 结构
  * - 显示今日涨幅/区间涨跌幅/V形态指标
  */
+function buildVReversalSignal(stock, sectorColor, requireVShape) {
+  const vShapeStrong = requireVShape && stock.v_rebound_pct != null && stock.v_rebound_pct >= 10;
+  // 股票名称: 优先用 name, 没有就退到 ts_code
+  const stockName = stock.name || stock.ts_code;
+  return {
+    secCode: stock.ts_code,
+    secName: stockName,
+    code: stock.ts_code,
+    signalLabel: `${stock.today_pct >= 0 ? '+' : ''}${stock.today_pct.toFixed(1)}%`,
+    signalColor: sectorColor,
+    score: stock.today_pct,
+    sector: stock.sector,
+    // 注入 position: WatchlistTable 行1 的「当日 X% / 现价」读这里
+    position: {
+      price: stock.today_close,
+      dayProfitPct: stock.today_pct,
+      avg_cost: stock.base_close,
+      count: 0,
+      profitPct: stock.period_pct, // 区间涨跌幅(相对基准日)
+    },
+    // 注入 quote: 实时图表与 sparkline 读这里
+    quote: {
+      price: stock.today_close,
+      yesterdayClose: stock.pre_close,
+      changePct: stock.today_pct,
+      high: stock.today_close,
+      low: stock.today_close,
+    },
+    // V 形态附加数据 (用于卡片角标, 后续可扩展)
+    _vreversal: {
+      minIntradayPct: stock.min_intraday_pct,
+      vReboundPct: stock.v_rebound_pct,
+      requiredCloseUp: stock.required_close_up,
+      intradayRange: stock.intraday_range_pct,
+      maxUpPct: stock.max_up_pct,
+      isVShapeStrong: vShapeStrong,
+      board: stock.board,
+    },
+  };
+}
+
+/**
+ * 单只命中股票卡片
+ */
 const VReversalSignalItem = ({ stock, sectorColor, requireVShape }) => {
-  const signal = useMemo(() => {
-    const vShapeStrong = requireVShape && stock.v_rebound_pct != null && stock.v_rebound_pct >= 10;
-    // 股票名称: 优先用 name, 没有就退到 ts_code
-    const stockName = stock.name || stock.ts_code;
-    return {
-      secCode: stock.ts_code,
-      secName: stockName,
-      code: stock.ts_code,
-      signalLabel: `${stock.today_pct >= 0 ? '+' : ''}${stock.today_pct.toFixed(1)}%`,
-      signalColor: sectorColor,
-      score: stock.today_pct,
-      sector: stock.sector,
-      // 注入 position: SignalCard 行1 的「当日 X% / 现价」读这里
-      position: {
-        price: stock.today_close,
-        dayProfitPct: stock.today_pct,
-        avg_cost: stock.base_close,
-        count: 0,
-        profitPct: stock.period_pct, // 区间涨跌幅(相对基准日)
-      },
-      // 注入 quote: 实时图表与 sparkline 读这里
-      quote: {
-        price: stock.today_close,
-        yesterdayClose: stock.pre_close,
-        changePct: stock.today_pct,
-        high: stock.today_close,
-        low: stock.today_close,
-      },
-      // V 形态附加数据 (用于卡片角标, 后续可扩展)
-      _vreversal: {
-        minIntradayPct: stock.min_intraday_pct,
-        vReboundPct: stock.v_rebound_pct,
-        requiredCloseUp: stock.required_close_up,
-        intradayRange: stock.intraday_range_pct,
-        maxUpPct: stock.max_up_pct,
-        isVShapeStrong: vShapeStrong,
-        board: stock.board,
-      },
-    };
-  }, [stock, sectorColor, requireVShape]);
+  const signal = useMemo(() => buildVReversalSignal(stock, sectorColor, requireVShape), [stock, sectorColor, requireVShape]);
 
   return (
     <StrategySignalCard

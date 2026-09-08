@@ -1,8 +1,18 @@
 # AIROBOT API 文档
 
 **后端地址**：`http://localhost:9000`
-**端点数**：131 个
-**生成时间**：2026-07-03
+**端点数**：以 `/openapi.json` 实时结果为准（2026-08-09 为 400 个）
+**更新时间**：2026-08-09
+
+---
+
+## 写接口鉴权
+
+- `GET`、`HEAD`、`OPTIONS` 保持只读访问。
+- 所有 `/api/*` 下的 `POST`、`PUT`、`PATCH`、`DELETE` 必须提供 `X-API-Key`。
+- 本机直接打开 9000 页面时，后端使用 HttpOnly Cookie 完成同源鉴权，密钥不会写入 HTML 或 JavaScript。
+- 命令行和外部客户端必须显式发送请求头：`X-API-Key: <API_READ_KEY>`。
+- 未配置 `API_READ_KEY` 时，写操作 fail-closed 返回 `503`。
 
 ---
 

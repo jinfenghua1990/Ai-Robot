@@ -15,6 +15,7 @@
 - trend: 趋势方向（多头排列/空头排列）
 """
 import logging
+import os
 from datetime import datetime
 from typing import Any, Optional
 from fastapi import APIRouter, HTTPException, Query
@@ -160,6 +161,57 @@ def scan_strategies(req: ScanRequest):
     market = req.market.upper()
     if market not in ("HK", "US"):
         return {"market": market, "items": [], "error": "仅支持 HK / US"}
+
+    # 生产策略中心统一读取数据库中的七维因子快照；旧 RSI/均线规则
+    # 仅在显式兼容开关打开时继续执行，避免同一页面出现两套结果。
+    if os.getenv("MARKET_QUANT_LEGACY_FALLBACK", "0").lower() not in {"1", "true", "yes"}:
+        try:
+            from market_quant.service import get_latest_snapshot
+            from market_quant.identity import normalize_market
+            snapshot = get_latest_snapshot(normalize_market(market), "CORE", 500)
+            if snapshot.get("status") == "SUCCESS":
+                items = []
+                for row in snapshot.get("signals") or []:
+                    items.append({
+                        **row,
+                        "code": row.get("symbol"),
+                        "name": row.get("name") or row.get("symbol"),
+                        "factor_score": row.get("factor_score"),
+                        "signal": "B" if row.get("trading_state") in {"READY", "TRIGGERED"} else "—",
+                        "hits": [{"key": item, "name": item, "signal": "B"} for item in row.get("resonance_dimensions", [])],
+                    })
+                return {
+                    "market": market,
+                    "items": items,
+                    "total": len(items),
+                    "scanned": snapshot.get("valid_count", 0),
+                    "pool_total": snapshot.get("pool_total", 0),
+                    "rules": ["market", "sector", "strength", "trend", "volume_price", "position", "risk"],
+                    "signal_type": req.signal_type,
+                    "source": "market_scan_snapshot",
+                    "status": snapshot.get("status"),
+                    "data_quality": snapshot.get("data_quality"),
+                    "factor_snapshot": snapshot,
+                    "trade_date": snapshot.get("trade_date"),
+                    "updated_at": snapshot.get("updated_at"),
+                }
+        except Exception as exc:
+            logger.warning("[hk-strategy] unified snapshot unavailable: %s", exc)
+
+        return {
+            "market": market,
+            "items": [],
+            "total": 0,
+            "scanned": 0,
+            "rules": [],
+            "signal_type": req.signal_type,
+            "source": "market_scan_snapshot",
+            "status": snapshot.get("status", "NOT_READY") if "snapshot" in locals() else "NOT_READY",
+            "data_quality": snapshot.get("data_quality") if "snapshot" in locals() else {"status": "NOT_READY"},
+            "factor_snapshot": snapshot if "snapshot" in locals() else None,
+            "message": "等待港美股统一因子快照，不在页面打开时现场采集",
+        }
+
     watchlist = DEFAULT_WATCHLIST.get(market, [])
     if not watchlist:
         return {"market": market, "items": [], "total": 0, "updated_at": datetime.now().strftime("%Y/%m/%d %H:%M:%S")}

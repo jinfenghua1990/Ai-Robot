@@ -53,7 +53,6 @@ def _create_ssl_context():
 
 def _curl_request(url: str) -> Dict[str, Any]:
     """使用curl发送请求，当requests/urllib失败时的备用方案"""
-    params["skillName"] = SKILL_NAME
     try:
         result = subprocess.run(
             ["curl", "-s", "-k", url],

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { apiFetch } from '../utils/request';
 import WatchlistItem from '../components/trading/WatchlistItem';
@@ -6,6 +6,9 @@ import KLineChart from '../components/charts/KLineChart';
 import SortBar from '../components/watchlist/SortBar';
 import FilterBar from '../components/watchlist/FilterBar';
 import { BUY_COLOR } from '../utils/colors';
+import ViewModeToggle from '../components/ViewModeToggle';
+import { useViewMode } from '../hooks/useViewMode';
+import StockListContainer from '../components/StockListContainer';
 
 const SECTOR_ICONS = {
   'MLCC': '', 'CPO': '', 'PCB': '🟩', '存储芯片': '💾',
@@ -43,6 +46,9 @@ export default function FocusStocksPage() {
   const [selectedIds, setSelectedIds] = useState([]);
 
   const [collapsedSectors, setCollapsedSectors] = useState(new Set());
+  const stockRefs = useRef({});
+  // 视图模式：卡片（板块分组 WatchlistItem，默认）= 当前形态；表格 = 平铺 WatchlistTable
+  const [viewMode, setViewMode] = useViewMode('focus', 'card');
 
   const showToast = (msg, type = 'success') => {
     setToast({ msg, type });
@@ -53,15 +59,16 @@ export default function FocusStocksPage() {
     if (!silent) setLoading(true);
     else setRefreshing(true);
     try {
+      // silent=true 表示用户主动点刷新 → 强制后端重算，绕过 60s 缓存
       const [res, picksRes] = await Promise.all([
-        apiFetch('/api/focus-stocks', {}, 30000),
-        apiFetch('/api/bs-screener/strategy-picks'),
+        apiFetch(`/api/focus-stocks${silent ? '?force=true' : ''}`, {}, 30000),
+        apiFetch('/api/bs-screener/strategy-picks?light=1'),
       ]);
       if (res.ok) setData(res.data);
       if (picksRes.ok && picksRes.data?.code_to_strategies) {
         setStrategyPicks(picksRes.data.code_to_strategies);
       }
-    } catch (e) {
+    } catch {
       showToast('数据加载失败', 'error');
     }
     setLoading(false);
@@ -193,6 +200,12 @@ export default function FocusStocksPage() {
     }).sort((a, b) => b.avgChg - a.avgChg);
   }, [data]);
 
+  // 平铺列表（表格视图用）：把各赛道筛选+排序后的股票展平
+  const flatStocks = useMemo(
+    () => sortedSectors.flatMap(s => applySortFilter(s.stocks)),
+    [sortedSectors, applySortFilter]
+  );
+
   const toggleSector = (name) => {
     setCollapsedSectors(prev => {
       const n = new Set(prev);
@@ -201,6 +214,28 @@ export default function FocusStocksPage() {
       return n;
     });
   };
+
+  // 点击顶部状态卡/标签后：展开对应赛道 + 选中 + 平滑滚动到下方卡片
+  const handleSelectStock = useCallback((code) => {
+    const sector = data?.sectors?.find(s => s.stocks.some(st => st.secCode === code));
+    if (sector && collapsedSectors.has(sector.sector)) {
+      setCollapsedSectors(prev => {
+        const n = new Set(prev);
+        n.delete(sector.sector);
+        return n;
+      });
+    }
+    setSelectedCode(code);
+    // 等待展开/渲染完成后滚动到目标卡片
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        const el = stockRefs.current[code];
+        if (el) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+      });
+    });
+  }, [data, collapsedSectors]);
 
   const batchAdd = useCallback(async (sectorName) => {
     try {
@@ -327,7 +362,7 @@ export default function FocusStocksPage() {
                     const val = card.valKey ? card.valFmt(s[card.valKey]) : null;
                     const active = selectedCode === s.code;
                     return (
-                      <button key={i} onClick={() => setSelectedCode(s.code)}
+                      <button key={i} onClick={() => handleSelectStock(s.code)}
                         className="text-[10px] px-1.5 py-0.5 rounded flex items-center gap-1 transition-all"
                         style={{ background: active ? `${card.color}30` : `${card.color}12`, color: 'var(--text-secondary)', border: active ? `1px solid ${card.color}` : '1px solid transparent' }}>
                         <span className="truncate max-w-[60px]">{s.name}</span>
@@ -414,6 +449,8 @@ export default function FocusStocksPage() {
         >
           {batchMode ? '✓ 批量' : '☑ 批量'}
         </button>
+        {/* 视图模式切换：表格 / 卡片 */}
+        <ViewModeToggle value={viewMode} onChange={setViewMode} title="切换列表阅读方式：表格（平铺） / 卡片（板块分组）" />
         {batchMode && (
           <>
             <button onClick={() => onSelectAllSector(allStocks)} className="px-1.5 py-1 rounded border text-[10px]" style={{ borderColor: 'var(--border-color)', color: 'var(--text-secondary)' }}>全选</button>
@@ -433,14 +470,30 @@ export default function FocusStocksPage() {
         </span>
       </div>
 
-      {/* 赛道分组列表 */}
-      {loading ? (
-        <div className="space-y-1.5">
-          {[1,2,3,4,5,6,7,8].map(i => (
-            <div key={i} className="h-16 rounded-lg animate-pulse" style={{ background: 'var(--bg-hover)' }} />
-          ))}
-        </div>
-      ) : (
+      {/* 赛道分组列表 — 统一标准容器：表格 / 卡片双视图 */}
+      <StockListContainer
+        showToggle={false}
+        viewMode={viewMode}
+        loading={loading}
+        items={flatStocks}
+        groupBy="sector"
+        wrapCard={false}
+        cardClassName=""
+        loadingText="加载重点关注..."
+        emptyText="暂无符合条件的关注股"
+        tableProps={{
+          selectedCode,
+          onSelect: setSelectedCode,
+          onRemove: () => {},
+          onSell: null,
+          onRefresh: () => loadData(true),
+          onAnalyze: () => {},
+          batchMode,
+          selectedIds,
+          onToggleCheck,
+          strategyPicks,
+        }}
+        cardRenderer={() => (
         <div className="space-y-2">
           {sortedSectors.map((sector) => {
             const expanded = !collapsedSectors.has(sector.sector);
@@ -493,19 +546,23 @@ export default function FocusStocksPage() {
                 {expanded && (
                   <div className="grid grid-cols-1 xl:grid-cols-2 gap-2 px-3 py-2">
                     {displayStocks.length > 0 ? displayStocks.map(sig => (
-                      <WatchlistItem
+                      <div
                         key={sig.secCode}
-                        signal={sig}
-                        isSelected={selectedCode === sig.secCode}
-                        realtimeFlow={selectedCode === sig.secCode ? realtimeFlow : null}
-                        onSelect={setSelectedCode}
-                        onSell={null}
-                        onRefresh={() => loadData(true)}
-                        batchMode={batchMode}
-                        checked={selectedIds.includes(sig.secCode)}
-                        onToggleCheck={onToggleCheck}
-                        strategyTags={strategyPicks[sig.secCode] || []}
-                      />
+                        ref={el => { stockRefs.current[sig.secCode] = el; }}
+                      >
+                        <WatchlistItem
+                          signal={sig}
+                          isSelected={selectedCode === sig.secCode}
+                          realtimeFlow={selectedCode === sig.secCode ? realtimeFlow : null}
+                          onSelect={setSelectedCode}
+                          onSell={null}
+                          onRefresh={() => loadData(true)}
+                          batchMode={batchMode}
+                          checked={selectedIds.includes(sig.secCode)}
+                          onToggleCheck={onToggleCheck}
+                          strategyTags={strategyPicks[sig.secCode] || []}
+                        />
+                      </div>
                     )) : (
                       <div className="text-center py-4 col-span-2 text-xs" style={{ color: 'var(--text-muted)' }}>当前筛选条件下无股票</div>
                     )}
@@ -515,7 +572,8 @@ export default function FocusStocksPage() {
             );
           })}
         </div>
-      )}
+        )}
+      />
 
       {/* 底部 */}
       {data && (

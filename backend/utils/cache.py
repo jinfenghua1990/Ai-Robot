@@ -206,6 +206,10 @@ class TTLCache:
             else:
                 self._store.clear()
 
+    def clear(self):
+        """清空缓存；与 dict/cache 习惯保持一致。"""
+        self.invalidate()
+
     def __len__(self):
         return len(self._store)
 

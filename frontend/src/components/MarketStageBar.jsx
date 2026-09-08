@@ -44,15 +44,20 @@ export default function MarketStageBar({ date }) {
     );
   }
 
-  if (!data || data.error) {
+  if (!data || data.status === 'MISSING' || data.status === 'INSUFFICIENT' || data.error) {
     return (
       <div className="rounded-lg p-3 text-xs" style={{ background: 'var(--bg-card)', border: '1px solid var(--border-color)', color: 'var(--text-muted)' }}>
-        市场情绪阶段数据暂不可用{data?.error ? `: ${data.error}` : ''}
+        <div className="font-bold mb-1" style={{ color: '#b45309' }}>市场阶段：数据不足</div>
+        <div>{data?.description || data?.error || '市场情绪阶段数据暂不可用'}</div>
+        {data?.trade_date && <div className="mt-1">数据库日期：{data.trade_date}</div>}
+        {data?.metrics?.total != null && (
+          <div className="mt-1">记录 {data.metrics.total} 条 · 上涨 {data.metrics.up ?? '—'} · 下跌 {data.metrics.down ?? '—'} · 平盘 {data.metrics.flat ?? '—'}</div>
+        )}
       </div>
     );
   }
 
-  const { stage, score, description, position, color, signals = [], drivers = [], metrics = {}, trade_date } = data;
+  const { stage, score, description, position, color, signals = [], metrics = {}, trade_date } = data;
   const currentIdx = STAGE_ORDER.indexOf(stage);
 
   const tooltip = [
@@ -60,7 +65,7 @@ export default function MarketStageBar({ date }) {
     `阶段:${stage} (得分${score})`,
     description,
     position ? `建议仓位:${position}` : '',
-    metrics.limit_up != null ? `涨停:${metrics.limit_up} 跌停:${metrics.limit_down || 0} 炸板:${metrics.broken || 0}` : '',
+    metrics.limit_up != null ? `涨停:${metrics.limit_up} 跌停:${metrics.limit_down ?? '—'} 炸板:${metrics.broken ?? '数据不足'}` : '',
     metrics.up != null ? `上涨:${metrics.up} 下跌:${metrics.down} 平盘:${metrics.flat || 0}` : '',
     metrics.heat_value != null ? `热度:${metrics.heat_value}` : '',
     metrics.broken_rate != null ? `炸板率:${(metrics.broken_rate * 100).toFixed(1)}%` : '',

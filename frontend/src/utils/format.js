@@ -1,27 +1,35 @@
+/** 统一把接口返回值转换成有限数字；空字符串、null、NaN、Infinity 都视为缺失。 */
+export const toFiniteNumber = (value) => {
+  if (value == null || value === '') return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+};
+
 /**
  * 格式化金额：保留2位小数，null返回'--'
- * @param {number} val - 金额
+ * @param {number|string} val - 金额
  * @returns {string} 格式化后的字符串
  */
 export const formatMoney = (val) => {
-  if (val == null) return '--';
-  return val.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const n = toFiniteNumber(val);
+  if (n == null) return '--';
+  return n.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 };
 
 /**
  * 安全保留2位小数（null/NaN→'0.00'）
  */
 export const f2 = (v) => {
-  const n = Number(v);
-  return isNaN(n) ? '0.00' : n.toFixed(2);
+  const n = toFiniteNumber(v);
+  return n == null ? '0.00' : n.toFixed(2);
 };
 
 /**
  * 涨跌色：正→红 #ef4444，负→绿 #22c55e，零/NaN→灰 #888
  */
 export const colorForPct = (v) => {
-  const n = Number(v);
-  if (isNaN(n) || n === 0) return '#888';
+  const n = toFiniteNumber(v);
+  if (n == null || n === 0) return '#888';
   return n > 0 ? '#ef4444' : '#22c55e';
 };
 
@@ -36,9 +44,10 @@ export const stripCode = (code) => String(code || '').split('.')[0];
  * @returns {string} 带正负号的字符串
  */
 export const formatProfit = (val) => {
-  if (val == null) return '--';
-  const sign = val >= 0 ? '+' : '';
-  return sign + formatMoney(val);
+  const n = toFiniteNumber(val);
+  if (n == null) return '--';
+  const sign = n >= 0 ? '+' : '';
+  return sign + formatMoney(n);
 };
 
 /**
@@ -47,9 +56,11 @@ export const formatProfit = (val) => {
  * @returns {string} 格式化后的字符串
  */
 export const fmtFlow = (v) => {
-  const abs = Math.abs(v);
-  if (abs >= 10000) return `${(v / 10000).toFixed(2)}亿`;
-  return `${v.toFixed(0)}万`;
+  const n = toFiniteNumber(v);
+  if (n == null) return '—';
+  const abs = Math.abs(n);
+  if (abs >= 10000) return `${(n / 10000).toFixed(2)}亿`;
+  return `${n.toFixed(0)}万`;
 };
 
 /**
@@ -58,8 +69,10 @@ export const fmtFlow = (v) => {
  * @returns {string} 带正负号的字符串
  */
 export const fmtPct = (v) => {
-  if (v > 0) return `+${v.toFixed(2)}%`;
-  return `${v.toFixed(2)}%`;
+  const n = toFiniteNumber(v);
+  if (n == null) return '—';
+  if (n > 0) return `+${n.toFixed(2)}%`;
+  return `${n.toFixed(2)}%`;
 };
 
 /**
@@ -68,10 +81,11 @@ export const fmtPct = (v) => {
  * @returns {string} 格式化后的字符串
  */
 export const formatWan = (v) => {
-  if (v == null) return '-';
-  if (Math.abs(v) >= 1e8) return (v / 1e8).toFixed(2) + '亿';
-  if (Math.abs(v) >= 10000) return (v / 10000).toFixed(1) + 'w';
-  return v.toFixed(2);
+  const n = toFiniteNumber(v);
+  if (n == null) return '-';
+  if (Math.abs(n) >= 1e8) return (n / 1e8).toFixed(2) + '亿';
+  if (Math.abs(n) >= 10000) return (n / 10000).toFixed(1) + 'w';
+  return n.toFixed(2);
 };
 
 /**
@@ -79,8 +93,9 @@ export const formatWan = (v) => {
  * null/NaN → '—'
  */
 export const fmtPct2 = (v) => {
-  if (v == null || isNaN(v)) return '—';
-  return `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`;
+  const n = toFiniteNumber(v);
+  if (n == null) return '—';
+  return `${n >= 0 ? '+' : ''}${n.toFixed(2)}%`;
 };
 
 /**
@@ -88,11 +103,12 @@ export const fmtPct2 = (v) => {
  * null/NaN → '—'
  */
 export const fmtAmount = (v) => {
-  if (v == null || isNaN(v)) return '—';
-  const a = Math.abs(v);
-  if (a >= 1e8) return (v / 1e8).toFixed(2) + '亿';
-  if (a >= 1e4) return (v / 1e4).toFixed(0) + '万';
-  return Math.round(v) + '元';
+  const n = toFiniteNumber(v);
+  if (n == null) return '—';
+  const a = Math.abs(n);
+  if (a >= 1e8) return (n / 1e8).toFixed(2) + '亿';
+  if (a >= 1e4) return (n / 1e4).toFixed(0) + '万';
+  return Math.round(n) + '元';
 };
 
 /**
@@ -103,7 +119,7 @@ export const fmtMissing = () => '—';
 /**
  * 判断值是否为有效数据（非 null/undefined/NaN/空字符串）
  */
-export const hasValue = (v) => v != null && v !== '' && !isNaN(v);
+export const hasValue = (v) => toFiniteNumber(v) != null;
 
 /**
  * 龙头数据 → SignalCard 兼容格式

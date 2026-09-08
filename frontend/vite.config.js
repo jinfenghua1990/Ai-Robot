@@ -1,13 +1,13 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
-// 构建版本号：每次构建时基于时间戳生成，强制浏览器拉新版本（破坏缓存）
-const BUILD_VERSION = Date.now()
-
 export default defineConfig({
   plugins: [react()],
   base: '/',
   server: {
+    host: '127.0.0.1',
+    strictPort: true,
+    allowedHosts: ['localhost', '127.0.0.1'],
     proxy: {
       '/api': {
         target: 'http://localhost:9000',
@@ -17,18 +17,29 @@ export default defineConfig({
   },
   build: {
     outDir: 'dist',
-    sourcemap: true,
-    rollupOptions: {
+    sourcemap: false,
+    rolldownOptions: {
       output: {
-        // 在 hash 后追加版本号前缀，确保内容变更后 hash 必变
-        entryFileNames: `assets/[name].[hash].${BUILD_VERSION}.js`,
-        chunkFileNames: `assets/[name].[hash].${BUILD_VERSION}.js`,
+        // Vite 内容哈希已能精确失效缓存，避免每次构建让全部 chunk 无条件换名。
+        entryFileNames: 'assets/[name].[hash].js',
+        chunkFileNames: 'assets/[name].[hash].js',
         assetFileNames: `assets/[name].[hash][extname]`,
-        manualChunks: {
-          'react-vendor': ['react', 'react-dom', 'react-router-dom'],
-          'echarts-vendor': ['echarts', 'echarts-for-react'],
-          'charts-vendor': ['lightweight-charts'],
-        }
+        manualChunks(id) {
+          if (!id.includes('/node_modules/')) return undefined
+          if (/\/node_modules\/(react|react-dom|react-router|react-router-dom)\//.test(id)) return 'react-vendor'
+          if (/\/node_modules\/echarts\/lib\/chart\/(graph|sankey)\//.test(id)) return 'echarts-network-charts'
+          if (/\/node_modules\/echarts\/lib\/chart\/(bar|candlestick)\//.test(id)) return 'echarts-bar-charts'
+          if (id.includes('/node_modules/echarts/lib/chart/line/')) return 'echarts-line-chart'
+          if (/\/node_modules\/echarts\/lib\/chart\/(scatter|effectScatter)\//.test(id)) return 'echarts-scatter-charts'
+          if (/\/node_modules\/echarts\/lib\/chart\/(pie|radar)\//.test(id)) return 'echarts-radial-charts'
+          if (id.includes('/node_modules/echarts/lib/chart/')) return 'echarts-chart-common'
+          if (id.includes('/node_modules/echarts/lib/component/')) return 'echarts-components'
+          if (id.includes('/node_modules/zrender/')) return 'echarts-renderer'
+          if (id.includes('/node_modules/echarts-for-react/')) return 'echarts-react'
+          if (id.includes('/node_modules/echarts/')) return 'echarts-core'
+          if (id.includes('/node_modules/lightweight-charts/')) return 'charts-vendor'
+          return undefined
+        },
       }
     }
   }

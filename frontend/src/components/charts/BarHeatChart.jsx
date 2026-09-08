@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import ReactECharts from 'echarts-for-react/lib/core';
+import ReactECharts from 'echarts-for-react/esm/core';
 import echarts from '../../lib/echarts';
 import { tooltipStyle, getHeatColor } from '../../utils/chartConfig';
 

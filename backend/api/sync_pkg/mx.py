@@ -1,5 +1,5 @@
 """妙想云端自选股同步（推送用）"""
-import time
+import asyncio
 import logging
 from fastapi import HTTPException
 
@@ -96,13 +96,13 @@ async def sync_to_mx(dry_run: bool = False, mirror: bool = False) -> dict:
                 result = await mx_push_stock(name or code)
                 if isinstance(result, dict) and result.get('status') == 112:
                     failed.append({"code": code, "error": "妙想限流，稍后重试"})
-                    time.sleep(2)  # 限流时多等
+                    await asyncio.sleep(2)  # 限流时多等
                     continue
                 pushed.append(code)
-                time.sleep(0.2)  # 正常 0.2s 间隔（之前 1.0s 导致 160 只推送需 200 秒超时）
+                await asyncio.sleep(0.2)  # 正常 0.2s 间隔（之前 1.0s 导致 160 只推送需 200 秒超时）
             except Exception as e:
                 failed.append({"code": code, "error": str(e)})
-                time.sleep(0.2)
+                await asyncio.sleep(0.2)
 
         deleted = []
         for code in to_delete:
@@ -113,13 +113,13 @@ async def sync_to_mx(dry_run: bool = False, mirror: bool = False) -> dict:
                 result = await mx_delete_stock(name or code)
                 if isinstance(result, dict) and result.get('status') == 112:
                     failed.append({"code": code, "error": "妙想限流，稍后重试"})
-                    time.sleep(2)
+                    await asyncio.sleep(2)
                     continue
                 deleted.append(code)
-                time.sleep(0.2)
+                await asyncio.sleep(0.2)
             except Exception as e:
                 failed.append({"code": code, "error": str(e)})
-                time.sleep(0.2)
+                await asyncio.sleep(0.2)
 
         return {
             "success": True,
@@ -173,8 +173,8 @@ async def sync_from_mx(dry_run: bool = False, mirror: bool = False) -> dict:
             ).delete(synchronize_session=False)
             deleted = sorted(to_delete)
         db.commit()
-        from api.watchlist import _watchlist_cache
-        _watchlist_cache["data"] = None
+        from api.watchlist._shared import reset_watchlist_cache
+        reset_watchlist_cache()
         return {"success": True, "mx_count": len(mx_codes), "local_count": len(local_codes),
                 "added": len(added), "added_list": added, "skipped": len(mx_codes & local_codes),
                 "deleted": len(deleted), "deleted_list": deleted, "mirror": mirror}

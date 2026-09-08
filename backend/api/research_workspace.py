@@ -11,13 +11,19 @@ import os
 import threading
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
+from sqlalchemy import case, func
 
-from services.research import astock, chat as chat_layer, cli_runtime, gstock, market, myreports, newsradar
+from services.research import chat as chat_layer, cli_runtime, myreports
+from db.models import (
+    AIAnalysisCache, LeaderLifecycle, SectorFlow, StockDailyKline,
+    StockDataQuery, StockF10, StockFlow, StockHolderNumber, StockNewsSearch,
+)
+from db.session import get_db_session
 
 router = APIRouter(prefix="/api/research-workspace", tags=["research workspace"])
 logger = logging.getLogger(__name__)
@@ -68,6 +74,129 @@ def _save(items: list[dict]) -> None:
     os.replace(tmp, _FILE)
 
 
+def _database_radar() -> dict:
+    from api.stock_info import _search_error, _search_items
+
+    with get_db_session() as db:
+        searches = db.query(StockNewsSearch).order_by(
+            StockNewsSearch.search_time.desc(), StockNewsSearch.id.desc()
+        ).limit(1000).all()
+    groups = {
+        "news": {"key": "news", "name": "资讯", "accent": "#3b82f6", "items": []},
+        "report": {"key": "report", "name": "研报", "accent": "#a855f7", "items": []},
+        "notice": {"key": "notice", "name": "公告", "accent": "#f59e0b", "items": []},
+    }
+    seen = set()
+    data_as_of = None
+    for search in searches:
+        items = _search_items(search.result_raw)
+        if items and data_as_of is None:
+            data_as_of = search.search_time
+        for item in items:
+            title = str(item.get("title") or "").strip()
+            date_value = str(item.get("date") or "").strip()
+            url = str(item.get("jumpUrl") or "").strip()
+            identity = (title, date_value, url)
+            if not title or identity in seen:
+                continue
+            seen.add(identity)
+            info_type = str(item.get("informationType") or "").upper()
+            key = "notice" if info_type == "NOTICE" else "report" if info_type == "REPORT" else "news"
+            if len(groups[key]["items"]) >= 30:
+                continue
+            groups[key]["items"].append({
+                "title": title,
+                "summary": str(item.get("content") or item.get("showText") or "").strip()[:240],
+                "time": date_value,
+                "url": url,
+                "stock_code": search.stock_code,
+                "stock_name": search.stock_name,
+            })
+    latest_error = _search_error(searches[0].result_raw) if searches else None
+    industries = []
+    for group in groups.values():
+        group["total"] = len(group["items"])
+        industries.append(group)
+    return {
+        "industries": industries,
+        "source": "database",
+        "status": "STALE" if any(group["items"] for group in industries) and latest_error else
+                  latest_error or "READY" if any(group["items"] for group in industries) else "MISSING",
+        "data_as_of": data_as_of.isoformat() if data_as_of else None,
+        "collection_as_of": searches[0].search_time.isoformat() if searches else None,
+    }
+
+
+def _database_market_overview() -> dict:
+    with get_db_session() as db:
+        trade_date = db.query(func.max(StockFlow.trade_date)).scalar()
+        if trade_date is None:
+            return {"sentiment": {}, "sectors": [], "source": "database", "status": "MISSING"}
+        stats = db.query(
+            func.count(StockFlow.id),
+            func.sum(case((StockFlow.price_chg > 0, 1), else_=0)),
+            func.sum(case((StockFlow.price_chg < 0, 1), else_=0)),
+            func.sum(case((StockFlow.price_chg >= 9.5, 1), else_=0)),
+            func.sum(case((StockFlow.price_chg <= -9.5, 1), else_=0)),
+        ).filter(StockFlow.trade_date == trade_date).one()
+        sector_date = db.query(func.max(SectorFlow.trade_date)).scalar()
+        sector_rows = db.query(SectorFlow).filter(
+            SectorFlow.trade_date == sector_date
+        ).order_by(SectorFlow.heat_score.desc().nullslast(), SectorFlow.avg_chg.desc()).limit(30).all() if sector_date else []
+    total, up, down, zt, dt = (int(value or 0) for value in stats)
+    ratio = up / total if total else 0
+    breadth = "偏强" if ratio >= 0.6 else "偏弱" if ratio <= 0.4 else "中性"
+    return {
+        "sentiment": {"breadth": breadth, "up": up, "down": down, "zt": zt, "dt": dt, "total": total},
+        "sectors": [{
+            "name": row.sector,
+            "change_pct": float(row.avg_chg) if row.avg_chg is not None else None,
+            "heat_score": float(row.heat_score) if row.heat_score is not None else None,
+            "net_flow": float(row.net_flow) if row.net_flow is not None else None,
+        } for row in sector_rows],
+        "source": "database", "status": "READY", "data_as_of": trade_date.isoformat(),
+    }
+
+
+def _database_emotion() -> dict:
+    overview = _database_market_overview()
+    with get_db_session() as db:
+        trade_date = db.query(func.max(LeaderLifecycle.trade_date)).scalar()
+        rows = db.query(LeaderLifecycle).filter(LeaderLifecycle.trade_date == trade_date).all() if trade_date else []
+    return {
+        "zt_count": overview.get("sentiment", {}).get("zt"),
+        "dt_count": overview.get("sentiment", {}).get("dt"),
+        "lianban_count": len(rows),
+        "max_boards": max((int(row.consecutive_days or 0) for row in rows), default=0),
+        "source": "database", "status": "READY" if rows else "MISSING",
+        "data_as_of": trade_date.isoformat() if trade_date else None,
+    }
+
+
+def _database_turnover_top() -> dict:
+    with get_db_session() as db:
+        trade_date = db.query(func.max(StockDailyKline.trade_date)).scalar()
+        rows = db.query(StockDailyKline).filter(
+            StockDailyKline.trade_date == trade_date,
+            StockDailyKline.amount.isnot(None),
+        ).order_by(StockDailyKline.amount.desc()).limit(10).all() if trade_date else []
+        codes = [row.ts_code for row in rows]
+        names = {}
+        for row in db.query(StockFlow).filter(StockFlow.ts_code.in_(codes)).order_by(StockFlow.trade_date.desc()).all() if codes else []:
+            names.setdefault(row.ts_code, (row.name, row.sector))
+    return {
+        "stocks": [{
+            "code": row.ts_code.split(".")[0],
+            "name": (names.get(row.ts_code) or (row.ts_code.split(".")[0], None))[0],
+            "industry": (names.get(row.ts_code) or (None, None))[1],
+            "pct": float(row.pct_chg) if row.pct_chg is not None else None,
+            "amount": float(row.amount) if row.amount is not None else None,
+        } for row in rows],
+        "source": "database", "status": "READY" if rows else "MISSING",
+        "data_as_of": trade_date.isoformat() if trade_date else None,
+    }
+
+
 @router.get("/notes")
 def list_notes():
     with _LOCK:
@@ -111,92 +240,52 @@ def delete_note(note_id: str):
 # 不依赖历史聚合层。
 @router.get("/radar")
 def research_radar():
-    try:
-        return {"data": newsradar.get_radar(force=False)}
-    except Exception as exc:
-        logger.exception("research radar error")
-        raise HTTPException(502, f"资讯雷达异常：{exc}") from exc
+    return {"data": _database_radar()}
 
 
 @router.post("/radar/refresh")
 def research_radar_refresh():
-    try:
-        return {"data": newsradar.fetch_radar()}
-    except Exception as exc:
-        logger.exception("research radar refresh error")
-        raise HTTPException(502, f"资讯雷达刷新失败：{exc}") from exc
+    return {"data": {**_database_radar(), "message": "页面只读取数据库；外部资讯由后台采集任务更新"}}
 
 
 @router.get("/market/overview")
 def research_market_overview():
-    try:
-        return {"data": market.get_overview()}
-    except Exception as exc:
-        logger.exception("research market overview error")
-        raise HTTPException(502, f"市场总览异常：{exc}") from exc
+    return {"data": _database_market_overview()}
 
 
 @router.get("/market/emotion")
 def research_market_emotion():
-    try:
-        return {"data": market.get_short_term_emotion()}
-    except Exception as exc:
-        logger.exception("research market emotion error")
-        raise HTTPException(502, f"短线情绪异常：{exc}") from exc
+    return {"data": _database_emotion()}
 
 
 @router.get("/market/turnover-top")
 def research_market_turnover_top():
-    try:
-        return {"data": market.get_turnover_top()}
-    except Exception as exc:
-        logger.exception("research turnover top error")
-        raise HTTPException(502, f"成交额榜异常：{exc}") from exc
+    return {"data": _database_turnover_top()}
 
 
 @router.get("/global/indices")
 def research_global_indices():
-    try:
-        return {"data": market.get_global_indices()}
-    except Exception as exc:
-        logger.exception("research global indices error")
-        raise HTTPException(502, f"全球指数异常：{exc}") from exc
+    from api.global_market import get_indices
+    items = []
+    for market_code in ("US", "HK"):
+        payload = get_indices(market_code)
+        for item in payload.get("indices") or []:
+            items.append({**item, "key": f"{market_code}:{item.get('code')}", "market": market_code})
+    return {"data": items, "source": "database", "status": "READY" if items else "MISSING"}
 
 
 @router.get("/industry")
 def research_industry(top: int = 20):
-    try:
-        return {"data": astock.industry_comparison(top_n=max(5, min(int(top), 50)))}
-    except Exception as exc:
-        logger.exception("research industry error")
-        raise HTTPException(502, f"行业排名异常：{exc}") from exc
+    payload = _database_market_overview()
+    limit = max(5, min(int(top), 50))
+    return {"data": {
+        "sectors": payload.get("sectors", [])[:limit],
+        "source": "database", "status": payload.get("status"),
+        "data_as_of": payload.get("data_as_of"),
+    }}
 
 
-_RESEARCH_GROUPS = {
-    "core": {
-        "info": lambda code: astock.individual_info(code),
-        "financials": lambda code: astock.financials(code),
-        "valuation": lambda code: astock.full_valuation(code),
-        "valuation_percentile": lambda code: astock.valuation_percentile(code),
-    },
-    "capital": {
-        "fund_flow": lambda code: astock.stock_fund_flow_120d(code),
-        "margin": lambda code: astock.margin_trading(code),
-        "block_trade": lambda code: astock.block_trade(code),
-        "dragon_tiger": lambda code: astock.dragon_tiger_board(code),
-    },
-    "boards": {
-        "blocks": lambda code: astock.concept_blocks(code),
-        "hot_concepts": lambda code: astock.hot_concepts(code),
-        "investor_qa": lambda code: astock.investor_qa(code),
-    },
-    "risk": {
-        "holders": lambda code: astock.holder_num_change(code),
-        "dividend": lambda code: astock.dividend_history(code),
-        "lockup": lambda code: astock.lockup_expiry(code),
-    },
-}
-_STOCK_RESEARCH_CACHE: dict[tuple[str, str], tuple[float, dict]] = {}
+_RESEARCH_SECTIONS = {"core", "capital", "boards", "risk"}
 
 
 def _validate_stock(code: str) -> str:
@@ -209,35 +298,61 @@ def _validate_stock(code: str) -> str:
 @router.get("/stock-research")
 def research_stock(code: str, section: str = "core"):
     code = _validate_stock(code)
-    if section not in _RESEARCH_GROUPS:
-        raise HTTPException(400, f"section 必须是：{', '.join(_RESEARCH_GROUPS)}")
-    cache_key = (code, section)
-    hit = _STOCK_RESEARCH_CACHE.get(cache_key)
-    if hit and time.time() - hit[0] < 600:
-        return hit[1]
-    group = _RESEARCH_GROUPS[section]
-    data: dict = {}
-    errors: dict = {}
-    with ThreadPoolExecutor(max_workers=min(4, len(group))) as pool:
-        futures = {pool.submit(fetch, code): name for name, fetch in group.items()}
-        for future in as_completed(futures):
-            name = futures[future]
-            try:
-                data[name] = future.result()
-            except Exception as exc:
-                logger.warning("research stock %s/%s failed: %s", code, name, exc)
-                data[name] = None
-                errors[name] = str(exc) or "数据源暂不可用"
-    result = {
-        "code": code,
-        "section": section,
-        "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-        "source": "9000 研究数据服务",
-        "data": data,
-        "errors": errors,
+    if section not in _RESEARCH_SECTIONS:
+        raise HTTPException(400, f"section 必须是：{', '.join(sorted(_RESEARCH_SECTIONS))}")
+    ts_candidates = [code, f"{code}.SH", f"{code}.SZ", f"{code}.BJ"]
+    with get_db_session() as db:
+        flow = db.query(StockFlow).filter(StockFlow.ts_code.in_(ts_candidates)).order_by(StockFlow.trade_date.desc()).first()
+        f10 = db.query(StockF10).filter(StockF10.ts_code.in_(ts_candidates)).order_by(StockF10.fetched_at.desc()).first()
+        data_query = db.query(StockDataQuery).filter(StockDataQuery.stock_code == code).order_by(StockDataQuery.query_time.desc()).first()
+        analysis = db.query(AIAnalysisCache).filter(AIAnalysisCache.stock_code == code).order_by(AIAnalysisCache.created_at.desc()).first()
+        holder = db.query(StockHolderNumber).filter(StockHolderNumber.ts_code.in_(ts_candidates)).order_by(StockHolderNumber.ann_date.desc()).first()
+
+    def parsed(value):
+        if not value:
+            return None
+        try:
+            return json.loads(value)
+        except (TypeError, ValueError):
+            return value
+
+    common = {
+        "name": flow.name if flow else None,
+        "sector": flow.sector if flow else None,
+        "trade_date": flow.trade_date.isoformat() if flow else None,
     }
-    _STOCK_RESEARCH_CACHE[cache_key] = (time.time(), result)
-    return result
+    if section == "core":
+        data = {
+            "info": common,
+            "financials": parsed(f10.financial_json) if f10 else None,
+            "valuation": parsed(f10.rating_json) if f10 else None,
+            "analysis": parsed(analysis.analysis_data) if analysis else None,
+        }
+    elif section == "capital":
+        data = {
+            "fund_flow": {
+                "net_inflow": float(flow.net_inflow) if flow and flow.net_inflow is not None else None,
+                "main_force_inflow": float(flow.main_force_inflow) if flow and flow.main_force_inflow is not None else None,
+                "retail_flow": float(flow.retail_flow) if flow and flow.retail_flow is not None else None,
+                "trade_date": flow.trade_date.isoformat() if flow else None,
+            },
+            "database_query": parsed(data_query.result_tables) if data_query else None,
+        }
+    elif section == "boards":
+        data = {"blocks": {"sector": flow.sector if flow else None}, "hot_concepts": None, "investor_qa": None}
+    else:
+        data = {"holders": {
+            "ann_date": holder.ann_date.isoformat(),
+            "end_date": holder.end_date.isoformat() if holder.end_date else None,
+            "holder_num": int(holder.holder_num or 0),
+            "avg_shares": float(holder.avg_shares or 0),
+        } if holder else None, "dividend": None, "lockup": None}
+    available = any(value not in (None, {}, []) for value in data.values())
+    return {
+        "code": code, "section": section, "generated_at": datetime.now().isoformat(),
+        "source": "database", "status": "READY" if available else "MISSING",
+        "data": data, "errors": {} if available else {"database": "暂无已入库研究数据"},
+    }
 
 
 @router.get("/myreports")

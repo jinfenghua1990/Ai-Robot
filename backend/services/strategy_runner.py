@@ -135,7 +135,7 @@ def is_market_healthy(db, target_date) -> bool:
         return healthy
     except Exception as e:
         logger.error(f'[strategy_runner] is_market_healthy error: {e}')
-        return True  # 兜底：数据异常时放行，避免漏掉信号
+        return False  # 风控数据异常时禁止新增买入，不能用缺失数据放行
 
 
 # ============================================================
@@ -434,7 +434,7 @@ def _get_current_bs_signal(db, stock_code: str) -> int:
         1 = B (多头/买入), -1 = S (空头/卖出), 0 = 数据不足
     """
     try:
-        ts_code = f"{stock_code}.{'SH' if stock_code.startswith(('6','9','68')) else 'SZ' if not stock_code.startswith('8') else 'BJ'}"
+        ts_code = f"{stock_code}.{'SH' if stock_code.startswith(('5','6','9','68')) else 'SZ' if not stock_code.startswith('8') else 'BJ'}"
         rows = db.query(StockDailyKline).filter(
             StockDailyKline.ts_code == ts_code
         ).order_by(StockDailyKline.trade_date.desc()).limit(150).all()
@@ -459,7 +459,7 @@ def _auto_add_resonance_to_tracker(trade_date) -> dict:
     - 已在跟踪中的：更新 note 为最新共振信息
     - 不再 ≥3 共振的旧共振跟踪股：软删除（active=False），note 标注退出原因
     """
-    from db.models import StrategyResult, StockTracker, StockDailyKline
+    from db.models import StrategyResult, StockTracker, StockTrackerDaily, StockDailyKline
     from collections import defaultdict
 
     trade_date_str = str(trade_date) if not isinstance(trade_date, str) else trade_date
@@ -524,6 +524,10 @@ def _auto_add_resonance_to_tracker(trade_date) -> dict:
                 entry_date = latest.trade_date if latest else trade_date
                 entry_price = latest.close if latest else 0
                 if old:
+                    # 重新进入跟踪池代表一个新的入选周期，清除上周期 D1-D30 记录。
+                    db.query(StockTrackerDaily).filter(StockTrackerDaily.tracker_id == old.id).delete(
+                        synchronize_session=False
+                    )
                     old.active = True
                     old.entry_date = entry_date
                     old.entry_price = entry_price

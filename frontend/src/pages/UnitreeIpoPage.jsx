@@ -2,10 +2,13 @@ import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { apiFetch } from '../utils/request';
 import TradeModal from '../components/trading/TradeModal';
-import { useTrading } from '../context/TradingContext';
+import { useTrading } from '../context/tradingContextCore';
 import { TOAST_DURATION } from '../utils/constants';
 import { IPO_PROJECTS } from '../data/ipoProjects';
-import { IpoTimeline, IpoListingCard, computeIpoProgress } from '../components/IpoTracker';
+import { IpoTimeline, IpoListingCard } from '../components/IpoTracker';
+import { computeIpoProgress } from '../utils/ipoProgress';
+
+const IPO_NOW = Date.now();
 
 /* ─── 宇树科技IPO关联标的分类（供应链/概念梳理） ───
    说明：标的名单为公开供应链关联关系梳理，角色描述基于公开资料；
@@ -181,16 +184,6 @@ export default function UnitreeIpoPage() {
     return () => { active = false; };
   }, []);
 
-  // 获取实时行情 + 公司自身行情（后跟踪）
-  useEffect(() => {
-    let active = true;
-    refreshQuotes().then(() => {
-      if (active) setLoading(false);
-    });
-    refreshCompanyQuote();
-    return () => { active = false; };
-  }, [refreshQuotes, refreshCompanyQuote]);
-
   // 获取人形机器人板块数据
   useEffect(() => {
     let active = true;
@@ -229,14 +222,24 @@ export default function UnitreeIpoPage() {
     } catch {}
   }, [project]);
 
+  // 获取实时行情 + 公司自身行情（后跟踪）
+  useEffect(() => {
+    let active = true;
+    refreshQuotes().then(() => {
+      if (active) setLoading(false);
+    });
+    refreshCompanyQuote();
+    return () => { active = false; };
+  }, [refreshQuotes, refreshCompanyQuote]);
+
   // 当前 IPO 阶段（用于状态卡）
   const ipoStatus = useMemo(() => {
-    const p = computeIpoProgress(project, Date.now());
+    const p = computeIpoProgress(project, IPO_NOW);
     const next = p.nextIdx >= 0 ? p.stages[p.nextIdx] : null;
     const allDone = p.stages.every((s) => s.status === 'done');
     if (project.listed && allDone) return { icon: '🚀', label: '已上市', color: '#22c55e', sub: '后跟踪进行中' };
     if (next) {
-      const diff = next.ms - Date.now();
+      const diff = next.ms - IPO_NOW;
       const dd = Math.floor(diff / 86400000);
       const hh = Math.floor((diff % 86400000) / 3600000);
       return { icon: '⏳', label: next.label, color: '#3b82f6', sub: dd > 0 ? `${dd}天${hh}小时` : `${hh}小时` };
@@ -293,7 +296,7 @@ export default function UnitreeIpoPage() {
         <div className="flex items-center gap-2 flex-wrap">
           <span className="text-lg font-bold" style={{ color: 'var(--text-primary)' }}>宇树科技</span>
           {(() => {
-            const p = computeIpoProgress(project, Date.now());
+            const p = computeIpoProgress(project, IPO_NOW);
             const doneStage = [...p.stages].reverse().find((s) => s.status === 'done');
             return (
               <span className="text-xs px-1.5 py-0.5 rounded-full" style={{ background: 'rgba(59,130,246,0.12)', color: '#3b82f6', border: '1px solid rgba(59,130,246,0.3)' }}>

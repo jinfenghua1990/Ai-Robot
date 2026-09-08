@@ -29,9 +29,6 @@ logger = logging.getLogger(__name__)
 
 def _build_fallback_stock_flows(trade_date):
     """主源失败时，从本地关键股票池构建 stock_flows（腾讯/通达信价格 + 东财push2/新浪资金流向）"""
-    from pathlib import Path
-
-    root = Path(__file__).resolve().parent.parent.parent
     codes = set()
     names = {}
 
@@ -43,30 +40,20 @@ def _build_fallback_stock_flows(trade_date):
         if name:
             names.setdefault(c, name)
 
-    # 1. 读取 watchlist
+    # 1. 自选与持仓池只从数据库读取。
     try:
-        with open(root / "watchlist.json", "r", encoding="utf-8") as f:
-            for s in json.load(f).get("stocks", []):
-                _add_code(s.get("code"), s.get("name"))
+        from db.models import SimPosition, Watchlist
+        with get_db_session() as db:
+            for row in db.query(Watchlist.stock_code, Watchlist.stock_name).all():
+                _add_code(row.stock_code, row.stock_name)
+            for row in db.query(SimPosition.sec_code, SimPosition.sec_name).filter(
+                SimPosition.count > 0
+            ).all():
+                _add_code(row.sec_code, row.sec_name)
     except Exception as e:
-        logger.warning("[fallback] read watchlist.json failed: %s", e)
+        logger.warning("[fallback] read database stock pool failed: %s", e)
 
-    # 2. 读取 portfolio
-    try:
-        with open(root / "portfolio.json", "r", encoding="utf-8") as f:
-            for p in json.load(f).get("positions", []):
-                _add_code(p.get("symbol") or p.get("code"), p.get("name"))
-    except Exception as e:
-        logger.warning("[fallback] read portfolio.json failed: %s", e)
-
-    # 3. 读取 focus
-    try:
-        with open(root / "focus.json", "r", encoding="utf-8") as f:
-            for sec in json.load(f).get("sectors", []):
-                for st in sec.get("stocks", []):
-                    _add_code(st.get("code"), st.get("name"))
-    except Exception as e:
-        logger.warning("[fallback] read focus.json failed: %s", e)
+    # 2. 旧 focus.json 仅兼容展示，不再进入采集决策池。
 
     if not codes:
         logger.warning("[fallback] no local stock codes available")
@@ -76,10 +63,10 @@ def _build_fallback_stock_flows(trade_date):
     code_to_ts = {}
     ts_codes = []
     for c in codes:
-        if c.startswith(("6", "7", "9")):
-            ts = f"{c}.SH"
-        elif c.startswith("8"):
+        if c.startswith(("4", "8", "92", "83", "87", "88")):
             ts = f"{c}.BJ"
+        elif c.startswith(("6", "7", "9")):
+            ts = f"{c}.SH"
         else:
             ts = f"{c}.SZ"
         code_to_ts[c] = ts
@@ -149,12 +136,12 @@ def _build_fallback_stock_flows(trade_date):
     return results
 
 
-def collect_realtime_stock_flow(trade_date):
+def collect_realtime_stock_flow(trade_date, snapshot_time=None):
     """
     采集个股实时资金流向快照（多源+交叉验证）
     """
     start_time = time.time()
-    snapshot_time = _now_truncated()
+    snapshot_time = snapshot_time or _now_truncated()
     trade_date_obj = trade_date if isinstance(trade_date, date) else datetime.strptime(trade_date, '%Y-%m-%d').date()
     print(f'[realtime] Collecting stock flow snapshot at {snapshot_time}')
 
@@ -166,6 +153,24 @@ def collect_realtime_stock_flow(trade_date):
         if not stock_flows:
             print('[realtime] No stock flow data')
             return 0
+
+    # 实时个股与实时行业必须共用 SW2021 有效期归属；上游资金流返回的
+    # industry/sector 文本只作为历史兼容，不再直接进入 RealtimeStockFlow。
+    trade_date_obj = (
+        trade_date.date() if isinstance(trade_date, datetime)
+        else trade_date if isinstance(trade_date, date)
+        else datetime.strptime(str(trade_date), '%Y-%m-%d').date()
+    )
+    from industry_stage.registry import load_sector_map, normalize_ts_code
+    with get_db_session() as mapping_db:
+        sw_sector_map = load_sector_map(mapping_db, as_of=trade_date_obj, level='L2')
+    for flow in stock_flows:
+        canonical = sw_sector_map.get(normalize_ts_code(flow.get('ts_code')))
+        if canonical:
+            flow['sector'] = canonical
+        else:
+            # 没有分类的数据明确留空，避免把旧行业名伪装成 SW2021。
+            flow['sector'] = ''
 
     # 东方财富对停牌/退市/未成交股票可能返回 price=0，用腾讯批量接口补充价格
     # 腾讯 URL 长度限制，每批约 300 只

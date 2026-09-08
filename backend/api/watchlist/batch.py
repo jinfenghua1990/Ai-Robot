@@ -12,7 +12,7 @@ from pydantic import BaseModel
 
 from db.session import get_db_session
 from db.models import Watchlist
-from ._shared import reset_watchlist_cache
+from ._shared import normalize_stock_code, reset_watchlist_cache
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -28,36 +28,36 @@ class BatchMoveRequest(BaseModel):
 
 
 @router.post("/api/watchlist/batch-delete")
-async def batch_delete(req: BatchDeleteRequest):
-    if not req.stock_codes:
+def batch_delete(req: BatchDeleteRequest):
+    stock_codes = list(dict.fromkeys(filter(None, map(normalize_stock_code, req.stock_codes))))
+    if not stock_codes:
         return {'success': True, 'deleted': 0}
-    from .watchlist_local import remove_stock
-    for code in req.stock_codes:
-        remove_stock(code)
     with get_db_session() as db:
-        deleted = db.query(Watchlist).filter(Watchlist.stock_code.in_(req.stock_codes)).delete(synchronize_session=False)
+        deleted = db.query(Watchlist).filter(Watchlist.stock_code.in_(stock_codes)).delete(synchronize_session=False)
         db.commit()
+        from .watchlist_local import export_db_to_local
+        export_db_to_local()
         reset_watchlist_cache()
         return {'success': True, 'deleted': deleted}
 
 
 @router.post("/api/watchlist/batch-move-group")
-async def batch_move_group(req: BatchMoveRequest):
-    if not req.stock_codes:
+def batch_move_group(req: BatchMoveRequest):
+    stock_codes = list(dict.fromkeys(filter(None, map(normalize_stock_code, req.stock_codes))))
+    if not stock_codes:
         return {'success': True, 'moved': 0}
     target = (req.target_group or '').strip() or '默认'
-    from .watchlist_local import update_stock
-    for code in req.stock_codes:
-        update_stock(code, group=target)
     with get_db_session() as db:
-        moved = db.query(Watchlist).filter(Watchlist.stock_code.in_(req.stock_codes)).update({'group_name': target}, synchronize_session=False)
+        moved = db.query(Watchlist).filter(Watchlist.stock_code.in_(stock_codes)).update({'group_name': target}, synchronize_session=False)
         db.commit()
+        from .watchlist_local import export_db_to_local
+        export_db_to_local()
         reset_watchlist_cache()
         return {'success': True, 'moved': moved, 'target_group': target}
 
 
 @router.get("/api/watchlist/export")
-async def export_csv():
+def export_csv():
     with get_db_session() as db:
         items = db.query(Watchlist).order_by(Watchlist.group_name, Watchlist.sort_order).all()
         buf = StringIO()

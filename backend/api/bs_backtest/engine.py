@@ -4,6 +4,7 @@ import logging
 from datetime import datetime
 
 from api.bs_signals import _generate_bs_signals
+from services.indicators import calc_ma, calc_rsi
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +67,8 @@ def _calc_stats(trades: list, equity_curve: list, initial_capital: float) -> dic
             'max_drawdown': 0,
             'max_drawdown_pct': 0,
             'annual_return': 0,
+            'sharpe_ratio': 0,
+            'annual_volatility_pct': 0,
         }
 
     win_trades = [t for t in trades if t['profit'] > 0]
@@ -91,6 +94,25 @@ def _calc_stats(trades: list, equity_curve: list, initial_capital: float) -> dic
     total_return_pct = (total_profit / initial_capital * 100) if initial_capital else 0
     annual_return = ((1 + total_return_pct / 100) ** (365 / total_days) - 1) * 100 if total_days > 0 else 0
 
+    # 风险调整指标：夏普比率 + 年化波动率（基于权益曲线日收益，252 交易日年化）
+    sharpe = 0.0
+    annual_vol = 0.0
+    if len(equity_curve) >= 2:
+        _rets = []
+        for i in range(1, len(equity_curve)):
+            prev_eq = equity_curve[i - 1]['equity']
+            cur_eq = equity_curve[i]['equity']
+            if prev_eq:
+                _rets.append((cur_eq - prev_eq) / prev_eq)
+        if _rets:
+            _mean = sum(_rets) / len(_rets)
+            _var = sum((r - _mean) ** 2 for r in _rets) / (len(_rets) - 1) if len(_rets) > 1 else 0
+            _std = math.sqrt(_var)
+            _tdays = 252
+            annual_vol = _std * math.sqrt(_tdays) * 100
+            if _std > 0:
+                sharpe = (_mean * _tdays) / (math.sqrt(_tdays) * _std)
+
     result = {
         'total_trades': len(trades),
         'win_trades': len(win_trades),
@@ -108,6 +130,8 @@ def _calc_stats(trades: list, equity_curve: list, initial_capital: float) -> dic
         'max_drawdown': round(max_drawdown, 2),
         'max_drawdown_pct': round(max_drawdown_pct, 2),
         'annual_return': round(annual_return, 2),
+        'sharpe_ratio': round(sharpe, 2),
+        'annual_volatility_pct': round(annual_vol, 2),
     }
     for k, v in result.items():
         if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
@@ -160,14 +184,38 @@ def _backtest_single(
     ma60 = None
     rsi_vals = None
     if ma60_trend or ma60_rising or rsi_filter:
-        from api.bs_signals import _calc_ma, _calc_rsi
+        _closes = [k['close'] for k in klines]
         if ma60_trend or ma60_rising:
-            ma60 = _calc_ma(klines, 60)
+            ma60 = calc_ma(_closes, 60)
         if rsi_filter:
-            rsi_vals = _calc_rsi(klines, 14)
+            rsi_vals = calc_rsi(_closes, 14)
 
     date_idx = {k['date']: i for i, k in enumerate(klines)}
     in_range_signals = [s for s in bs_signals if start_date <= s['date'] <= end_date]
+
+    # 主力净流入批量预取（消除 N+1：原逻辑在信号循环内逐条查 StockFlow）
+    _main_force_data = None
+    if main_force_filter and main_force_db is not None and in_range_signals:
+        try:
+            from datetime import datetime as _dt, timedelta as _td
+            from db.models import StockFlow
+            _ts_code = code if (code.endswith('.SH') or code.endswith('.SZ')) else f"{code}.{'SH' if code.startswith('6') else 'SZ'}"
+            _b_dates = [_dt.strptime(s['date'], '%Y-%m-%d').date()
+                        for s in in_range_signals if s['type'] == 'B']
+            if _b_dates:
+                _min_dt = min(_b_dates) - _td(days=main_force_lookback + 3)
+                _max_dt = max(_b_dates)
+                _rows = main_force_db.query(StockFlow).filter(
+                    StockFlow.ts_code == _ts_code,
+                    StockFlow.trade_date > _min_dt,
+                    StockFlow.trade_date <= _max_dt,
+                ).all()
+                _main_force_data = {}
+                for _r in _rows:
+                    _main_force_data.setdefault(_r.trade_date, []).append(_r)
+        except Exception as e:
+            logger.debug(f'[bs_backtest] 主力净流入批量预取失败: {e}')
+            _main_force_data = None
 
     if volume_filter or ma20_filter or ma60_trend or ma60_rising or rsi_filter or strong_volume or macd_filter or kdj_filter or sector_uptrend_filter:
         filtered = []
@@ -235,23 +283,20 @@ def _backtest_single(
                     if not sector or sector not in top10:
                         continue
 
-            if main_force_filter and main_force_db is not None:
+            if main_force_filter and _main_force_data is not None:
                 try:
                     from datetime import datetime as _dt, timedelta as _td
-                    from db.models import StockFlow
                     sig_dt = _dt.strptime(sig['date'], '%Y-%m-%d').date()
                     start_dt = sig_dt - _td(days=main_force_lookback + 3)
-                    rows = main_force_db.query(StockFlow).filter(
-                        StockFlow.ts_code == (code if code.endswith('.SH') or code.endswith('.SZ') else f"{code}.{'SH' if code.startswith('6') else 'SZ'}"),
-                        StockFlow.trade_date > start_dt,
-                        StockFlow.trade_date <= sig_dt,
-                    ).order_by(StockFlow.trade_date.desc()).limit(main_force_lookback).all()
-                    if not rows:
-                        pass
-                    else:
-                        total_wan = sum(float(r.main_force_inflow or 0) for r in rows) / 10000.0
+                    cand = sorted(
+                        [r for d, rs in _main_force_data.items() if start_dt < d <= sig_dt for r in rs],
+                        key=lambda r: r.trade_date, reverse=True
+                    )[:main_force_lookback]
+                    if cand:
+                        total_wan = sum(float(r.main_force_inflow or 0) for r in cand) / 10000.0
                         if total_wan < main_force_min_total:
                             continue
+                    # cand 为空时等同于原逻辑 if not rows: pass（放行，不拦截）
                 except Exception as e:
                     logger.debug(f'[bs_backtest] 主力净流入查询失败: {e}')
 

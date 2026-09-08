@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { apiFetch } from '../utils/request';
-import { f2, colorForPct } from '../utils/format';
+import { f2 } from '../utils/format';
 import EmptyState from '../components/EmptyState';
 import PageLoader from '../components/PageLoader';
 import StockActionButtons from '../components/trading/StockActionButtons';
@@ -89,17 +89,20 @@ export default function StockTrackerPage() {
   const [refreshing, setRefreshing] = useState(false);
   const [refreshMsg, setRefreshMsg] = useState('');
   const [exited, setExited] = useState([]);
-  const [exitedOpen, setExitedOpen] = useState(true);
+  const [view, setView] = useState('active'); // 'active' | 'exited'
+  const [trackerSummary, setTrackerSummary] = useState(null);
 
   const loadStocks = useCallback(async () => {
     setLoading(true);
     try {
-      const [activeRes, exitedRes] = await Promise.all([
+      const [activeRes, exitedRes, summaryRes] = await Promise.all([
         apiFetch('/api/stock-tracker'),
         apiFetch('/api/stock-tracker/exited'),
+        apiFetch('/api/stock-tracker/summary'),
       ]);
       if (activeRes.ok && Array.isArray(activeRes.data)) setStocks(activeRes.data);
       if (exitedRes.ok && Array.isArray(exitedRes.data)) setExited(exitedRes.data);
+      if (summaryRes.ok && summaryRes.data) setTrackerSummary(summaryRes.data);
     } catch (e) { console.error('loadStocks', e); }
     setLoading(false);
   }, []);
@@ -121,7 +124,7 @@ export default function StockTrackerPage() {
       } else {
         setAddError(error || '添加失败');
       }
-    } catch (e) { setAddError('网络错误'); }
+    } catch { setAddError('网络错误'); }
     setAdding(false);
   };
 
@@ -133,7 +136,7 @@ export default function StockTrackerPage() {
       if (ok) {
         loadStocks();
       }
-    } catch (e) { /* silent */ }
+    } catch { /* silent */ }
   };
 
   const handleRetrack = async (e, x) => {
@@ -153,7 +156,7 @@ export default function StockTrackerPage() {
       } else {
         alert(error || '重新跟踪失败');
       }
-    } catch (err) { alert('网络错误'); }
+    } catch { alert('网络错误'); }
   };
 
   const handleUpdateNote = async (id, note) => {
@@ -164,7 +167,7 @@ export default function StockTrackerPage() {
       });
       setEditNoteId(null);
       loadStocks();
-    } catch (e) { /* silent */ }
+    } catch { /* silent */ }
   };
 
   const handleRefresh = async () => {
@@ -178,21 +181,23 @@ export default function StockTrackerPage() {
       } else {
         setRefreshMsg('刷新失败');
       }
-    } catch (e) { setRefreshMsg('网络错误'); }
+    } catch { setRefreshMsg('网络错误'); }
     setRefreshing(false);
     setTimeout(() => setRefreshMsg(''), 4000);
   };
 
-  const summary = useMemo(() => {
-    const total = stocks.length;
-    const avg = total ? stocks.reduce((s, x) => s + (Number(x.total_pct_chg) || 0), 0) / total : 0;
-    const positive = stocks.filter(x => (Number(x.total_pct_chg) || 0) > 0).length;
-    const negative = stocks.filter(x => (Number(x.total_pct_chg) || 0) < 0).length;
-    return { total, avg, positive, negative };
-  }, [stocks]);
+  const summary = trackerSummary?.overall || {
+    count: stocks.length,
+    average_return_pct: null,
+    positive_count: 0,
+    negative_count: 0,
+    win_rate_pct: null,
+  };
+  const activeSummary = trackerSummary?.active || { count: stocks.length };
+  const exitedSummary = trackerSummary?.exited || { count: exited.length, average_return_pct: null };
 
   // 入选后 D2-D5 累计收益（每个交易日分别的平均）
-  // D1=入选日(pct=0)，D2=入选后第1个交易日，D3=第2个交易日...以此类推
+  // D1=入选后的第1个交易日，D2=第2个交易日，依此类推。
   const d2to5Summary = useMemo(() => {
     const result = [];
     for (let day = 2; day <= 5; day++) {
@@ -212,6 +217,102 @@ export default function StockTrackerPage() {
     }
     return result;
   }, [stocks]);
+
+  const renderMatrix = (list, isExited) => (
+    <>
+      {/* 图例：帮助理解「累计」与「当日」两个百分比 */}
+      <div className="mb-3 rounded-lg border p-2 text-[11px] leading-relaxed" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-hover)' }}>
+        <div className="font-semibold mb-1" style={{ color: 'var(--text-primary)' }}>📖 怎么看这张表</div>
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1" style={{ color: 'var(--text-secondary)' }}>
+          <span>每个格子 <b style={{ color: 'var(--text-primary)' }}>「累计 +1.8%」</b> = 自入选价<b>累计收益</b></span>
+          <span>每个格子 <b style={{ color: 'var(--text-primary)' }}>「当日 -3.1%」</b> = 该交易日<b>当日涨跌幅</b></span>
+          <span>列 D1–D30 = 入选后的第 N 个交易日</span>
+          <span>🟥 红=盈利(涨) · 🟩 绿=亏损(跌)</span>
+        </div>
+      </div>
+      <div className="rounded-lg border overflow-x-auto" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
+        <table className="w-full text-xs border-collapse" style={{ minWidth: '1400px' }}>
+          <thead>
+            <tr className="sticky top-0" style={{ background: 'var(--bg-hover)', height: '28px', zIndex: 20 }}>
+              <th className="px-2 py-1 text-left font-bold sticky left-0 top-0" style={{ background: 'var(--bg-hover)', color: 'var(--text-primary)', minWidth: '220px', zIndex: 30 }}>股票</th>
+              {Array.from({ length: 30 }, (_, i) => i + 1).map(d => (
+                <th key={d} className="px-0.5 py-1 text-center font-bold text-[10px] sticky top-0" style={{ color: 'var(--text-primary)', minWidth: '72px', width: '72px', background: 'var(--bg-hover)', zIndex: 20 }}>D{d}</th>
+              ))}
+              <th className="px-2 py-1 text-center font-bold sticky right-0 top-0" style={{ background: 'var(--bg-hover)', color: 'var(--text-primary)', minWidth: '82px', zIndex: 30 }}>{isExited ? '累计(退出)' : '累计(至今)'}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {list.map((s, i) => {
+              const source = parseSource(s.note);
+              const dailyMap = {};
+              (s.daily || []).forEach(d => { dailyMap[d.day_n] = d; });
+              const priceLine = isExited
+                ? `入选 ${s.entry_date || ''} · ¥${f2(s.entry_price)} · 退出 ¥${f2(s.exit_price)} · ${s.days_held ?? 0} 天`
+                : `入选 ${s.entry_date || ''} · ¥${f2(s.entry_price)} · 现 ¥${f2(s.current_price)} · ${s.days_held ?? 0} 天`;
+              const noteText = isExited
+                ? (s.detail ? `📝${s.detail}` : (s.note ? `📝${s.note}` : '📝—'))
+                : (s.note ? `📝${s.note}` : '📝备注');
+              return (
+                <tr
+                  key={s.id}
+                  className="border-t hover:opacity-95"
+                  style={{ borderColor: 'var(--border-color)', background: i % 2 ? 'rgba(0,0,0,0.02)' : 'transparent', height: '62px' }}
+                >
+                  <td className="px-2 py-1 sticky left-0 z-10" style={{ background: i % 2 ? 'rgba(0,0,0,0.02)' : 'var(--bg-card)', minWidth: '220px' }}>
+                    <div className="flex items-center gap-1.5 flex-wrap leading-tight">
+                      <span className="font-bold text-sm" style={{ color: 'var(--text-primary)' }}>{s.stock_name || '—'}</span>
+                      <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{s.stock_code || ''}</span>
+                      <span className="px-1 py-0 rounded text-[9px] font-bold leading-tight" style={{ background: `${source.color}15`, color: source.color, border: `1px solid ${source.color}40` }}>{source.label}</span>
+                    </div>
+                    <div className="text-[9px] leading-tight mt-0.5" style={{ color: 'var(--text-muted)' }}>{priceLine}</div>
+                    <div className="text-[9px] leading-tight mt-0.5" style={{ color: 'var(--text-muted)' }}>
+                      {isExited ? (
+                        <span className="px-1 rounded leading-tight" style={{ background: 'var(--bg-primary)' }}>{noteText}</span>
+                      ) : (
+                        editNoteId === s.id ? (
+                          <input autoFocus defaultValue={s.note || ''}
+                            onBlur={e => handleUpdateNote(s.id, e.target.value)}
+                            onKeyDown={e => { if (e.key === 'Enter') handleUpdateNote(s.id, e.target.value); }}
+                            className="w-20 px-1 py-0.5 text-[9px] rounded border"
+                            style={{ borderColor: 'var(--border-color)', background: 'var(--bg-primary)', color: 'var(--text-primary)' }}
+                            onClick={e => e.stopPropagation()} />
+                        ) : (
+                          <span className="text-[9px] cursor-pointer px-1 rounded leading-tight" style={{ color: 'var(--text-muted)', background: 'var(--bg-primary)' }}
+                            onClick={e => { e.stopPropagation(); setEditNoteId(s.id); }}>
+                            {noteText}
+                          </span>
+                        )
+                      )}
+                    </div>
+                    <div className="mt-1 flex items-center gap-1 flex-wrap leading-tight">
+                      <StockActionButtons stockCode={s.stock_code} stockName={s.stock_name} size="xs" showTrack={false} showSina={true} onRefresh={loadStocks} />
+                      {isExited ? (
+                        <button onClick={(e) => handleRetrack(e, s)} className="text-[9px] px-1 rounded hover:opacity-70 leading-tight" style={{ background: 'rgba(59,130,246,0.1)', color: '#3b82f6' }}>↻ 重新跟踪</button>
+                      ) : (
+                        <button onClick={(e) => handleRemove(e, s.id)}
+                          className="text-[9px] px-1 rounded hover:opacity-70 leading-tight" style={{ color: '#ef4444', background: 'rgba(239,68,68,0.08)' }}>✕ 移除</button>
+                      )}
+                      <button onClick={(e) => { e.stopPropagation(); navigate(`/stock/${s.stock_code}`); }}
+                        className="text-[9px] px-1 rounded leading-tight" style={{ background: 'rgba(59,130,246,0.1)', color: '#3b82f6' }}>📈 详情</button>
+                    </div>
+                  </td>
+                  {Array.from({ length: 30 }, (_, i) => i + 1).map(d => (
+                    <td key={d} className="px-0.5 py-1 align-middle" style={{ width: '72px', minWidth: '72px' }}>
+                      <div style={{ height: '52px' }}><DayCell d={dailyMap[d]} /></div>
+                    </td>
+                  ))}
+                  <td className="px-2 py-1 text-center sticky right-0 z-10" style={{ background: i % 2 ? 'rgba(0,0,0,0.02)' : 'var(--bg-card)', minWidth: '82px' }}>
+                    <div className="text-base font-bold font-mono leading-tight" style={{ color: pctColor(s.total_pct_chg) }}>{fmtPct(s.total_pct_chg)}</div>
+                    <div className="text-[9px] leading-tight" style={{ color: 'var(--text-muted)' }}>持有 {s.days_held ?? 0} 天</div>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </>
+  );
 
   return (
     <div className="h-full flex flex-col overflow-hidden" style={{ background: 'var(--bg-primary)' }}>
@@ -235,22 +336,27 @@ export default function StockTrackerPage() {
         {/* 汇总卡 */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
           <div className="rounded border p-2" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
-            <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>总跟踪数</div>
-            <div className="text-base font-bold" style={{ color: 'var(--accent-blue)' }}>{summary.total}</div>
+            <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>跟踪总样本</div>
+            <div className="text-base font-bold" style={{ color: 'var(--accent-blue)' }}>{summary.count}</div>
           </div>
           <div className="rounded border p-2" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
-            <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>平均累计收益</div>
-            <div className="text-base font-bold" style={{ color: pctColor(summary.avg) }}>{fmtPct(summary.avg)}</div>
+            <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>总体等权平均收益</div>
+            <div className="text-base font-bold" style={{ color: pctColor(summary.average_return_pct) }}>{fmtPct(summary.average_return_pct)}</div>
           </div>
           <div className="rounded border p-2" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
-            <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>盈利股</div>
-            <div className="text-base font-bold" style={{ color: '#ef4444' }}>{summary.positive}</div>
+            <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>总体胜率</div>
+            <div className="text-base font-bold" style={{ color: pctColor(summary.win_rate_pct) }}>{fmtPct(summary.win_rate_pct)}</div>
+            <div className="text-[9px]" style={{ color: 'var(--text-muted)' }}>盈利 {summary.positive_count}/{summary.count}</div>
           </div>
           <div className="rounded border p-2" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
-            <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>亏损股</div>
-            <div className="text-base font-bold" style={{ color: '#22c55e' }}>{summary.negative}</div>
+            <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>已完成平均收益</div>
+            <div className="text-base font-bold" style={{ color: pctColor(exitedSummary.average_return_pct) }}>{fmtPct(exitedSummary.average_return_pct)}</div>
+            <div className="text-[9px]" style={{ color: 'var(--text-muted)' }}>已退出 {exitedSummary.count} 只</div>
           </div>
         </div>
+        <p className="text-[10px] -mt-1" style={{ color: 'var(--text-muted)' }}>
+          总体收益按每只股票等权平均，已包含仍在跟踪和已退出样本；不含仓位、手续费与滑点，不等同于实盘账户收益。
+        </p>
 
         {/* D2-D5 入选后表现（选入日=买入日） */}
         <div>
@@ -263,7 +369,7 @@ export default function StockTrackerPage() {
               <div key={day} className="rounded border p-2" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
                 <div className="text-[10px] flex items-center justify-between" style={{ color: 'var(--text-muted)' }}>
                   <span>D{day} 累计</span>
-                  <span>{count}/{summary.total} 只</span>
+                  <span>{count}/{activeSummary.count} 只</span>
                 </div>
                 <div className="text-base font-bold leading-tight" style={{ color: pctColor(avg) }}>{fmtPct(avg)}</div>
               </div>
@@ -290,172 +396,35 @@ export default function StockTrackerPage() {
         </div>
       </div>
 
-      {/* 主体：平铺矩阵 */}
-      <div className="flex-1 overflow-auto p-3">
-        {loading ? <PageLoader height="6rem" />
-          : stocks.length === 0 && exited.length === 0 ? <EmptyState text="暂无跟踪股票" subText="上方输入代码名称加入" />
-          : (<>
-            {/* 图例：帮助理解「累计」与「当日」两个百分比 */}
-            <div className="mb-3 rounded-lg border p-2 text-[11px] leading-relaxed" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-hover)' }}>
-              <div className="font-semibold mb-1" style={{ color: 'var(--text-primary)' }}>📖 怎么看这张表</div>
-              <div className="flex flex-wrap items-center gap-x-4 gap-y-1" style={{ color: 'var(--text-secondary)' }}>
-                <span>每个格子 <b style={{ color: 'var(--text-primary)' }}>「累计 +1.8%」</b> = 自入选价<b>累计收益</b></span>
-                <span>每个格子 <b style={{ color: 'var(--text-primary)' }}>「当日 -3.1%」</b> = 该交易日<b>当日涨跌幅</b></span>
-                <span>列 D1–D30 = 入选后的第 N 个交易日</span>
-                <span>🟥 红=盈利(涨)　🟩 绿=亏损(跌)</span>
-              </div>
-            </div>
-            <div className="rounded-lg border overflow-x-auto" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
-              <table className="w-full text-xs border-collapse" style={{ minWidth: '1400px' }}>
-                <thead>
-                  <tr className="sticky top-0" style={{ background: 'var(--bg-hover)', height: '28px', zIndex: 20 }}>
-                    <th className="px-2 py-1 text-left font-bold sticky left-0 top-0" style={{ background: 'var(--bg-hover)', color: 'var(--text-primary)', minWidth: '220px', zIndex: 30 }}>股票</th>
-                    {Array.from({ length: 30 }, (_, i) => i + 1).map(d => (
-                      <th key={d} className="px-0.5 py-1 text-center font-bold text-[10px] sticky top-0" style={{ color: 'var(--text-primary)', minWidth: '72px', width: '72px', background: 'var(--bg-hover)', zIndex: 20 }}>D{d}</th>
-                    ))}
-                    <th className="px-2 py-1 text-center font-bold sticky right-0 top-0" style={{ background: 'var(--bg-hover)', color: 'var(--text-primary)', minWidth: '82px', zIndex: 30 }}>累计(至今)</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {stocks.map((s, i) => {
-                    const source = parseSource(s.note);
-                    const dailyMap = {};
-                    (s.daily || []).forEach(d => { dailyMap[d.day_n] = d; });
-                    return (
-                      <tr
-                        key={s.id}
-                        className="border-t hover:opacity-95"
-                        style={{ borderColor: 'var(--border-color)', background: i % 2 ? 'rgba(0,0,0,0.02)' : 'transparent', height: '62px' }}
-                      >
-                        <td className="px-2 py-1 sticky left-0 z-10" style={{ background: i % 2 ? 'rgba(0,0,0,0.02)' : 'var(--bg-card)', minWidth: '220px' }}>
-                          <div className="flex items-center gap-1.5 flex-wrap leading-tight">
-                            <span className="font-bold text-sm" style={{ color: 'var(--text-primary)' }}>{s.stock_name || '—'}</span>
-                            <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{s.stock_code || ''}</span>
-                            <span className="px-1 py-0 rounded text-[9px] font-bold leading-tight" style={{ background: `${source.color}15`, color: source.color, border: `1px solid ${source.color}40` }}>{source.label}</span>
-                          </div>
-                          <div className="text-[9px] leading-tight mt-0.5" style={{ color: 'var(--text-muted)' }}>
-                            入选 {s.entry_date || ''} · ¥{f2(s.entry_price)} · 现 ¥{f2(s.current_price)} · {s.days_held ?? 0} 天
-                          </div>
-                          <div className="mt-1 flex items-center gap-1 flex-wrap leading-tight">
-                            {editNoteId === s.id ? (
-                              <input autoFocus defaultValue={s.note || ''}
-                                onBlur={e => handleUpdateNote(s.id, e.target.value)}
-                                onKeyDown={e => { if (e.key === 'Enter') handleUpdateNote(s.id, e.target.value); }}
-                                className="w-20 px-1 py-0.5 text-[9px] rounded border"
-                                style={{ borderColor: 'var(--border-color)', background: 'var(--bg-primary)', color: 'var(--text-primary)' }}
-                                onClick={e => e.stopPropagation()} />
-                            ) : (
-                              <span className="text-[9px] cursor-pointer px-1 rounded leading-tight" style={{ color: 'var(--text-muted)', background: 'var(--bg-primary)' }}
-                                onClick={e => { e.stopPropagation(); setEditNoteId(s.id); }}>
-                                {s.note ? `📝${s.note}` : '📝备注'}
-                              </span>
-                            )}
-                          </div>
-                          <div className="mt-1 flex items-center gap-1 flex-wrap leading-tight">
-                            <StockActionButtons stockCode={s.stock_code} stockName={s.stock_name} size="xs" showTrack={false} showSina={true} onRefresh={loadStocks} />
-                            <button onClick={(e) => handleRemove(e, s.id)}
-                              className="text-[9px] px-1 rounded hover:opacity-70 leading-tight" style={{ color: '#ef4444', background: 'rgba(239,68,68,0.08)' }}>✕ 移除</button>
-                            <button onClick={(e) => { e.stopPropagation(); navigate(`/stock/${s.stock_code}`); }}
-                              className="text-[9px] px-1 rounded leading-tight" style={{ background: 'rgba(59,130,246,0.1)', color: '#3b82f6' }}>📈 详情</button>
-                          </div>
-                        </td>
-                        {Array.from({ length: 30 }, (_, i) => i + 1).map(d => (
-                          <td key={d} className="px-0.5 py-1 align-middle" style={{ width: '72px', minWidth: '72px' }}>
-                            <div style={{ height: '52px' }}><DayCell d={dailyMap[d]} /></div>
-                          </td>
-                        ))}
-                        <td className="px-2 py-1 text-center sticky right-0 z-10" style={{ background: i % 2 ? 'rgba(0,0,0,0.02)' : 'var(--bg-card)', minWidth: '82px' }}>
-                          <div className="text-base font-bold font-mono leading-tight" style={{ color: pctColor(s.total_pct_chg) }}>{fmtPct(s.total_pct_chg)}</div>
-                          <div className="text-[9px] leading-tight" style={{ color: 'var(--text-muted)' }}>持有 {s.days_held ?? 0} 天</div>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
+       {/* 顶部 tab：正常跟踪 / 历史跟踪 */}
+       <div className="flex items-center gap-1 px-3 py-2 border-b" style={{ borderColor: 'var(--border-color)' }}>
+         <button onClick={() => setView('active')}
+           className="px-3 py-1.5 text-xs rounded font-medium transition-all"
+           style={view === 'active'
+             ? { background: 'var(--accent-blue)', color: '#fff' }
+             : { background: 'transparent', color: 'var(--text-secondary)', border: '1px solid var(--border-color)' }}>
+           📊 正常跟踪{stocks.length ? ` (${stocks.length})` : ''}
+         </button>
+         <button onClick={() => setView('exited')}
+           className="px-3 py-1.5 text-xs rounded font-medium transition-all"
+           style={view === 'exited'
+             ? { background: 'var(--accent-blue)', color: '#fff' }
+             : { background: 'transparent', color: 'var(--text-secondary)', border: '1px solid var(--border-color)' }}>
+           🚪 历史跟踪{exited.length ? ` (${exited.length})` : ''}
+         </button>
+       </div>
 
-            {exited.length > 0 && (
-              <div className="mt-4 rounded-lg border overflow-hidden" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
-                <button
-                  type="button"
-                  onClick={() => setExitedOpen(o => !o)}
-                  className="w-full flex items-center justify-between px-3 py-2 text-left"
-                >
-                  <span className="text-xs font-semibold" style={{ color: 'var(--text-secondary)' }}>
-                    🚪 已退出 {exited.length} 只
-                    <span className="ml-2 text-[10px] font-normal" style={{ color: 'var(--text-muted)' }}>（BS 转 S 自动退出 / 手动移除，不再计入跟踪）</span>
-                  </span>
-                  <span className="text-xs" style={{ color: 'var(--text-muted)' }}>{exitedOpen ? '▾' : '▸'}</span>
-                </button>
-                {exitedOpen && (
-                  <>
-                    {(() => {
-                      const vals = exited.map(e => e.total_pct_chg || 0);
-                      const scaleMax = Math.max(10, ...vals.map(Math.abs));
-                      const hi = Math.max(...vals), lo = Math.min(...vals);
-                      return (
-                        <div className="px-3 pt-2 pb-1">
-                          <div className="flex items-end gap-[3px] h-14" style={{ borderBottom: '1px solid var(--border-color)' }}>
-                            {exited.map(x => {
-                              const v = x.total_pct_chg || 0;
-                              const h = Math.max(2, (Math.abs(v) / scaleMax) * 48);
-                              return <div key={`bar-${x.id}`} title={`${x.stock_name} ${fmtPct(v)}`} className="flex-1 min-w-[3px] rounded-t" style={{ height: `${h}px`, background: pctColor(v) }} />;
-                            })}
-                          </div>
-                          <div className="mt-1 flex justify-between text-[9px]" style={{ color: 'var(--text-muted)' }}>
-                            <span>退出盈亏分布（红涨绿跌 · 共 {exited.length} 只）</span>
-                            <span>最高 {fmtPct(hi)} · 最低 {fmtPct(lo)}</span>
-                          </div>
-                        </div>
-                      );
-                    })()}
-                    <div className="px-3 pb-3 overflow-x-auto">
-                    <table className="w-full text-xs border-collapse" style={{ minWidth: '680px' }}>
-                      <thead>
-                        <tr style={{ background: 'var(--bg-hover)', height: '26px' }}>
-                          <th className="px-2 py-1 text-left font-bold" style={{ color: 'var(--text-primary)', minWidth: '150px' }}>股票</th>
-                          <th className="px-2 py-1 text-left font-bold" style={{ color: 'var(--text-primary)' }}>退出原因</th>
-                          <th className="px-2 py-1 text-left font-bold" style={{ color: 'var(--text-primary)' }}>退出日期</th>
-                          <th className="px-2 py-1 text-left font-bold" style={{ color: 'var(--text-primary)' }}>入选 / 持有</th>
-                          <th className="px-2 py-1 text-right font-bold" style={{ color: 'var(--text-primary)' }}>盈亏</th>
-                          <th className="px-2 py-1 text-center font-bold" style={{ color: 'var(--text-primary)' }}>操作</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {exited.map((x, i) => {
-                          const reasonColor = x.exit_reason === 'BS 转 S 自动退出' ? '#ea580c' : '#9ca3af';
-                          return (
-                            <tr key={x.id} className="border-t hover:opacity-95" style={{ borderColor: 'var(--border-color)', background: i % 2 ? 'rgba(0,0,0,0.02)' : 'transparent' }}>
-                              <td className="px-2 py-1.5">
-                                <div className="flex items-center gap-1.5">
-                                  <span className="font-bold text-sm" style={{ color: 'var(--text-primary)' }}>{x.stock_name || '—'}</span>
-                                  <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{x.stock_code}</span>
-                                </div>
-                                {x.detail ? <div className="text-[10px] mt-0.5 truncate" style={{ color: 'var(--text-secondary)' }} title={x.detail}>📝 {x.detail}</div> : null}
-                              </td>
-                              <td className="px-2 py-1.5">
-                                <span className="px-1 py-0 rounded text-[9px] font-bold whitespace-nowrap" style={{ background: `${reasonColor}15`, color: reasonColor, border: `1px solid ${reasonColor}40` }}>{x.exit_reason}</span>
-                              </td>
-                              <td className="px-2 py-1.5 text-[11px] whitespace-nowrap" style={{ color: 'var(--text-muted)' }}>{x.exit_date}</td>
-                              <td className="px-2 py-1.5 text-[10px] whitespace-nowrap" style={{ color: 'var(--text-muted)' }}>
-                                入选 {x.entry_date} · ¥{f2(x.entry_price)} · {x.days_held ?? 0} 天
-                              </td>
-                              <td className="px-2 py-1.5 text-right font-bold font-mono" style={{ color: pctColor(x.total_pct_chg) }}>{fmtPct(x.total_pct_chg)}</td>
-                              <td className="px-2 py-1.5 text-center">
-                                <button type="button" onClick={e => handleRetrack(e, x)} className="text-[10px] rounded border px-1.5 py-0.5 hover:opacity-80 whitespace-nowrap" style={{ borderColor: 'var(--border-color)', color: '#3b82f6', background: 'transparent' }}>↻ 重新跟踪</button>
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                  </>
-                )}
-              </div>
-            )}
-          </>)}
+       {/* 主体：平铺矩阵 */}
+       <div className="flex-1 overflow-auto p-3">
+         {loading ? <PageLoader height="6rem" />
+           : view === 'active'
+             ? (stocks.length === 0
+                 ? <EmptyState text="暂无跟踪股票" subText="上方输入代码名称加入" />
+                 : renderMatrix(stocks, false))
+             : (exited.length === 0
+                 ? <EmptyState text="暂无已退出股票" subText="BS 转 S 自动退出或手动移除后会进入这里" />
+                 : renderMatrix(exited, true))
+         }
       </div>
     </div>
   );

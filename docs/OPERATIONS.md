@@ -202,8 +202,8 @@ WHERE trade_date = CURRENT_DATE ORDER BY snapshot_time DESC LIMIT 10;
 -- 2. 检查数据源状态
 SELECT * FROM data_source_reliability ORDER BY source;
 
--- 3. 手动触发一次采集
-curl -X POST http://localhost:9000/api/realtime/refresh
+-- 3. 手动触发一次采集（写接口必须鉴权）
+curl -X POST -H "X-API-Key: ${API_READ_KEY}" http://localhost:9000/api/realtime/refresh
 ```
 
 ### 6.3 妙想 API 401/403
@@ -212,7 +212,7 @@ curl -X POST http://localhost:9000/api/realtime/refresh
 
 **修复**：
 1. 登录妙想控制台获取新 key
-2. 更新 `backend/.env`、plist
+2. 更新项目根目录 `.env`（LaunchAgent 不保存业务密钥）
 3. 重启后端
 
 ### 6.4 自动化交易没执行

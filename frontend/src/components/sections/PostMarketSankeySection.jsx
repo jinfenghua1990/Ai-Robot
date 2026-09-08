@@ -43,9 +43,9 @@ export default function PostMarketSankeySection({ selectedDate, selectedSector, 
   const totalOut = data.total_outflow || 0;
 
   // 找最强加速（change最大的）
-  const strongest = inflows[0];
+
   // 找最大减速（change最负的）
-  const weakest = outflows[0];
+
 
   return (
     <div className="h-full flex flex-col gap-1.5 overflow-hidden">

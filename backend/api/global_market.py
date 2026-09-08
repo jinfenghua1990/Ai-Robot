@@ -288,6 +288,147 @@ def _safe_float(value: Any) -> float | None:
         return None
 
 
+def _normalize_db_symbol(market: str, code: str) -> str:
+    if market == "HK":
+        raw = str(code or "").upper().replace(".HK", "").strip()
+        return raw.zfill(5) if raw.isdigit() else raw
+    return str(code or "").strip().upper()
+
+
+def _read_database_bars(market: str, codes: list[str], days: int) -> dict[str, list[dict]]:
+    """读取港美股日线库；不联网、不补采、不写库。"""
+    from db.session import get_db_session
+
+    market = market.upper()
+    symbols = [_normalize_db_symbol(market, code) for code in codes]
+    limit = max(2, min(int(days or 30) + 1, 1300))
+    grouped: dict[str, list] = {symbol: [] for symbol in symbols}
+    with get_db_session() as db:
+        if market == "US":
+            from sqlalchemy import or_
+            from us_quant.repository import USStockDaily
+            rows = db.query(USStockDaily).filter(
+                USStockDaily.symbol.in_(symbols),
+                or_(USStockDaily.source.is_(None), USStockDaily.source != "synthetic"),
+            ).order_by(USStockDaily.symbol, USStockDaily.trade_date.desc()).all()
+        else:
+            from market_quant.repository import MarketDailyBar
+            rows = db.query(MarketDailyBar).filter(
+                MarketDailyBar.market == "HK",
+                MarketDailyBar.symbol.in_(symbols),
+                MarketDailyBar.quality_status == "VALID",
+            ).order_by(MarketDailyBar.symbol, MarketDailyBar.trade_date.desc()).all()
+    for row in rows:
+        symbol = str(row.symbol)
+        if len(grouped.setdefault(symbol, [])) < limit:
+            grouped[symbol].append(row)
+
+    result: dict[str, list[dict]] = {}
+    for symbol, symbol_rows in grouped.items():
+        symbol_rows.reverse()
+        items = []
+        previous_close = None
+        for row in symbol_rows:
+            close = _safe_float(row.close)
+            if close is None:
+                continue
+            stored_change = _safe_float(getattr(row, "change_pct", None))
+            change_pct = stored_change
+            if change_pct is None and previous_close:
+                change_pct = (close - previous_close) / previous_close * 100
+            items.append({
+                "date": row.trade_date.isoformat(),
+                "open": _safe_float(row.open),
+                "high": _safe_float(row.high),
+                "low": _safe_float(row.low),
+                "close": close,
+                "volume": int(row.volume or 0),
+                "change_pct": round(change_pct, 4) if change_pct is not None else None,
+                "change_amount": round(close - previous_close, 4) if previous_close else None,
+                "prev_close": previous_close,
+                "source": getattr(row, "source", None),
+            })
+            previous_close = close
+        result[symbol] = items[-max(1, int(days or 30)):]
+    return result
+
+
+def _database_freshness(market: str, bars_by_symbol: dict[str, list[dict]]) -> tuple[str, str | None, str | None]:
+    data_dates = [
+        items[-1]["date"]
+        for items in bars_by_symbol.values()
+        if items
+    ]
+    if not data_dates:
+        return "MISSING", None, "数据库暂无对应行情"
+    data_as_of = max(data_dates)
+    try:
+        from market_quant.calendar import latest_completed_session
+        expected = latest_completed_session(market).isoformat()
+    except Exception:
+        expected = None
+    if expected and data_as_of < expected:
+        return "STALE", data_as_of, f"数据库最新 {data_as_of}，应到 {expected}"
+    return "READY", data_as_of, None
+
+
+def _quote_from_bars(code: str, name: str, bars: list[dict]) -> dict:
+    if not bars:
+        return {
+            "code": code, "name": name, "price": None, "change_pct": None,
+            "source": "database", "status": "MISSING", "updated": None,
+        }
+    latest = bars[-1]
+    return {
+        "code": code,
+        "name": name,
+        "price": latest.get("close"),
+        "change_pct": latest.get("change_pct"),
+        "change_amount": latest.get("change_amount"),
+        "volume": latest.get("volume"),
+        "high": latest.get("high"),
+        "low": latest.get("low"),
+        "open": latest.get("open"),
+        "prev_close": latest.get("prev_close"),
+        "updated": latest.get("date"),
+        "source": "database",
+        "upstream_source": latest.get("source"),
+        "status": "READY",
+    }
+
+
+def _enhanced_from_bars(stock: dict, bars: list[dict]) -> dict:
+    closes = [item["close"] for item in bars if item.get("close") is not None]
+    latest = bars[-1] if bars else {}
+    price = _safe_float(latest.get("close"))
+    ma5 = _calc_ma(closes, 5)
+    ma10 = _calc_ma(closes, 10)
+    ma20 = _calc_ma(closes, 20)
+    rsi = _calc_rsi(closes, 14)
+    amplitude = None
+    previous_close = _safe_float(latest.get("prev_close"))
+    high = _safe_float(latest.get("high"))
+    low = _safe_float(latest.get("low"))
+    if previous_close and high is not None and low is not None:
+        amplitude = round((high - low) / previous_close * 100, 2)
+    deviation = round((price - ma20) / ma20 * 100, 2) if price and ma20 else None
+    return {
+        "code": stock["code"], "name": stock["name"],
+        "price": price, "change_pct": _safe_float(latest.get("change_pct")),
+        "open": _safe_float(latest.get("open")), "high": high, "low": low,
+        "volume": latest.get("volume"), "amplitude": amplitude,
+        "prev_close": previous_close, "trade_date": latest.get("date", ""),
+        "source": "database", "upstream_source": latest.get("source"),
+        "status": "READY" if bars else "MISSING",
+        "ma5": ma5, "ma10": ma10, "ma20": ma20, "rsi": rsi,
+        "change5d": _calc_change_pct(closes, 5),
+        "change10d": _calc_change_pct(closes, 10),
+        "change20d": _calc_change_pct(closes, 20),
+        "deviation": deviation,
+        "sparkline": [{"d": item.get("date", ""), "c": item.get("close")} for item in bars[-20:]],
+    }
+
+
 # ─── 技术指标计算 ───────────────────────────────────────────────────────────────
 
 def _calc_ma(closes: list[float], period: int) -> float | None:
@@ -345,17 +486,26 @@ def _fetch_index(idx: dict) -> dict:
 
 @router.get("/indices/{market}")
 def get_indices(market: str):
-    """获取市场主要指数行情 (恒生/道琼斯等, 并行拉取)"""
+    """从数据库获取市场主要指数行情。"""
     market = market.upper()
     if market not in ("HK", "US"):
         return {"market": market, "indices": [], "error": "仅支持 HK / US"}
     indices = MARKET_INDICES.get(market, [])
-    results = [None] * len(indices)
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        futures = {pool.submit(_fetch_index, idx): i for i, idx in enumerate(indices)}
-        for fut in as_completed(futures):
-            results[futures[fut]] = fut.result()
-    return {"market": market, "indices": results, "updated_at": datetime.now().strftime("%Y/%m/%d %H:%M:%S")}
+    db_codes = [item["yahoo"] for item in indices]
+    bars_map = _read_database_bars(market, db_codes, 2)
+    results = [
+        _quote_from_bars(
+            item["code"], item["name"],
+            bars_map.get(_normalize_db_symbol(market, item["yahoo"]), []),
+        )
+        for item in indices
+    ]
+    status, data_as_of, detail = _database_freshness(market, bars_map)
+    return {
+        "market": market, "indices": results, "updated_at": data_as_of,
+        "data_as_of": data_as_of, "source": "database", "status": status,
+        "detail": detail,
+    }
 
 
 # ─── 关注列表行情 ──────────────────────────────────────────────────────────────
@@ -384,55 +534,54 @@ def _fetch_quote_for_stock(market: str, stock: dict) -> dict:
 
 @router.get("/quotes/{market}")
 def get_quotes(market: str):
-    """获取关注列表实时行情 (Yahoo Finance, 并行拉取)"""
+    """从数据库获取关注列表行情。"""
     market = market.upper()
     if market not in ("HK", "US"):
         return {"market": market, "quotes": [], "error": "仅支持 HK / US"}
     watchlist = DEFAULT_WATCHLIST.get(market, [])
-    results = [None] * len(watchlist)
-    with ThreadPoolExecutor(max_workers=6) as pool:
-        futures = {pool.submit(_fetch_quote_for_stock, market, s): i for i, s in enumerate(watchlist)}
-        for fut in as_completed(futures):
-            idx = futures[fut]
-            try:
-                results[idx] = fut.result()
-            except Exception as e:
-                results[idx] = {"code": watchlist[idx]["code"], "name": watchlist[idx]["name"], "price": None, "change_pct": None, "error": str(e)}
-    return {"market": market, "quotes": results, "updated_at": datetime.now().strftime("%Y/%m/%d %H:%M:%S")}
+    bars_map = _read_database_bars(market, [item["code"] for item in watchlist], 2)
+    results = [
+        _quote_from_bars(
+            item["code"], item["name"],
+            bars_map.get(_normalize_db_symbol(market, item["code"]), []),
+        )
+        for item in watchlist
+    ]
+    status, data_as_of, detail = _database_freshness(market, bars_map)
+    if status != "READY":
+        for item in results:
+            if item.get("status") == "READY":
+                item["status"] = status
+    return {
+        "market": market, "quotes": results, "updated_at": data_as_of,
+        "data_as_of": data_as_of, "source": "database", "status": status,
+        "detail": detail,
+    }
 
 
 # ─── K线历史 ───────────────────────────────────────────────────────────────────
 
 @router.get("/kline/{market}/{code}")
 def get_kline(market: str, code: str, days: int = Query(default=30, le=120)):
-    """获取个股K线历史 (Yahoo Finance)"""
+    """从数据库获取个股 K 线历史。"""
     market = market.upper()
     if market not in ("HK", "US"):
         return {"market": market, "code": code, "data": [], "error": "仅支持 HK / US"}
-    # Yahoo range 映射: 30天以内用 1mo, 60天用 3mo, 120天用 6mo
-    if days <= 30:
-        range_str = "1mo"
-    elif days <= 60:
-        range_str = "3mo"
-    else:
-        range_str = "6mo"
-    yahoo_sym = _to_yahoo_symbol(market, code)
-    items = _yahoo_fetch(yahoo_sym, range_str=range_str)
-    if items:
-        data = [
-            {
-                "trade_date": item.get("date", ""),
-                "open": item.get("open"),
-                "high": item.get("high"),
-                "low": item.get("low"),
-                "close": item.get("close"),
-                "volume": item.get("volume", 0),
-                "change_pct": item.get("change_pct"),
-            }
-            for item in items[-days:]
-        ]
-        return {"market": market, "code": code, "data": data, "source": "yahoo", "days": days}
-    return {"market": market, "code": code, "data": [], "source": "yahoo", "note": "K线数据暂不可用"}
+    symbol = _normalize_db_symbol(market, code)
+    bars_map = _read_database_bars(market, [symbol], days)
+    items = bars_map.get(symbol, [])
+    status, data_as_of, detail = _database_freshness(market, bars_map)
+    data = [{
+        "trade_date": item.get("date", ""), "open": item.get("open"),
+        "high": item.get("high"), "low": item.get("low"),
+        "close": item.get("close"), "volume": item.get("volume", 0),
+        "change_pct": item.get("change_pct"),
+    } for item in items]
+    return {
+        "market": market, "code": code, "data": data, "source": "database",
+        "days": days, "status": status, "data_as_of": data_as_of,
+        "note": detail,
+    }
 
 
 # ─── 市场概览 ──────────────────────────────────────────────────────────────────
@@ -457,6 +606,10 @@ def get_overview(market: str):
         "quotes": quotes,
         "stats": {"total": len(quotes), "up": up_count, "down": down_count, "flat": flat_count},
         "updated_at": quotes_data.get("updated_at", ""),
+        "data_as_of": quotes_data.get("data_as_of"),
+        "source": "database",
+        "status": "PARTIAL" if indices_data.get("status") == "MISSING" else quotes_data.get("status", "READY"),
+        "detail": indices_data.get("detail") if indices_data.get("status") == "MISSING" else quotes_data.get("detail"),
     }
 
 
@@ -513,25 +666,32 @@ def _fetch_enhanced_for_stock(market: str, stock: dict) -> dict:
 
 @router.get("/watchlist-enhanced/{market}")
 def get_watchlist_enhanced(market: str):
-    """关注列表 + 技术指标 (并行拉取, MA5/MA10/MA20/RSI/区间涨跌幅/均线偏离/迷你图)"""
+    """基于数据库日线计算关注列表技术指标。"""
     market = market.upper()
     if market not in ("HK", "US"):
         return {"market": market, "items": [], "error": "仅支持 HK / US"}
     watchlist = DEFAULT_WATCHLIST.get(market, [])
-    results = [None] * len(watchlist)
-    with ThreadPoolExecutor(max_workers=6) as pool:
-        futures = {pool.submit(_fetch_enhanced_for_stock, market, s): i for i, s in enumerate(watchlist)}
-        for fut in as_completed(futures):
-            idx = futures[fut]
-            try:
-                results[idx] = fut.result()
-            except Exception as e:
-                results[idx] = {"code": watchlist[idx]["code"], "name": watchlist[idx]["name"], "price": None, "change_pct": None, "error": str(e)}
+    bars_map = _read_database_bars(market, [item["code"] for item in watchlist], 30)
+    results = [
+        _enhanced_from_bars(
+            item, bars_map.get(_normalize_db_symbol(market, item["code"]), [])
+        )
+        for item in watchlist
+    ]
+    status, data_as_of, detail = _database_freshness(market, bars_map)
+    if status != "READY":
+        for item in results:
+            if item.get("status") == "READY":
+                item["status"] = status
     return {
         "market": market,
         "items": results,
         "total": len(results),
-        "updated_at": datetime.now().strftime("%Y/%m/%d %H:%M:%S"),
+        "updated_at": data_as_of,
+        "data_as_of": data_as_of,
+        "source": "database",
+        "status": status,
+        "detail": detail,
     }
 
 
@@ -539,21 +699,25 @@ def get_watchlist_enhanced(market: str):
 
 @router.get("/kline-batch/{market}")
 def get_kline_batch(market: str, days: int = Query(default=20, le=60)):
-    """批量获取关注列表 K 线 (迷你图用)"""
+    """从数据库批量获取关注列表 K 线。"""
     market = market.upper()
     if market not in ("HK", "US"):
         return {"market": market, "data": {}, "error": "仅支持 HK / US"}
     watchlist = DEFAULT_WATCHLIST.get(market, [])
-    range_str = "1mo" if days <= 30 else "3mo"
-    result = {}
-    for stock in watchlist:
-        yahoo_sym = _to_yahoo_symbol(market, stock["code"])
-        klines = _yahoo_fetch(yahoo_sym, range_str=range_str) or []
-        result[stock["code"]] = [
-            {"d": k.get("date", ""), "c": k.get("close"), "v": k.get("volume", 0)}
-            for k in klines[-days:]
+    bars_map = _read_database_bars(market, [item["code"] for item in watchlist], days)
+    result = {
+        stock["code"]: [
+            {"d": item.get("date", ""), "c": item.get("close"), "v": item.get("volume", 0)}
+            for item in bars_map.get(_normalize_db_symbol(market, stock["code"]), [])
         ]
-    return {"market": market, "data": result, "days": days, "updated_at": datetime.now().strftime("%Y/%m/%d %H:%M:%S")}
+        for stock in watchlist
+    }
+    status, data_as_of, detail = _database_freshness(market, bars_map)
+    return {
+        "market": market, "data": result, "days": days,
+        "updated_at": data_as_of, "data_as_of": data_as_of,
+        "source": "database", "status": status, "detail": detail,
+    }
 
 
 # ─── 真实基本面（腾讯 gtimg 行情，覆盖估算） ─────────────────────────────────
@@ -602,6 +766,15 @@ def _gt_num(arr, idx):
         return None
 
 
+def _em_num(value):
+    try:
+        if value in (None, "", "-", "--"):
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _parse_fundamentals(market: str, arr) -> dict:
     if not arr or len(arr) < 50:
         return {}
@@ -646,25 +819,51 @@ def _fetch_fundamentals(market: str) -> dict:
 
 @router.get("/fundamentals/{market}")
 def get_fundamentals(market: str, raw: bool = Query(default=False)):
-    """真实基本面（腾讯 gtimg）：PE/PB/股息率/市值/52周估值分位。
-    real 字段为真实值，前端用它覆盖估算；estimated=true 表示未取到真实值。"""
+    """读取数据库中的港美股基础资料；缺字段明确保留为空。"""
     market = market.upper()
     if market not in ("HK", "US"):
         return {"market": market, "error": "仅支持 HK / US"}
-    cache_key = f"fund:{market}"
-    now = time.time()
-    if cache_key in _GT_CACHE:
-        ts, data = _GT_CACHE[cache_key]
-        if now - ts < _GT_CACHE_TTL:
-            return {"market": market, "items": data, "updated_at": datetime.now().strftime("%Y/%m/%d %H:%M:%S"),
-                    "source": "gtimg", "cached": True}
-    data = _fetch_fundamentals(market)
-    _GT_CACHE[cache_key] = (now, data)
-    out = {"market": market, "items": data, "updated_at": datetime.now().strftime("%Y/%m/%d %H:%M:%S"),
-           "source": "gtimg"}
-    if raw:
-        out["raw"] = {code: _gtimg_fetch(_to_gtimg(market, code)) for code in data}
-    return out
+    from db.session import get_db_session
+    from market_quant.repository import MarketInstrument
+
+    watchlist = DEFAULT_WATCHLIST.get(market, [])
+    symbols = [_normalize_db_symbol(market, item["code"]) for item in watchlist]
+    with get_db_session() as db:
+        rows = db.query(MarketInstrument).filter(
+            MarketInstrument.market == market,
+            MarketInstrument.symbol.in_(symbols),
+        ).all()
+    row_map = {str(row.symbol): row for row in rows}
+    items = {}
+    updated_values = []
+    for item in watchlist:
+        symbol = _normalize_db_symbol(market, item["code"])
+        row = row_map.get(symbol)
+        real = {}
+        if row is not None and row.market_cap is not None:
+            real["marketCap"] = float(row.market_cap)
+        data_as_of = row.data_updated_at.isoformat() if row and row.data_updated_at else None
+        if data_as_of:
+            updated_values.append(data_as_of)
+        payload = {
+            "code": item["code"], "name": item["name"], "real": real,
+            "source": "database", "upstream_source": row.source if row else None,
+            "estimated": False, "status": "PARTIAL" if row else "MISSING",
+            "data_as_of": data_as_of,
+        }
+        if raw:
+            payload["raw"] = {
+                "sector": row.sector if row else None,
+                "industry": row.industry if row else None,
+                "currency": row.currency if row else None,
+            }
+        items[item["code"]] = payload
+    return {
+        "market": market, "items": items,
+        "updated_at": max(updated_values) if updated_values else None,
+        "source": "database", "status": "PARTIAL" if rows else "MISSING",
+        "detail": "数据库当前仅有市值/行业等基础字段；PE、PB、股息率缺失时不做估算",
+    }
 
 
 # ─── 南向资金（Eastmoney 港股通） ──────────────────────────────────────────────
@@ -719,16 +918,42 @@ def _fetch_southbound() -> dict:
 
 @router.get("/southbound")
 def get_southbound(raw: bool = Query(default=False)):
-    """港股通南向资金（Eastmoney）。聚合真实；个股持股变化尽力获取。"""
-    cache_key = "southbound"
-    now = time.time()
-    if cache_key in _SB_CACHE:
-        ts, data = _SB_CACHE[cache_key]
-        if now - ts < _SB_CACHE_TTL:
-            data = {**data, "cached": True}
-            return data
-    data = _fetch_southbound()
-    _SB_CACHE[cache_key] = (now, data)
+    """从 north_money_flow 表读取南向资金；GET 不触发东财请求。"""
+    from sqlalchemy import text
+    from db.connection import engine
+    with engine.connect() as conn:
+        rows = conn.execute(text("""
+            SELECT trade_date, south_money
+            FROM north_money_flow
+            WHERE south_money IS NOT NULL
+            ORDER BY trade_date DESC
+            LIMIT 20
+        """)).fetchall()
+    if not rows:
+        return {
+            "totalNet20d": None, "latestNet": None, "latestDate": None,
+            "byStock": {}, "source": "database", "status": "MISSING",
+            "detail": "数据库暂无南向资金",
+        }
+    # Tushare moneyflow_hsgt 入库单位为万元，接口沿用前端的亿元口径。
+    values = [float(row.south_money or 0) / 10000 for row in rows]
+    latest_date = rows[0].trade_date
+    try:
+        from market_quant.calendar import latest_completed_session
+        expected = latest_completed_session("HK")
+    except Exception:
+        expected = None
+    status = "STALE" if expected and latest_date < expected else "READY"
+    result = {
+        "totalNet20d": round(sum(values), 2),
+        "latestNet": round(values[0], 2),
+        "latestDate": latest_date.isoformat(),
+        "byStock": {},
+        "source": "database",
+        "upstream_source": "tushare_moneyflow_hsgt",
+        "status": status,
+        "detail": None if status == "READY" else f"数据库最新 {latest_date.isoformat()}，等待自动补采",
+    }
     if raw:
-        data = {**data, "raw_note": "见服务端日志/调试"}
-    return data
+        result["unit"] = "亿元"
+    return result

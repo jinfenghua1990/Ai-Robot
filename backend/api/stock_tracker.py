@@ -23,11 +23,57 @@ class UpdateNoteRequest(BaseModel):
     note: str
 
 
+def _summarize_returns(values: list[float]) -> dict:
+    """汇总跟踪样本收益，不把没有仓位信息的样本表现伪装成账户收益。"""
+    normalized = [float(value) for value in values if value is not None]
+    count = len(normalized)
+    positive = sum(value > 0 for value in normalized)
+    negative = sum(value < 0 for value in normalized)
+    return {
+        "count": count,
+        "positive_count": positive,
+        "negative_count": negative,
+        "flat_count": count - positive - negative,
+        "average_return_pct": round(sum(normalized) / count, 2) if count else None,
+        "win_rate_pct": round(positive / count * 100, 2) if count else None,
+    }
+
+
+def _tracker_return_pct(db, tracker: StockTracker, *, use_latest_kline: bool) -> float:
+    """按页面既有口径取得一条跟踪记录的累计收益。
+
+    跟踪表没有仓位和成交金额，因此这里只返回入选价到当前/退出价的股票收益率。
+    """
+    entry_price = float(tracker.entry_price or 0)
+    if entry_price <= 0:
+        return 0.0
+
+    current_price = entry_price
+    if use_latest_kline:
+        latest_kline = db.query(StockDailyKline.close)\
+            .filter(StockDailyKline.ts_code.like(f"{tracker.stock_code}%"))\
+            .order_by(StockDailyKline.trade_date.desc())\
+            .first()
+        if latest_kline and latest_kline.close is not None:
+            current_price = float(latest_kline.close)
+    else:
+        last_daily = db.query(StockTrackerDaily.close_price)\
+            .filter(StockTrackerDaily.tracker_id == tracker.id)\
+            .order_by(StockTrackerDaily.trade_date.desc())\
+            .first()
+        if last_daily and last_daily.close_price is not None:
+            current_price = float(last_daily.close_price)
+
+    return round((current_price - entry_price) / entry_price * 100, 2)
+
+
 @router.get("/api/stock-tracker")
 def list_tracked():
     """列出所有跟踪中的股票及累计收益"""
     with get_db_session() as db:
-        rows = db.query(StockTracker).filter(StockTracker.active == True).order_by(StockTracker.created_at.desc()).all()
+        rows = db.query(StockTracker).filter(StockTracker.active == True).order_by(
+            StockTracker.entry_date.desc(), StockTracker.updated_at.desc()
+        ).all()
         result = []
         today = date.today()
         for r in rows:
@@ -76,13 +122,13 @@ def list_tracked():
                         daily_chg=float(k.pct_chg) if k.pct_chg else 0,
                     ))
             daily_list = [{
-                "day_n": i + 1,
+                "day_n": d.day_n,
                 "trade_date": d.trade_date.isoformat(),
                 "close_price": float(d.close_price),
                 "pct_chg": float(d.pct_chg),
                 "daily_chg": float(d.daily_chg) if d.daily_chg else 0,
                 "reason": d.reason or "",
-            } for i, d in enumerate(sorted(daily_rows, key=lambda x: x.trade_date)) if i < 30]
+            } for d in sorted(daily_rows, key=lambda x: x.day_n) if d.day_n <= 30]
 
             result.append({
                 "id": r.id,
@@ -99,6 +145,22 @@ def list_tracked():
                 "daily": daily_list,
             })
         return result
+
+
+@router.get("/api/stock-tracker/summary")
+def tracker_summary():
+    """返回跟踪池总体样本表现。"""
+    with get_db_session() as db:
+        active_rows = db.query(StockTracker).filter(StockTracker.active == True).all()
+        exited_rows = db.query(StockTracker).filter(StockTracker.active == False).all()
+        active_returns = [_tracker_return_pct(db, row, use_latest_kline=True) for row in active_rows]
+        exited_returns = [_tracker_return_pct(db, row, use_latest_kline=False) for row in exited_rows]
+        return {
+            "definition": "按每只股票等权，计算入选价到当前价或最后记录退出价的累计收益平均值；不含仓位、手续费和滑点，不代表实盘账户收益。",
+            "overall": _summarize_returns(active_returns + exited_returns),
+            "active": _summarize_returns(active_returns),
+            "exited": _summarize_returns(exited_returns),
+        }
 
 
 @router.post("/api/stock-tracker")
@@ -120,6 +182,10 @@ def add_stock(req: AddStockRequest):
         # 检查是否有已删除的同代码记录，有则复用（避免唯一约束冲突）
         old = db.query(StockTracker).filter(StockTracker.stock_code == req.stock_code, StockTracker.active == False).first()
         if old:
+            # 同一标的重新跟踪时，旧周期日线不能混入新的入选价和 D1-D30 矩阵。
+            db.query(StockTrackerDaily).filter(StockTrackerDaily.tracker_id == old.id).delete(
+                synchronize_session=False
+            )
             old.active = True
             old.entry_date = latest.trade_date
             old.entry_price = latest.close
@@ -206,13 +272,13 @@ def get_daily(tracker_id: int):
                 ))
 
         result = [{
-            "day_n": i + 1,
+            "day_n": r.day_n,
             "trade_date": r.trade_date.isoformat(),
             "close_price": float(r.close_price),
             "pct_chg": float(r.pct_chg),
             "daily_chg": float(r.daily_chg) if r.daily_chg else 0,
             "reason": r.reason or "",
-        } for i, r in enumerate(sorted(daily_rows, key=lambda x: x.trade_date)) if i < 30]
+        } for r in sorted(daily_rows, key=lambda x: x.day_n) if r.day_n <= 30]
 
         return result
 
@@ -376,6 +442,45 @@ def list_exited():
             exit_date = r.updated_at.date().isoformat() if r.updated_at else None
             days = (r.updated_at.date() - r.entry_date).days if r.updated_at else None
 
+            # 历史已定格：返回 1-30 日 daily（按退出日补满 K 线），供前端用同一矩阵呈现
+            daily_rows = db.query(StockTrackerDaily)\
+                .filter(StockTrackerDaily.tracker_id == r.id)\
+                .order_by(StockTrackerDaily.day_n)\
+                .all()
+            latest_daily_date = daily_rows[-1].trade_date if daily_rows else r.entry_date
+            exit_d = r.updated_at.date() if r.updated_at else date.today()
+            if latest_daily_date < exit_d:
+                klines = db.query(StockDailyKline)\
+                    .filter(
+                        StockDailyKline.ts_code.like(f"{r.stock_code}%"),
+                        StockDailyKline.trade_date > latest_daily_date,
+                        StockDailyKline.trade_date <= exit_d,
+                    )\
+                    .order_by(StockDailyKline.trade_date)\
+                    .all()
+                existing_n = len(daily_rows)
+                for i, k in enumerate(klines):
+                    day_n = existing_n + i + 1
+                    if day_n > 30:
+                        break
+                    pct = round((float(k.close) - float(r.entry_price)) / float(r.entry_price) * 100, 2)
+                    daily_rows.append(StockTrackerDaily(
+                        tracker_id=r.id,
+                        trade_date=k.trade_date,
+                        day_n=day_n,
+                        close_price=k.close,
+                        pct_chg=pct,
+                        daily_chg=float(k.pct_chg) if k.pct_chg else 0,
+                    ))
+            daily_list = [{
+                "day_n": d.day_n,
+                "trade_date": d.trade_date.isoformat(),
+                "close_price": float(d.close_price),
+                "pct_chg": float(d.pct_chg),
+                "daily_chg": float(d.daily_chg) if d.daily_chg else 0,
+                "reason": d.reason or "",
+            } for d in sorted(daily_rows, key=lambda x: x.day_n) if d.day_n <= 30]
+
             out.append({
                 "id": r.id,
                 "stock_code": r.stock_code,
@@ -388,5 +493,6 @@ def list_exited():
                 "detail": detail,
                 "total_pct_chg": total_pct,
                 "days_held": days,
+                "daily": daily_list,
             })
         return out

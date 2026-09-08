@@ -4,7 +4,12 @@
 import { useMemo } from 'react';
 import { UP_COLOR, DOWN_COLOR } from '../../utils/colors';
 
+const EMPTY_HISTORY = [];
+
 export default function BacktestSummary({ backtest, loading }) {
+  const history = backtest?.history || EMPTY_HISTORY;
+  const sparkline = useMemo(() => buildSparkline(history), [history]);
+
   if (loading && !backtest) {
     return (
       <div className="rounded-lg border p-3" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
@@ -24,10 +29,7 @@ export default function BacktestSummary({ backtest, loading }) {
     );
   }
 
-  const { latest_run, history = [] } = backtest;
-
-  // 历史 5 次胜率/收益折线图（SVG）
-  const sparkline = useMemo(() => buildSparkline(history), [history]);
+  const { latest_run } = backtest;
 
   return (
     <div className="rounded-lg border p-3 space-y-2"

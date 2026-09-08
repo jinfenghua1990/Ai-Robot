@@ -67,7 +67,7 @@ function getDotColor(dot) {
 
 /* ─── Sub-components ──────────────────────────────────────────────── */
 
-function Header({ tradeDate, generatedAt, onRun, onRefresh, running, loading }) {
+function Header({ tradeDate, onRun, onRefresh, running, loading }) {
   return (
     <div style={{
       textAlign: 'center', padding: '40px 20px 30px',
@@ -594,7 +594,7 @@ export default function WaveAnalysisPage({ embedded = false } = {}) {
       } else {
         setError(data?.error || '加载失败');
       }
-    } catch (e) {
+    } catch {
       setError('网络错误');
     } finally {
       setLoading(false);

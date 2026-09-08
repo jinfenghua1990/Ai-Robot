@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LLM 网关与轮动</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <main class="page">
+    <header class="hero"><div><div class="eyebrow">LLM GATEWAY</div><h1>模型网关与轮动</h1><p>独立服务 · 统一管理模型渠道、备用策略与接口状态</p></div><span class="online"><i></i> 网关已配置</span></header>
+    <section class="stats"><article><small>当前渠道</small><strong>主网关</strong></article><article><small>备用渠道</small><strong>1 个</strong></article><article><small>轮动策略</small><strong>故障切换</strong></article><article><small>密钥状态</small><strong>已配置</strong></article></section>
+    <section class="panel"><div class="panel-head"><h2>渠道轮动队列</h2><button>测试全部渠道</button></div><div class="table"><div class="row head"><span>渠道</span><span>用途</span><span>状态</span><span>模型</span><span></span></div><div class="row"><b>主网关</b><span>当前使用</span><em>已配置</em><span>当前模型</span><button>测试</button></div><div class="row"><b>备用渠道 01</b><span>故障切换</span><em class="blue">已配置</em><span>Fallback 模型</span><button>测试</button></div><div class="row"><b>备用渠道 02</b><span>故障切换</span><em class="muted">未启用</em><span>—</span><button>测试</button></div></div></section>
+    <section class="panel"><h2>服务端配置摘要</h2><div class="summary"><div><small>API Key</small><code>••••••••••••••••</code></div><div><small>Base URL</small><span>已隐藏</span></div><div><small>Model</small><span>服务端已配置</span></div></div></section>
+    <footer>独立 LLM 服务 · 不读取交易系统页面路由 · 后续接口从这里接入</footer>
+  </main>
+</body>
+</html>

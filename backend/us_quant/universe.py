@@ -23,6 +23,7 @@ from typing import Optional
 
 from db.session import get_db_session
 from sqlalchemy import func, and_, or_, not_
+from sqlalchemy.exc import IntegrityError
 
 from us_quant.repository import (
     USInstrument, USUniverseMembership, USUniverseRebalanceRun,
@@ -81,6 +82,7 @@ UNIVERSE_CODES = {
     "RESEARCH_DYNAMIC": "动态研究池",
     "CORE_A_300": "核心A池",
     "CORE_B_500": "核心B池",
+    "US_WATCHLIST": "盈立自选",
 }
 
 # ─── ETF 列表（大盘 + 行业 + 风险观察）────────────────────────────────────
@@ -669,6 +671,16 @@ def get_pool_stats() -> dict:
                 USUniverseMembership.universe_code == code,
                 USUniverseMembership.effective_to.is_(None),
             ).scalar() or 0
+            if code == "SEED_CORE_179":
+                cnt = db.query(func.count(USInstrument.id)).filter(
+                    USInstrument.is_active == True,
+                    USInstrument.universe_source == "seed_179",
+                ).scalar() or 0
+            elif code == "MARKET_ETF":
+                cnt = db.query(func.count(USInstrument.id)).filter(
+                    USInstrument.is_active == True,
+                    USInstrument.universe_source == "seed_etf",
+                ).scalar() or 0
         stats[code] = {"name": name, "count": cnt}
 
     # 研究池数量
@@ -697,20 +709,46 @@ _UNIVERSE_ALIASES = {
 
 UNIVERSE_DEFINITIONS = {
     "CORE_A_300": {"name": "核心A池", "target_count": CORE_A_CONFIG["target_count"],
-                   "description": "市值/流动性排名 Top 300，美股量化主扫描池"},
+                   "description": "市值/流动性排名 Top 300，美股量化主扫描池",
+                   "db_code": "CORE_A_300", "rebalance_frequency": "monthly",
+                   "tier": "A", "rules": CORE_A_CONFIG},
     "CORE_B_500": {"name": "核心B池", "target_count": CORE_B_CONFIG["target_count"],
-                   "description": "市值/流动性排名 301-800"},
+                   "description": "市值/流动性排名 301-800",
+                   "db_code": "CORE_B_500", "rebalance_frequency": "monthly",
+                   "tier": "B", "rules": CORE_B_CONFIG},
     "RESEARCH_DYNAMIC": {"name": "动态研究池", "target_count": None,
-                         "description": "东财全量美股经硬门槛筛选的研究池"},
-    "MARKET_ETF": {"name": "市场与行业ETF", "target_count": None, "description": "大盘+行业+风险观察 ETF"},
-    "SEED_CORE_179": {"name": "179只初始化种子", "target_count": 179, "description": "文档附录 B 种子股"},
+                         "description": "东财全量美股经硬门槛筛选的研究池",
+                         "db_code": "RESEARCH_DYNAMIC", "rebalance_frequency": "daily",
+                         "tier": "RESEARCH", "rules": RESEARCH_CONFIG},
+    "MARKET_ETF": {"name": "市场与行业ETF", "target_count": None, "description": "大盘+行业+风险观察 ETF",
+                   "db_code": "MARKET_ETF", "rebalance_frequency": "monthly",
+                   "tier": "ETF", "rules": {}},
+    "SEED_CORE_179": {"name": "179只初始化种子", "target_count": 179, "description": "文档附录 B 种子股",
+                      "db_code": "SEED_CORE_179", "rebalance_frequency": "manual",
+                      "tier": "SEED", "rules": {}},
+    "US_WATCHLIST": {"name": "盈立自选", "target_count": None,
+                      "description": "盈立客户端自选股（美股），定时自动同步",
+                      "db_code": "US_WATCHLIST", "rebalance_frequency": "daily",
+                      "tier": "WATCH", "rules": {}},
     # 简写别名（与规范码同义）
-    "US_CORE_A": {"name": "核心A池", "target_count": CORE_A_CONFIG["target_count"]},
-    "CORE_A": {"name": "核心A池", "target_count": CORE_A_CONFIG["target_count"]},
-    "US_CORE_B": {"name": "核心B池", "target_count": CORE_B_CONFIG["target_count"]},
-    "CORE_B": {"name": "核心B池", "target_count": CORE_B_CONFIG["target_count"]},
-    "US_RESEARCH": {"name": "动态研究池", "target_count": None},
-    "RESEARCH": {"name": "动态研究池", "target_count": None},
+    "US_CORE_A": {"name": "核心A池", "target_count": CORE_A_CONFIG["target_count"],
+                  "db_code": "CORE_A_300", "rebalance_frequency": "monthly",
+                  "tier": "A", "rules": CORE_A_CONFIG},
+    "CORE_A": {"name": "核心A池", "target_count": CORE_A_CONFIG["target_count"],
+               "db_code": "CORE_A_300", "rebalance_frequency": "monthly",
+               "tier": "A", "rules": CORE_A_CONFIG},
+    "US_CORE_B": {"name": "核心B池", "target_count": CORE_B_CONFIG["target_count"],
+                  "db_code": "CORE_B_500", "rebalance_frequency": "monthly",
+                  "tier": "B", "rules": CORE_B_CONFIG},
+    "CORE_B": {"name": "核心B池", "target_count": CORE_B_CONFIG["target_count"],
+               "db_code": "CORE_B_500", "rebalance_frequency": "monthly",
+               "tier": "B", "rules": CORE_B_CONFIG},
+    "US_RESEARCH": {"name": "动态研究池", "target_count": None,
+                    "db_code": "RESEARCH_DYNAMIC", "rebalance_frequency": "daily",
+                    "tier": "RESEARCH", "rules": RESEARCH_CONFIG},
+    "RESEARCH": {"name": "动态研究池", "target_count": None,
+                 "db_code": "RESEARCH_DYNAMIC", "rebalance_frequency": "daily",
+                 "tier": "RESEARCH", "rules": RESEARCH_CONFIG},
 }
 
 
@@ -733,6 +771,104 @@ def get_universe_members(code: str) -> list[str]:
     except Exception as e:
         logger.warning("[universe] get_universe_members(%s) 失败: %s", code, e)
         return []
+
+
+def remove_universe_member(universe_code: str, symbol: str) -> int:
+    """将某 symbol 从股票池移除（软删除：置 effective_to 结束当前有效记录）。
+
+    用于前端自选清单的「移除」操作。返回受影响行数。
+    注意：若后续触发 uSMART 同步，被移除项可能再次被同步回来（与 A 股自选股行为一致）。
+    """
+    uc = _resolve_universe_code(universe_code)
+    sym = (symbol or "").strip().upper()
+    if not sym:
+        return 0
+    now = _now()
+    try:
+        with get_db_session() as db:
+            n = db.query(USUniverseMembership).filter(
+                USUniverseMembership.universe_code == uc,
+                USUniverseMembership.symbol == sym,
+                USUniverseMembership.effective_to.is_(None),
+            ).update(
+                {"effective_to": now, "exclusion_reason": "manual_remove"},
+                synchronize_session=False,
+            )
+            db.commit()
+            if n:
+                logger.info("[universe] 移除 %s 的 %s 成员 %d 条", uc, sym, n)
+            return n
+    except Exception as e:
+        logger.warning("[universe] remove_universe_member(%s,%s) 失败: %s", uc, sym, e)
+        return 0
+
+
+def normalize_symbol(symbol: str, market: str = "US") -> str:
+    """归一化自选股代码：美股转大写；港股去后缀并补零为 5 位（与 market_instruments 对齐）。"""
+    s = (symbol or "").strip()
+    if market == "HK":
+        digits = "".join(ch for ch in s if ch.isdigit())
+        return digits.zfill(5) if digits else s.upper()
+    return s.upper()
+
+
+def add_universe_member(universe_code: str, symbol: str, market: str = "US") -> dict:
+    """向股票池新增一只自选股（手动添加，幂等）。
+
+    已存在有效记录则直接返回该记录（不重复插入）。返回 {ok, symbol, universe_code, id, existed}。
+    HK 代码会归一化为 5 位数字（如 700 / 00700.HK → 00700），与 market_instruments 对齐。
+    """
+    uc = _resolve_universe_code(universe_code)
+    sym = normalize_symbol(symbol, market)
+    if not sym:
+        return {"ok": False, "error": "symbol required", "universe_code": uc, "symbol": sym}
+    now = _now()
+    try:
+        with get_db_session() as db:
+            # 幂等：已有有效记录则跳过
+            existing = db.query(USUniverseMembership).filter(
+                USUniverseMembership.universe_code == uc,
+                USUniverseMembership.symbol == sym,
+                USUniverseMembership.effective_to.is_(None),
+            ).first()
+            if existing:
+                return {"ok": True, "existed": True, "id": existing.id, "universe_code": uc, "symbol": sym}
+
+            # 计算下一个 rank
+            max_rank = db.query(func.max(USUniverseMembership.rank)).filter(
+                USUniverseMembership.universe_code == uc,
+            ).scalar() or 0
+
+            rec = USUniverseMembership(
+                symbol=sym,
+                universe_code=uc,
+                tier="WATCH",
+                rank=(max_rank + 1),
+                effective_from=now,
+                effective_to=None,
+                inclusion_reason="manual_add",
+                source="manual_add",
+                config_version=CONFIG_VERSION,
+            )
+            db.add(rec)
+            db.commit()
+            db.refresh(rec)
+            logger.info("[universe] 新增 %s 的 %s 成员 (id=%s)", uc, sym, rec.id)
+            return {"ok": True, "existed": False, "id": rec.id, "universe_code": uc, "symbol": sym}
+    except IntegrityError:
+        # 部分唯一索引负责最终并发保护；另一请求已插入时仍保持幂等语义。
+        with get_db_session() as db:
+            existing = db.query(USUniverseMembership).filter(
+                USUniverseMembership.universe_code == uc,
+                USUniverseMembership.symbol == sym,
+                USUniverseMembership.effective_to.is_(None),
+            ).first()
+            if existing:
+                return {"ok": True, "existed": True, "id": existing.id, "universe_code": uc, "symbol": sym}
+        return {"ok": False, "error": "concurrent insert failed", "universe_code": uc, "symbol": sym}
+    except Exception as e:
+        logger.warning("[universe] add_universe_member(%s,%s) 失败: %s", uc, sym, e)
+        return {"ok": False, "error": str(e), "universe_code": uc, "symbol": sym}
 
 
 def uniques_for_scanner(codes: list[str]) -> list[str]:
@@ -763,11 +899,23 @@ def list_universes() -> list[dict]:
     for uc in UNIVERSE_CODES:
         members = get_universe_members(uc)
         defn = UNIVERSE_DEFINITIONS.get(uc, {})
+        # 种子股和 ETF 是 USInstrument 的基础池，不要求额外生成
+        # membership 记录；统计必须与实际候选库口径一致。
+        if uc in ("SEED_CORE_179", "MARKET_ETF", "RESEARCH_DYNAMIC"):
+            with get_db_session() as db:
+                query = db.query(func.count(USInstrument.id)).filter(USInstrument.is_active == True)
+                if uc == "SEED_CORE_179":
+                    query = query.filter(USInstrument.universe_source == "seed_179")
+                elif uc == "MARKET_ETF":
+                    query = query.filter(USInstrument.universe_source == "seed_etf")
+                count = query.scalar() or 0
+        else:
+            count = len(members)
         result.append({
             "code": uc,
             "name": defn.get("name", UNIVERSE_CODES[uc]),
             "target": defn.get("target_count"),
-            "count": len(members),
+            "count": count,
             "description": defn.get("description", ""),
         })
     return result

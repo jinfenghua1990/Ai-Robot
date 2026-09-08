@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from typing import List
 
 from api.bs_signals import _fetch_kline
-from db.connection import get_db
+from db.session import get_db_session
 from db.models import StockFlow
 from .engine import _backtest_single, _calc_stats
 

@@ -61,7 +61,7 @@ export default function ResearchCenterPage() {
         setNotifs(notifRes.data.notifications || []);
         setUnread(notifRes.data.unread_count || 0);
       }
-    } catch (e) { /* 静默 */ }
+    } catch { /* 静默 */ }
     setLoading(false);
   }, []);
 
@@ -112,6 +112,8 @@ export default function ResearchCenterPage() {
     const f = r.financials || {};
     const mf = r.money_flow?.today || {};
     const t = r.technical || {};
+    const rsi = Number(t.rsi);
+    const hasRsi = Number.isFinite(rsi);
     return (
       <div className={`premium-card magnetic p-3 cursor-pointer fade-in-${idx < 3 ? idx + 1 : 1}`}
         onClick={() => navigate(`/report/${r.id}`)}>
@@ -142,8 +144,8 @@ export default function ResearchCenterPage() {
         <div className="mt-2 grid grid-cols-3 gap-1.5">
           <MiniStat label="PE" value={f.pe != null ? `${f.pe}x` : '—'} color="var(--accent-amber)" />
           <MiniStat label="主力净流入" value={mf.main_net || '—'} color={flowColor(mf.main_net)} />
-          <MiniStat label="RSI" value={t.rsi != null ? t.rsi.toFixed(0) : '—'}
-            color={t.rsi > 70 ? 'var(--flow-up)' : t.rsi < 30 ? 'var(--flow-down)' : 'var(--accent-amber)'} />
+          <MiniStat label="RSI" value={hasRsi ? rsi.toFixed(0) : '—'}
+            color={hasRsi && rsi > 70 ? 'var(--flow-up)' : hasRsi && rsi < 30 ? 'var(--flow-down)' : 'var(--accent-amber)'} />
         </div>
       </div>
     );

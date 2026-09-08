@@ -3,9 +3,10 @@ import TradeModal from './TradeModal';
 import StockActionModal from './StockActionModal';
 import TrackButton from './TrackButton';
 import KLineModal from './KLineModal';
-import { useTrading } from '../../context/TradingContext';
+import { useTrading } from '../../context/tradingContextCore';
 import { useNavigate } from 'react-router-dom';
 import { apiFetch } from '../../utils/request';
+import { openStockAnalysis } from '../../utils/openStockAnalysis';
 
 // 自动交易状态：默认关闭，未来从后端 /api/stock-dashboard/{code}.auto_trade 读取
 // 当前为前端只读展示，点击跳转详情页策略模块配置
@@ -42,6 +43,8 @@ export default function StockActionButtons({
   onRefresh,
   onRemove,
   onAnalyze,
+  removeLabel,
+  removeConfirmText,
 }) {
   const { executeTrade } = useTrading();
   const [tradeType, setTradeType] = useState(null);
@@ -86,13 +89,13 @@ export default function StockActionButtons({
   const isInline = layout === 'inline' || layout === 'both';
   const isGrid = layout === 'grid';
 
-  const verticalBtnClass = 'px-1.5 py-0.5 rounded text-[10px] font-bold text-center whitespace-nowrap h-7 inline-flex items-center justify-center';
+  const verticalBtnClass = 'px-1.5 py-0.5 rounded text-[10px] font-bold text-center whitespace-nowrap h-7 inline-flex items-center justify-center hover:brightness-110 transition';
   // inline 模式下也显示「K线BS / 🔍分析」（原本仅 vertical 显示）
   // 使用与 inline 主按钮一致的尺寸类，保证一排内高度对齐
   // grid 模式下追加 w-full，让按钮撑满单元格、彼此分隔
-  const inlineTagClass = `${sizeClass} rounded font-bold whitespace-nowrap inline-flex items-center justify-center${isGrid ? ' w-full' : ''}`;
+  const inlineTagClass = `${sizeClass} rounded font-bold whitespace-nowrap inline-flex items-center justify-center hover:brightness-110 transition${isGrid ? ' w-full' : ''}`;
   // 普通主按钮（买/卖/自选/新浪/操）在 grid 模式下也撑满单元格
-  const mainBtnClass = (extra) => `${sizeClass} rounded font-medium inline-flex items-center justify-center${extra ? ' ' + extra : ''}${isGrid ? ' w-full' : ''}`;
+  const mainBtnClass = (extra) => `${sizeClass} rounded font-medium inline-flex items-center justify-center hover:brightness-110 transition${extra ? ' ' + extra : ''}${isGrid ? ' w-full' : ''}`;
 
   return (
     <>
@@ -102,15 +105,17 @@ export default function StockActionButtons({
             onClick={(e) => { e.stopPropagation(); setKlineOpen(true); }}
             className={isInline ? inlineTagClass : verticalBtnClass}
             style={{ background: 'rgba(59,130,246,0.1)', color: '#3b82f6', border: '1px solid rgba(59,130,246,0.3)' }}
+            title="BS 信号 K 线图"
           >
             K线BS
           </button>
         )}
         {showAnalysis && (
           <button
-            onClick={(e) => { e.stopPropagation(); onAnalyze ? onAnalyze(stockCode) : navigate(`/stock/${stockCode}`); }}
+            onClick={(e) => { e.stopPropagation(); openStockAnalysis(stockCode, /^[A-Za-z]/.test(String(stockCode)) ? 'us' : 'a'); }}
             className={isInline ? inlineTagClass : verticalBtnClass}
             style={{ background: 'rgba(168,85,247,0.12)', color: '#a855f7', border: '1px solid rgba(168,85,247,0.3)' }}
+            title="个股深度分析"
           >
             🔍分析
           </button>
@@ -203,6 +208,8 @@ export default function StockActionButtons({
           onClose={() => setMoreOpen(false)}
           onRemove={onRemove}
           onRefresh={onRefresh}
+          removeLabel={removeLabel}
+          removeConfirmText={removeConfirmText}
         />
       )}
 

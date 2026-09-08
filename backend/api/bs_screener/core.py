@@ -5,11 +5,11 @@ from datetime import datetime
 from sqlalchemy import func as sql_func
 
 from db.models import StockFlow
-from api.bs_signals import _fetch_kline, _generate_bs_signals, _calc_ma
+from api.bs_signals import _fetch_kline, _generate_bs_signals
+from services.indicators import calc_ma, calc_rsi
 from analyzers.strategy_engine import _find_sector_for_stock, _get_sector_trend
 import logging
-from utils.http_constants import SINA_HEADERS_SHORT
-from api.watchlist._shared import _get_http_client
+from api.watchlist._shared import get_quote as _database_quote
 logger = logging.getLogger(__name__)
 
 # 结果缓存（避免重复扫描）
@@ -36,30 +36,8 @@ async def _fetch_kline_cached(code: str, datalen: int = 80):
 
 
 async def _get_quote(code: str):
-    """获取新浪实时行情"""
-    sina_code = f'sh{code}' if code[0] in ('6', '9') else f'sz{code}'
-    url = f"https://hq.sinajs.cn/list={sina_code}"
-    try:
-        client = _get_http_client()
-        resp = await client.get(url, headers=SINA_HEADERS_SHORT)
-        resp.encoding = 'gbk'
-        text = resp.text
-        parts = text.split('"')[1].split(',')
-        if len(parts) < 10:
-            return None
-        # 新浪格式: name, 今开盘, 昨收盘, 当前价, ...
-        yesterday_close = float(parts[2])
-        current_price = float(parts[3])
-        change = current_price - yesterday_close
-        change_pct = (change / yesterday_close * 100) if yesterday_close else 0
-        return {
-            'price': current_price,
-            'changePct': round(change_pct, 2),
-            'name': parts[0],
-        }
-    except Exception:
-        logger.debug(f"_get_quote failed", exc_info=True)
-        return None
+    """读取采集器已经写入数据库的最新行情。"""
+    return await _database_quote(code)
 
 
 async def _scan_single_stock(code: str, name: str, sector: str, period: int, multiplier: float, signal_type: str,
@@ -85,11 +63,12 @@ async def _scan_single_stock(code: str, name: str, sector: str, period: int, mul
 
         ma60 = None
         rsi_vals = None
-        if ma60_trend:
-            ma60 = _calc_ma(klines, 60)
-        if rsi_filter:
-            from api.bs_signals import _calc_rsi
-            rsi_vals = _calc_rsi(klines, 14)
+        if ma60_trend or rsi_filter:
+            _closes = [k['close'] for k in klines]
+            if ma60_trend:
+                ma60 = calc_ma(_closes, 60)
+            if rsi_filter:
+                rsi_vals = calc_rsi(_closes, 14)
 
         sig_idx = None
         for i, k in enumerate(klines):
@@ -228,7 +207,7 @@ async def _execute_bs_scan_core(
 
     for h in hits:
         ts_code = h['code']
-        ts_code_full = f"{ts_code}.SH" if ts_code[0] in ('6', '9') else f"{ts_code}.SZ"
+        ts_code_full = f"{ts_code}.SH" if ts_code[0] in ('5', '6', '9') else f"{ts_code}.SZ"
 
         stock_sector = _find_sector_for_stock(db, ts_code_full) or h['sector']
         sector_trend = _get_sector_trend(db, stock_sector, 7) if stock_sector else {"sector": "", "available": False}

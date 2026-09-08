@@ -6,19 +6,29 @@ pytdx 数据采集器
 - 涨停股识别
 """
 import sys, os, time, threading
+from collections import defaultdict
 from datetime import datetime, timedelta
 import logging
 from concurrent.futures import ThreadPoolExecutor
 import requests
+from sqlalchemy import text
 from utils.cache import BoundedDict
 
 
 logger = logging.getLogger(__name__)
+
+# 全量日线补采和手动/定时采集可能在相近时间触发。两者都先读后写
+# concept_sector_flow，若并行执行会穿透 ORM 的“已有记录”判断并触发唯一键冲突。
+# 该锁只保护本进程的概念板块写入段，不影响行情拉取或其他表。
+_CONCEPT_FLOW_WRITE_LOCK = threading.Lock()
 # 添加项目路径
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from db.connection import get_db
 from db.session import get_db_session
-from db.models import SectorFlow, StockFlow, LeaderLifecycle, ConceptSector, ConceptSectorFlow
+from db.models import (
+    SectorFlow, StockFlow, StockDailyKline, LeaderLifecycle,
+    ConceptSector, ConceptSectorFlow,
+)
 
 try:
     from pytdx.hq import TdxHq_API
@@ -54,6 +64,7 @@ _tushare_rate_lock = threading.Lock()
 _tushare_rate_timestamps = []  # 当前时间窗口内的调用时间戳
 TUSHARE_RATE_MAX = 250          # 每分钟最多 250 次（Tushare 配额 300/min，留 50 缓冲）
 TUSHARE_RATE_WINDOW = 60        # 窗口长度（秒）
+_TUSHARE_DISABLED_ENDPOINTS = set()
 
 def _tushare_rate_acquire():
     """令牌桶：确保任意 60s 窗口内不超过 TUSHARE_RATE_MAX 次调用。"""
@@ -73,12 +84,16 @@ def _tushare_rate_acquire():
 
 def call_tushare_mcp(api_name, params=None, fields=None):
     """调用 Tushare HTTP API（带全局令牌桶限流）"""
+    if api_name in _TUSHARE_DISABLED_ENDPOINTS:
+        logger.info('[tushare-api] %s 已确认无权限，本进程跳过调用', api_name)
+        return None
     _tushare_rate_acquire()  # 限流：确保不超 250 次/分钟
     from config import TUSHARE_TOKEN
     if not TUSHARE_TOKEN:
         logger.info('[tushare-api] No token configured')
         return None
-    url = 'http://api.tushare.pro'
+    # Token 属于凭据，必须通过 TLS 传输，不能使用明文 HTTP。
+    url = 'https://api.tushare.pro'
     payload = {
         'api_name': api_name,
         'token': TUSHARE_TOKEN,
@@ -95,13 +110,13 @@ def call_tushare_mcp(api_name, params=None, fields=None):
         if result.get('code') != 0:
             code = result.get('code')
             msg = result.get('msg', 'Unknown')
-            logger.error(f'[tushare-api] API error code {code}: {msg}')
-            if code == 40203:
-                # 频率超限：自动退避 65 秒，并清空令牌桶计数以避免连续失败
-                logger.warning('[tushare-api] 40203 频率超限，退避 65 秒并重置限流窗口...')
-                with _tushare_rate_lock:
-                    _tushare_rate_timestamps.clear()
-                time.sleep(65)
+            if code == 40203 and ('没有接口' in msg or '权限' in msg):
+                # 40203 同时用于频率与权限。明确无接口权限时不能退避后盲目重试；
+                # 本进程记住该端点，交给已有降级数据源。
+                _TUSHARE_DISABLED_ENDPOINTS.add(api_name)
+                logger.warning('[tushare-api] %s 无接口权限，已禁用本进程后续调用', api_name)
+            else:
+                logger.error(f'[tushare-api] API error code {code}: {msg}')
             return None
         if result.get('data') and result['data'].get('items'):
             data = result['data']
@@ -426,7 +441,7 @@ def _em_fetch_all(fs, fid='f62', po='1', fields='f12,f14,f62,f3,f66,f72,f78,f84'
     优化：先串行取第1页得到 total，再用 ThreadPoolExecutor 并发拉取后续页。
     全市场 5000+ 只股票从串行 ~8-10s 降到 ~1.5-2.5s。
     """
-    url = 'http://push2.eastmoney.com/api/qt/clist/get'
+    url = 'https://push2.eastmoney.com/api/qt/clist/get'
     base_params = {
         'fid': fid, 'po': po, 'pz': '100',
         'fs': fs, 'fields': fields,
@@ -488,6 +503,19 @@ def _sina_fetch_sectors(fenlei=0):
     return all_items
 
 
+def _dedupe_concept_flows(flows):
+    """按概念名称去重，避免上游分页重复触发同日唯一键冲突。"""
+    unique = {}
+    for flow in flows:
+        name = str(flow.get('sector') or '').strip()
+        if not name or name in unique:
+            continue
+        normalized = dict(flow)
+        normalized['sector'] = name
+        unique[name] = normalized
+    return list(unique.values())
+
+
 def get_concept_sector_money_flow(trade_date):
     """
     获取概念板块资金流向数据（新浪财经 fenlei=1）
@@ -512,8 +540,14 @@ def get_concept_sector_money_flow(trade_date):
                 'rise_ratio': rise_ratio,
                 'avg_chg': rise_ratio,
             })
-        logger.info(f'[sina] Got {len(results)} concept sector flows from 新浪财经')
-        return results
+        unique_results = _dedupe_concept_flows(results)
+        if len(unique_results) != len(results):
+            logger.warning(
+                '[sina] Deduplicated concept sector flows: %s -> %s',
+                len(results), len(unique_results),
+            )
+        logger.info(f'[sina] Got {len(unique_results)} concept sector flows from 新浪财经')
+        return unique_results
     except Exception as e:
         logger.error(f'[sina] concept sector error: {e}')
         return []
@@ -590,19 +624,29 @@ def _get_sector_money_flow_tushare(trade_date):
     if df is None:
         return []
     try:
-        if 'industry' not in df.columns:
-            return []
-        df_valid = df[df['industry'].notna() & (df['industry'] != '')]
+        # stock_basic.industry 是旧兼容字段，不能作为新的行业标准；
+        # 这里按有效日从 SW2021 归属表补齐 L2 名称后再聚合。
+        target_date = (
+            trade_date.date() if isinstance(trade_date, datetime)
+            else trade_date if hasattr(trade_date, 'year') and not isinstance(trade_date, str)
+            else datetime.strptime(str(trade_date).replace('-', ''), '%Y%m%d').date()
+        )
+        from industry_stage.registry import load_sector_map
+        with get_db_session() as db:
+            sector_map = load_sector_map(db, as_of=target_date, level='L2')
+        df = df.copy()
+        df['sw_sector'] = df['ts_code'].map(sector_map)
+        df_valid = df[df['sw_sector'].notna() & (df['sw_sector'] != '')]
         if df_valid.empty:
             return []
         agg_dict = {'net_mf_amount': 'sum', 'buy_elg_amount': 'sum', 'sell_elg_amount': 'sum'}
         if 'pct_change' in df_valid.columns:
             agg_dict['pct_change'] = 'mean'
-        sector_group = df_valid.groupby('industry').agg(agg_dict).reset_index()
+        sector_group = df_valid.groupby('sw_sector').agg(agg_dict).reset_index()
         results = []
         for _, row in sector_group.iterrows():
             results.append({
-                'sector': row['industry'],
+                'sector': row['sw_sector'],
                 'net_flow': float(row['net_mf_amount'] or 0),
                 'money_inflow': float(row.get('buy_elg_amount', 0) or 0),
                 'money_outflow': float(row.get('sell_elg_amount', 0) or 0),
@@ -623,14 +667,22 @@ def get_stock_money_flow(trade_date):
     try:
         items, total = _em_fetch_all('m:0 t:6,m:0 t:80,m:1 t:2,m:1 t:23', fields='f12,f14,f62,f3,f66,f84,f2')  # 沪深A股, f2=最新价
 
-        # 从数据库最近的 StockFlow 记录获取股票→行业映射
+        # 股票行业归属统一从 SW2021 有效期映射读取；旧 StockFlow 仅作为
+        # Tushare 分类同步尚未完成时的显式降级，不再作为正常来源。
         with get_db_session() as db:
             from sqlalchemy import func as sqlfunc
+            target_date = (
+                trade_date.date() if isinstance(trade_date, datetime)
+                else trade_date if hasattr(trade_date, 'year') and not isinstance(trade_date, str)
+                else datetime.strptime(str(trade_date).replace('-', ''), '%Y%m%d').date()
+            )
+            from industry_stage.registry import load_sector_map, normalize_ts_code
+            sw_sector_map = load_sector_map(db, as_of=target_date, level='L2')
             latest_date = db.query(sqlfunc.max(StockFlow.trade_date)).scalar()
             stock_map = {}
             if latest_date:
                 for sf in db.query(StockFlow).filter_by(trade_date=latest_date).all():
-                    code = sf.ts_code.replace('.SZ', '').replace('.SH', '')
+                    code = sf.ts_code.replace('.SZ', '').replace('.SH', '').replace('.BJ', '')
                     stock_map[code] = sf.sector or ''
 
         results = []
@@ -640,11 +692,13 @@ def get_stock_money_flow(trade_date):
             if not code:
                 continue
             # 转换为 Tushare 格式代码
-            if code.startswith(('6', '9')):
+            if code.startswith(('4', '8', '92', '83', '87', '88')):
+                ts_code = f'{code}.BJ'
+            elif code.startswith(('5', '6', '9')):
                 ts_code = f'{code}.SH'
             else:
                 ts_code = f'{code}.SZ'
-            industry = stock_map.get(code, '')
+            industry = sw_sector_map.get(normalize_ts_code(ts_code)) or stock_map.get(code, '')
             # f62=主力净流入(元,=超大单+大单), f3=涨跌幅(需/100), f66=超大单, f84=小单, f2=最新价
             net_inflow = float(item.get('f62', 0) or 0) / 10000  # 元→万元
             main_flow = float(item.get('f62', 0) or 0) / 10000  # 主力净流入(同 f62)
@@ -686,6 +740,14 @@ def _get_stock_money_flow_tushare(trade_date):
     if df is None:
         return []
     try:
+        target_date = (
+            trade_date.date() if isinstance(trade_date, datetime)
+            else trade_date if hasattr(trade_date, 'year') and not isinstance(trade_date, str)
+            else datetime.strptime(str(trade_date).replace('-', ''), '%Y%m%d').date()
+        )
+        from industry_stage.registry import load_sector_map
+        with get_db_session() as db:
+            sector_map = load_sector_map(db, as_of=target_date, level='L2')
         results = []
         for _, row in df.iterrows():
             net_mf = float(row.get('net_mf_amount', 0) or 0)
@@ -698,7 +760,7 @@ def _get_stock_money_flow_tushare(trade_date):
             results.append({
                 'ts_code': row['ts_code'],
                 'name': row.get('name', '') or '',
-                'sector': row.get('industry', '') or '',
+                'sector': sector_map.get(str(row.get('ts_code') or '').strip()) or '',
                 'net_inflow': net_mf,  # 所有资金净流入额（万元）
                 'main_force_inflow': main_flow,  # 超大单净流入（万元）
                 'retail_flow': sm_flow,  # 小单净流入（万元）
@@ -740,6 +802,12 @@ def get_limit_up_stocks(trade_date):
                                         if bar['pre_close'] > 0:
                                             pct_change = (bar['close'] - bar['pre_close']) / bar['pre_close'] * 100
                                             if pct_change >= 9.8:
+                                                if code.startswith(('4', '8')):
+                                                    ts_code = f'{code}.BJ'
+                                                elif market == 1:
+                                                    ts_code = f'{code}.SH'
+                                                else:
+                                                    ts_code = f'{code}.SZ'
                                                 limit_ups.append(ts_code)
                                 except Exception as e:
                                     logger.debug(f'[tdx] 单股涨停判定失败 market={market} code={code}: {e}')
@@ -796,6 +864,212 @@ def get_limit_up_stocks(trade_date):
     return []
 
 
+def _build_stock_sector_aggregates(stock_rows, change_by_code, sector_map=None):
+    """用已入库个股资金流和日线生成 SW2021 L2 聚合，不填补缺失值。"""
+    groups = defaultdict(list)
+    incomplete = defaultdict(int)
+    for row in stock_rows:
+        sector = (sector_map or {}).get(row.ts_code) or str(row.sector or '').strip()
+        if not sector:
+            continue
+        groups.setdefault(sector, [])
+        net_flow = float(row.net_inflow) if row.net_inflow is not None else None
+        change_pct = change_by_code.get(row.ts_code)
+        if net_flow is None or change_pct is None:
+            incomplete[sector] += 1
+            continue
+        groups[sector].append({
+            'ts_code': row.ts_code,
+            'name': row.name,
+            'net_flow': net_flow,
+            'change_pct': float(change_pct),
+        })
+
+    aggregates = []
+    skipped = []
+    for sector, members in groups.items():
+        if incomplete.get(sector):
+            skipped.append(sector)
+            continue
+        net_flow = sum(member['net_flow'] for member in members)
+        changes = [member['change_pct'] for member in members]
+        leader = max(members, key=lambda member: member['change_pct'])
+        aggregates.append({
+            'sector': sector,
+            'money_inflow': sum(max(member['net_flow'], 0) for member in members),
+            'money_outflow': sum(max(-member['net_flow'], 0) for member in members),
+            'net_flow': net_flow,
+            'rise_ratio': sum(change > 0 for change in changes) / len(changes) * 100,
+            'avg_chg': sum(changes) / len(changes),
+            'limit_up_count': sum(change >= 9.8 for change in changes),
+            'leader_stock': leader['name'] or leader['ts_code'],
+            'leader_strength': leader['change_pct'],
+            'member_count': len(members),
+        })
+    return aggregates, sorted(skipped)
+
+
+def aggregate_stock_sector_flows(trade_date, force=False):
+    """把已入库个股数据按个股所属细行业聚合并持久化到 sector_flow。"""
+    if isinstance(trade_date, datetime):
+        target_date = trade_date.date()
+    elif hasattr(trade_date, 'year') and not isinstance(trade_date, str):
+        target_date = trade_date
+    else:
+        raw = str(trade_date or '').replace('-', '')
+        target_date = datetime.strptime(raw, '%Y%m%d').date()
+
+    with get_db_session() as db:
+        from industry_stage.registry import load_sector_map, normalize_ts_code
+        raw_sector_map = load_sector_map(db, as_of=target_date, level='L2')
+        sector_map = {
+            normalize_ts_code(ts_code): sector
+            for ts_code, sector in raw_sector_map.items()
+            if sector
+        }
+        stock_rows = db.query(StockFlow).filter(
+            StockFlow.trade_date == target_date,
+            StockFlow.sector.isnot(None),
+            StockFlow.sector != '',
+        ).all()
+        change_by_code = {
+            ts_code: float(change)
+            for ts_code, change in db.query(
+                StockDailyKline.ts_code, StockDailyKline.pct_chg,
+            ).filter(
+                StockDailyKline.trade_date == target_date,
+                StockDailyKline.pct_chg.isnot(None),
+            ).all()
+        }
+        canonical_rows = []
+        for row in stock_rows:
+            canonical = sector_map.get(normalize_ts_code(row.ts_code))
+            if canonical and row.sector != canonical:
+                # 兼容字段也保持 SW2021，后续所有旧 API 无需再猜测来源。
+                row.sector = canonical
+            canonical_rows.append(row)
+        aggregates, skipped = _build_stock_sector_aggregates(canonical_rows, change_by_code, sector_map)
+        if not aggregates:
+            return {
+                'status': 'INSUFFICIENT', 'source': 'database',
+                'data_as_of': target_date.isoformat(), 'written': 0,
+                'stock_rows': len(stock_rows), 'kline_rows': len(change_by_code),
+                'skipped_sectors': skipped,
+            }
+
+        existing = {
+            row.sector: row
+            for row in db.query(SectorFlow).filter(
+                SectorFlow.trade_date == target_date,
+                SectorFlow.sector.in_([item['sector'] for item in aggregates]),
+            ).all()
+        }
+        if not force and len(existing) == len(aggregates) and all(
+            all(getattr(row, field) is not None for field in (
+                'net_flow', 'rise_ratio', 'avg_chg', 'heat_score',
+            ))
+            for row in existing.values()
+        ):
+            return {
+                'status': 'READY', 'source': 'database',
+                'data_as_of': target_date.isoformat(), 'written': 0,
+                'sector_count': len(aggregates), 'skipped_sectors': skipped,
+            }
+
+        def normalize(values):
+            lo, hi = min(values), max(values)
+            if hi == lo:
+                return [0.5] * len(values)
+            return [(value - lo) / (hi - lo) for value in values]
+
+        net_norm = normalize([item['net_flow'] for item in aggregates])
+        limit_norm = normalize([item['limit_up_count'] for item in aggregates])
+        rise_norm = normalize([item['rise_ratio'] for item in aggregates])
+        for index, item in enumerate(aggregates):
+            item['heat_score'] = (
+                net_norm[index] * 0.4 +
+                limit_norm[index] * 0.3 +
+                rise_norm[index] * 0.3
+            ) * 100
+
+        for item in aggregates:
+            row = existing.get(item['sector'])
+            if row is None:
+                row = SectorFlow(trade_date=target_date, sector=item['sector'])
+                db.add(row)
+            for field in (
+                'money_inflow', 'money_outflow', 'net_flow', 'rise_ratio',
+                'avg_chg', 'limit_up_count', 'leader_stock',
+                'leader_strength', 'heat_score',
+            ):
+                setattr(row, field, item[field])
+        db.commit()
+        logger.info(
+            '[collect] Aggregated %s stock sectors for %s from database rows',
+            len(aggregates), target_date,
+        )
+        return {
+            'status': 'READY', 'source': 'database',
+            'data_as_of': target_date.isoformat(), 'written': len(aggregates),
+            'sector_count': len(aggregates), 'skipped_sectors': skipped,
+        }
+
+
+def synchronize_stock_flow_prices_from_kline(trade_date):
+    """用已落库日 K 修正同日 StockFlow 的收盘价与涨跌幅。
+
+    收盘后的日线是这两个字段的权威数据。资金流上游缺字段、返回盘中值或
+    全 0 时，不能让市场广度继续把它们误判成平盘；这里仅在两张数据库表之间
+    同步，不会触发任何外部请求。
+    """
+    if isinstance(trade_date, datetime):
+        target_date = trade_date.date()
+    elif hasattr(trade_date, 'year') and not isinstance(trade_date, str):
+        target_date = trade_date
+    else:
+        raw = str(trade_date or '').replace('-', '')
+        target_date = datetime.strptime(raw, '%Y%m%d').date()
+
+    with get_db_session() as db:
+        stock_flow_rows = db.query(StockFlow).filter(StockFlow.trade_date == target_date).count()
+        kline_rows = db.query(StockDailyKline).filter(
+            StockDailyKline.trade_date == target_date,
+            StockDailyKline.close.isnot(None),
+            StockDailyKline.close > 0,
+            StockDailyKline.pct_chg.isnot(None),
+        ).count()
+        if not kline_rows:
+            return {
+                'status': 'INSUFFICIENT', 'source': 'database',
+                'data_as_of': target_date.isoformat(),
+                'stock_flow_rows': stock_flow_rows, 'kline_rows': 0, 'updated': 0,
+            }
+        result = db.execute(text('''
+            UPDATE stock_flow AS flow
+               SET price = ROUND(kline.close, 2),
+                   price_chg = ROUND(kline.pct_chg, 2)
+              FROM stock_daily_kline AS kline
+             WHERE flow.trade_date = :trade_date
+               AND kline.trade_date = flow.trade_date
+               AND kline.ts_code = flow.ts_code
+               AND kline.close IS NOT NULL
+               AND kline.close > 0
+               AND kline.pct_chg IS NOT NULL
+               -- StockFlow 字段精度为两位小数，按存储精度比较，
+               -- 避免日 K 的四位 pct_chg 造成每天无效重复更新。
+               AND (flow.price IS DISTINCT FROM ROUND(kline.close, 2)
+                 OR flow.price_chg IS DISTINCT FROM ROUND(kline.pct_chg, 2))
+        '''), {'trade_date': target_date})
+        if result.rowcount:
+            db.commit()
+        return {
+            'status': 'READY', 'source': 'database',
+            'data_as_of': target_date.isoformat(),
+            'stock_flow_rows': stock_flow_rows, 'kline_rows': kline_rows,
+            'updated': result.rowcount,
+        }
+
+
 def collect_daily_data(trade_date):
     """
     采集单日全量数据并写入数据库
@@ -805,40 +1079,12 @@ def collect_daily_data(trade_date):
     """
     logger.info(f'[collect] Starting collection for {trade_date}')
 
-    # 1. 采集板块资金流向
-    sector_flows = get_sector_money_flow(trade_date)
-    logger.info(f'[collect] Got {len(sector_flows)} sector flows')
-
-    try:
-        with get_db_session() as db:
-            # 批量查询已存在的板块记录，用字典做 O(1) 查找
-            existing_sectors = {s.sector: s for s in db.query(SectorFlow).filter_by(trade_date=trade_date).all()}
-            for sf in sector_flows:
-                existing = existing_sectors.get(sf['sector'])
-                if existing:
-                    # 更新
-                    existing.money_inflow = sf.get('money_inflow')
-                    existing.money_outflow = sf.get('money_outflow')
-                    existing.net_flow = sf.get('net_flow')
-                    existing.rise_ratio = sf.get('rise_ratio')
-                    existing.avg_chg = sf.get('avg_chg')
-                else:
-                    # 新增
-                    record = SectorFlow(
-                        trade_date=trade_date,
-                        sector=sf['sector'],
-                        money_inflow=sf.get('money_inflow'),
-                        money_outflow=sf.get('money_outflow'),
-                        net_flow=sf.get('net_flow'),
-                        rise_ratio=sf.get('rise_ratio'),
-                        avg_chg=sf.get('avg_chg'),
-                    )
-                    db.add(record)
-            db.commit()
-            logger.info(f'[collect] Sector flows saved')
-    except Exception as e:
-        db.rollback()
-        logger.error(f'[collect] Sector flow error: {e}')
+    # 1. 不再把新浪/东方财富的旧行业名称直接写入 SectorFlow。
+    #    该类板块接口不是申万 2021 分类，统一在个股落库后由
+    #    aggregate_stock_sector_flows 按 SW2021 L2 重新聚合。
+    logger.info(
+        '[collect] External legacy sector flow is skipped; canonical SW2021 aggregate will be written after stocks',
+    )
 
     # 2. 采集个股资金流向
     stock_flows = get_stock_money_flow(trade_date)
@@ -935,47 +1181,51 @@ def collect_daily_data(trade_date):
     concept_flows = get_concept_sector_money_flow(trade_date)
     if concept_flows:
         try:
-            with get_db_session() as db:
-                concept_map = {c.name: c.id for c in db.query(ConceptSector).all()}
-                existing = {
-                    (r.concept_sector_id): r
-                    for r in db.query(ConceptSectorFlow).filter_by(trade_date=trade_date).all()
-                }
-                for cf in concept_flows:
-                    name = cf['sector']
-                    cid = concept_map.get(name)
-                    if not cid:
-                        # 如果概念板块定义表中没有，自动创建
-                        new_c = ConceptSector(name=name, source='sina', stocks='', stock_count=0)
-                        db.add(new_c)
-                        db.flush()
-                        cid = new_c.id
-                        concept_map[name] = cid
+            with _CONCEPT_FLOW_WRITE_LOCK:
+                with get_db_session() as db:
+                    concept_map = {c.name: c.id for c in db.query(ConceptSector).all()}
+                    existing = {
+                        r.concept_sector_id: r
+                        for r in db.query(ConceptSectorFlow).filter_by(trade_date=trade_date).all()
+                    }
+                    for cf in concept_flows:
+                        name = cf['sector']
+                        cid = concept_map.get(name)
+                        if not cid:
+                            # 如果概念板块定义表中没有，自动创建
+                            new_c = ConceptSector(name=name, source='sina', stocks='', stock_count=0)
+                            db.add(new_c)
+                            db.flush()
+                            cid = new_c.id
+                            concept_map[name] = cid
 
-                    record = existing.get(cid)
-                    if record:
-                        record.money_inflow = cf.get('money_inflow')
-                        record.money_outflow = cf.get('money_outflow')
-                        record.net_flow = cf.get('net_flow')
-                        record.rise_ratio = cf.get('rise_ratio')
-                        record.avg_chg = cf.get('avg_chg')
-                    else:
-                        db.add(ConceptSectorFlow(
-                            trade_date=trade_date,
-                            concept_sector_id=cid,
-                            concept_name=name,
-                            money_inflow=cf.get('money_inflow'),
-                            money_outflow=cf.get('money_outflow'),
-                            net_flow=cf.get('net_flow'),
-                            rise_ratio=cf.get('rise_ratio'),
-                            avg_chg=cf.get('avg_chg'),
-                            limit_up_count=0,
-                            heat_score=0,
-                        ))
-                db.commit()
+                        record = existing.get(cid)
+                        if record:
+                            record.money_inflow = cf.get('money_inflow')
+                            record.money_outflow = cf.get('money_outflow')
+                            record.net_flow = cf.get('net_flow')
+                            record.rise_ratio = cf.get('rise_ratio')
+                            record.avg_chg = cf.get('avg_chg')
+                        else:
+                            record = ConceptSectorFlow(
+                                trade_date=trade_date,
+                                concept_sector_id=cid,
+                                concept_name=name,
+                                money_inflow=cf.get('money_inflow'),
+                                money_outflow=cf.get('money_outflow'),
+                                net_flow=cf.get('net_flow'),
+                                rise_ratio=cf.get('rise_ratio'),
+                                avg_chg=cf.get('avg_chg'),
+                                limit_up_count=0,
+                                heat_score=0,
+                            )
+                            db.add(record)
+                            # 即使上游意外提供同名或同 ID 的重复项目，也复用本事务
+                            # 中刚创建的记录，避免在一次批量 INSERT 中违反唯一键。
+                            existing[cid] = record
+                    db.commit()
                 logger.info(f'[collect] Concept sector flows saved: {len(concept_flows)}')
         except Exception as e:
-            db.rollback()
             logger.error(f'[collect] Concept sector flow error: {e}')
 
     # 6. 批量采集全市场K线（按trade_date一次获取）
@@ -983,6 +1233,13 @@ def collect_daily_data(trade_date):
         _batch_collect_kline(trade_date)
     except Exception as e:
         logger.error(f'[collect] K-line batch error: {e}')
+
+    # 7. 用已落库日 K 对齐个股资金流的收盘价/涨跌幅，再生成细行业日表。
+    try:
+        synchronize_stock_flow_prices_from_kline(trade_date)
+        aggregate_stock_sector_flows(trade_date, force=True)
+    except Exception as e:
+        logger.error(f'[collect] Stock-flow synchronization error: {e}', exc_info=True)
 
     logger.info(f'[collect] Collection complete for {trade_date}')
 

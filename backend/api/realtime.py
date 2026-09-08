@@ -17,8 +17,17 @@ from db.models import RealtimeSectorFlow, RealtimeStockFlow, RealtimeConceptSect
 from collectors.realtime_collector import collect_realtime_snapshot
 from collectors.money_flow_middleman import get_money_flow_response, collect_realtime_money_flow_snapshot
 from utils.cache import cached
+from industry_stage.registry import taxonomy_metadata
 
 router = APIRouter(prefix="/api/realtime", tags=["realtime"])
+
+
+def _optional_float(value):
+    return float(value) if value is not None else None
+
+
+def _optional_scaled(value, scale: float):
+    return float(value) * scale if value is not None else None
 
 
 @cached("realtime.status", ttl=60)
@@ -87,11 +96,11 @@ def _query_latest_sectors(target_date):
 
         _list = []
         for s in sectors:
-            _in = float(s.money_inflow or 0)
-            _out = float(s.money_outflow or 0)
-            _net = float(s.net_flow or 0)
+            _in = _optional_float(s.money_inflow)
+            _out = _optional_float(s.money_outflow)
+            _net = _optional_float(s.net_flow)
             # 资金流三字段自洽性修正：确保 net_flow = money_inflow - money_outflow
-            if abs((_in - _out) - _net) > 1.0 and abs(_out) < 1e-6:
+            if None not in (_in, _out, _net) and abs((_in - _out) - _net) > 1.0 and abs(_out) < 1e-6:
                 _out = max(0.0, _in - _net)
                 if _in < _net:
                     _in = _net + _out
@@ -100,13 +109,15 @@ def _query_latest_sectors(target_date):
                 "net_flow": _net,
                 "money_inflow": _in,
                 "money_outflow": _out,
-                "rise_ratio": float(s.rise_ratio or 0),
+                "rise_ratio": _optional_float(s.rise_ratio),
                 "source": s.source,
+                "status": "PARTIAL" if None in (_in, _out, _net, s.rise_ratio) else "READY",
             })
         return {
             "snapshot_time": latest_time.strftime('%Y-%m-%d %H:%M:%S'),
             "trade_date": target_date.isoformat(),
             "count": len(sectors),
+            "taxonomy": taxonomy_metadata(),
             "sectors": _list,
         }
 
@@ -143,21 +154,25 @@ def _query_latest_stocks(target_date, limit, sort_by, sector):
             "snapshot_time": latest_time.strftime('%Y-%m-%d %H:%M:%S'),
             "trade_date": target_date.isoformat(),
             "count": len(stocks),
+            "taxonomy": taxonomy_metadata(),
             "stocks": [{
                 "ts_code": s.ts_code,
                 "name": s.name,
                 "sector": s.sector,
-                "price": float(s.price or 0),
-                "price_chg": float(s.price_chg or 0),
-                "main_force_inflow": float(s.main_force_inflow or 0),
-                "net_inflow": float(s.net_inflow or 0),
-                "retail_flow": float(s.retail_flow or 0),
+                "price": _optional_float(s.price),
+                "price_chg": _optional_float(s.price_chg),
+                "main_force_inflow": _optional_float(s.main_force_inflow),
+                "net_inflow": _optional_float(s.net_inflow),
+                "retail_flow": _optional_float(s.retail_flow),
                 "source": s.source,
                 "confidence": s.confidence,
                 "sources_count": s.sources_count,
                 "sources_used": s.sources_used,
-                "deviation_pct": float(s.deviation_pct) if s.deviation_pct else 0,
+                "deviation_pct": _optional_float(s.deviation_pct),
                 "is_corrected": s.is_corrected,
+                "status": "PARTIAL" if any(value is None for value in (
+                    s.price, s.price_chg, s.main_force_inflow, s.net_inflow, s.retail_flow,
+                )) else "READY",
             } for s in stocks],
         }
 
@@ -191,10 +206,10 @@ def _query_concept_sectors(target_date):
 
         _list = []
         for s in sectors:
-            _in = float(s.money_inflow or 0)
-            _out = float(s.money_outflow or 0)
-            _net = float(s.net_flow or 0)
-            if abs((_in - _out) - _net) > 1.0 and abs(_out) < 1e-6:
+            _in = _optional_float(s.money_inflow)
+            _out = _optional_float(s.money_outflow)
+            _net = _optional_float(s.net_flow)
+            if None not in (_in, _out, _net) and abs((_in - _out) - _net) > 1.0 and abs(_out) < 1e-6:
                 _out = max(0.0, _in - _net)
                 if _in < _net:
                     _in = _net + _out
@@ -203,8 +218,9 @@ def _query_concept_sectors(target_date):
                 "net_flow": _net,
                 "money_inflow": _in,
                 "money_outflow": _out,
-                "rise_ratio": float(s.rise_ratio or 0),
+                "rise_ratio": _optional_float(s.rise_ratio),
                 "source": s.source,
+                "status": "PARTIAL" if None in (_in, _out, _net, s.rise_ratio) else "READY",
             })
         return {
             "snapshot_time": latest_time.strftime('%Y-%m-%d %H:%M:%S'),
@@ -242,10 +258,10 @@ def sector_trend(
             "trade_date": target_date.isoformat(),
             "points": [{
                 "time": r.snapshot_time.strftime('%H:%M'),
-                "net_flow": float(r.net_flow or 0),
-                "money_inflow": float(r.money_inflow or 0),
-                "money_outflow": float(r.money_outflow or 0),
-                "rise_ratio": float(r.rise_ratio or 0),
+                "net_flow": _optional_float(r.net_flow),
+                "money_inflow": _optional_float(r.money_inflow),
+                "money_outflow": _optional_float(r.money_outflow),
+                "rise_ratio": _optional_float(r.rise_ratio),
             } for r in records],
         }
 
@@ -271,10 +287,10 @@ def concept_sector_trend(
             "trade_date": target_date.isoformat(),
             "points": [{
                 "time": r.snapshot_time.strftime('%H:%M'),
-                "net_flow": float(r.net_flow or 0),
-                "money_inflow": float(r.money_inflow or 0),
-                "money_outflow": float(r.money_outflow or 0),
-                "rise_ratio": float(r.rise_ratio or 0),
+                "net_flow": _optional_float(r.net_flow),
+                "money_inflow": _optional_float(r.money_inflow),
+                "money_outflow": _optional_float(r.money_outflow),
+                "rise_ratio": _optional_float(r.rise_ratio),
             } for r in records],
         }
 
@@ -310,10 +326,10 @@ def leader_trend(
             "source": source,
             "points": [{
                 "time": r.snapshot_time.strftime('%H:%M'),
-                "net_flow": float(r.net_flow or 0),
-                "money_inflow": float(r.money_inflow or 0),
-                "money_outflow": float(r.money_outflow or 0),
-                "rise_ratio": float(r.rise_ratio or 0),
+                "net_flow": _optional_float(r.net_flow),
+                "money_inflow": _optional_float(r.money_inflow),
+                "money_outflow": _optional_float(r.money_outflow),
+                "rise_ratio": _optional_float(r.rise_ratio),
             } for r in records],
         }
 
@@ -363,10 +379,10 @@ def leader_trends(payload: LeaderTrendsRequest):
                 "source": source,
                 "points": [{
                     "time": r.snapshot_time.strftime('%H:%M'),
-                    "net_flow": float(r.net_flow or 0),
-                    "money_inflow": float(r.money_inflow or 0),
-                    "money_outflow": float(r.money_outflow or 0),
-                    "rise_ratio": float(r.rise_ratio or 0),
+                    "net_flow": _optional_float(r.net_flow),
+                    "money_inflow": _optional_float(r.money_inflow),
+                    "money_outflow": _optional_float(r.money_outflow),
+                    "rise_ratio": _optional_float(r.rise_ratio),
                 } for r in (records or [])],
             })
 
@@ -400,10 +416,10 @@ def concept_sector_trends(payload: LeaderTrendsRequest):
                 "source": "concept",
                 "points": [{
                     "time": r.snapshot_time.strftime('%H:%M'),
-                    "net_flow": float(r.net_flow or 0),
-                    "money_inflow": float(r.money_inflow or 0),
-                    "money_outflow": float(r.money_outflow or 0),
-                    "rise_ratio": float(r.rise_ratio or 0),
+                    "net_flow": _optional_float(r.net_flow),
+                    "money_inflow": _optional_float(r.money_inflow),
+                    "money_outflow": _optional_float(r.money_outflow),
+                    "rise_ratio": _optional_float(r.rise_ratio),
                 } for r in records],
             })
 
@@ -428,8 +444,9 @@ def money_flow_trend(
         return {
             "sector": sector,
             "trade_date": target_date.isoformat(),
-            "source": "middleman",
-            "points": [{"time": r.minute, "net_flow": float(r.net_inflow_yi or 0) * 10000} for r in records],
+            "source": "database",
+            "upstream_source": "computed_sw2021" if dimension == "industry" else "middleman",
+            "points": [{"time": r.minute, "net_flow": _optional_scaled(r.net_inflow_yi, 10000)} for r in records],
         }
 
 
@@ -456,8 +473,9 @@ def money_flow_trends(payload: LeaderTrendsRequest):
             result.append({
                 "sector": sector,
                 "trade_date": target_date.isoformat(),
-                "source": "middleman",
-                "points": [{"time": r.minute, "net_flow": float(r.net_inflow_yi or 0) * 10000} for r in recs],
+                "source": "database",
+                "upstream_source": "middleman",
+                "points": [{"time": r.minute, "net_flow": _optional_scaled(r.net_inflow_yi, 10000)} for r in recs],
             })
         return {"trade_date": target_date.isoformat(), "count": len(result), "trends": result}
 
@@ -483,10 +501,10 @@ def stock_trend(
             "trade_date": target_date.isoformat(),
             "points": [{
                 "time": r.snapshot_time.strftime('%H:%M'),
-                "price": float(r.price or 0),
-                "price_chg": float(r.price_chg or 0),
-                "main_force_inflow": float(r.main_force_inflow or 0),
-                "net_inflow": float(r.net_inflow or 0),
+                "price": _optional_float(r.price),
+                "price_chg": _optional_float(r.price_chg),
+                "main_force_inflow": _optional_float(r.main_force_inflow),
+                "net_inflow": _optional_float(r.net_inflow),
             } for r in records],
         }
 
@@ -511,9 +529,9 @@ def stock_flow_detail(
         ).order_by(RealtimeStockFlow.snapshot_time.asc()).all()
         intraday_points = [{
             "time": r.snapshot_time.strftime('%H:%M'),
-            "price": float(r.price or 0),
-            "main_force_inflow": float(r.main_force_inflow or 0),
-            "net_inflow": float(r.net_inflow or 0),
+            "price": _optional_float(r.price),
+            "main_force_inflow": _optional_float(r.main_force_inflow),
+            "net_inflow": _optional_float(r.net_inflow),
         } for r in records]
 
         # 2. 主力净流入金额（1d/3d/5d）+ 持仓连续性
@@ -526,10 +544,17 @@ def stock_flow_detail(
         ).order_by(StockFeaturesDaily.trade_date.desc()).first()
 
         main_force = {
-            "inflow_1d": float(features.main_net_inflow_1d or 0) if features else 0,
-            "inflow_3d": float(features.main_net_inflow_3d or 0) if features else 0,
-            "inflow_5d": float(features.main_net_inflow_5d or 0) if features else 0,
-            "flow_continuity": int(features.flow_continuity or 0) if features else 0,
+            "inflow_1d": _optional_float(features.main_net_inflow_1d) if features else None,
+            "inflow_3d": _optional_float(features.main_net_inflow_3d) if features else None,
+            "inflow_5d": _optional_float(features.main_net_inflow_5d) if features else None,
+            "flow_continuity": int(features.flow_continuity) if features and features.flow_continuity is not None else None,
+            "source": "database",
+            "status": "READY" if features and all(value is not None for value in (
+                features.main_net_inflow_1d,
+                features.main_net_inflow_3d,
+                features.main_net_inflow_5d,
+                features.flow_continuity,
+            )) else "MISSING" if not features else "PARTIAL",
         }
 
         # 3. 数据新鲜度（延迟检查，超过 5 分钟视为陈旧）
@@ -594,11 +619,15 @@ def _query_batch_stock_flow(ts_codes: List[str]):
                 "latest_time": latest.strftime('%Y-%m-%d %H:%M:%S') if latest else None,
                 "is_stale": is_stale,
                 "delay_seconds": delay_seconds,
-                "price": float(r.price or 0),
-                "price_chg": float(r.price_chg or 0),
-                "main_force_inflow": float(r.main_force_inflow or 0),
-                "net_inflow": float(r.net_inflow or 0),
-                "retail_flow": float(r.retail_flow or 0),
+                "price": float(r.price) if r.price is not None else None,
+                "price_chg": float(r.price_chg) if r.price_chg is not None else None,
+                "main_force_inflow": float(r.main_force_inflow) if r.main_force_inflow is not None else None,
+                "net_inflow": float(r.net_inflow) if r.net_inflow is not None else None,
+                "retail_flow": float(r.retail_flow) if r.retail_flow is not None else None,
+                "source": "database",
+                "status": "PARTIAL" if any(value is None for value in (
+                    r.price, r.price_chg, r.main_force_inflow, r.net_inflow, r.retail_flow,
+                )) else "READY",
                 "snapshot_time": latest.strftime('%Y-%m-%d %H:%M:%S') if latest else None,
             }
         return result

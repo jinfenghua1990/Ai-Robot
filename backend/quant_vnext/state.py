@@ -35,13 +35,13 @@ def trading_state(
     trend = dimensions.get("trend")
     if not all(d and d.valid for d in (risk, position, trend)):
         return "INVALID"
-    if risk.score is not None and risk.score < 40:
+    if risk.score is not None and risk.score < 50:
         return "INVALID"
     if not allow_new_positions or market_state == "WEAK":
         return "NO_CHASE"
     if position.score is not None and position.score >= 85:
         return "NO_CHASE"
-    if resonance_eligible and trend.score is not None and trend.score >= 70:
+    if resonance_eligible and trend.score is not None and trend.score >= 75:
         return "TRIGGERED"
     if trend.score is not None and trend.score >= 60:
         return "READY"

@@ -1,50 +1,6 @@
-import { useState, useEffect } from 'react';
-import { INDICATOR_META } from './StageBar';
 
-const STORAGE_KEY = 'airobot_indicator_settings';
-
-// 默认配置：watchlist 模式全开，trading 模式只开核心3个
-export const DEFAULT_SETTINGS = {
-  watchlist: {
-    sentiment: true,
-    momentum: true,
-    mainForce: true,
-    technical: true,
-    sector: true,
-    risk: true,
-  },
-  trading: {
-    sentiment: true,
-    momentum: false,
-    mainForce: false,
-    technical: false,
-    sector: false,
-    risk: false,
-  },
-  // 主力资金专项独立模式：只显示 mainForce
-  standaloneMainForce: false,
-};
-
-export function loadSettings() {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      return { ...DEFAULT_SETTINGS, ...parsed };
-    }
-  } catch (e) {
-    // ignore
-  }
-  return DEFAULT_SETTINGS;
-}
-
-export function saveSettings(settings) {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
-  } catch (e) {
-    // ignore
-  }
-}
+import { INDICATOR_META } from '../utils/stageConfig';
+import { DEFAULT_SETTINGS, saveSettings } from '../utils/indicatorSettings';
 
 export default function IndicatorSettings({ open, onClose, settings, onChange }) {
   if (!open) return null;

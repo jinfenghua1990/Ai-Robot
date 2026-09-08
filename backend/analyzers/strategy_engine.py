@@ -3,16 +3,14 @@
 基于多维度评分系统生成操作信号
 每个维度独立计分（正分=看多，负分=看空），最终信号由总分决定
 """
-import time
 import asyncio
 from datetime import datetime
 from typing import List, Optional
-import httpx
+from sqlalchemy import func
 from db.models import SectorFlow, StockFlow
 from analyzers.buy_power import calc_buy_power_for_signal
 from analyzers.market_state import get_latest_state, compute_quality_from_features
 import logging
-from utils.http_constants import SINA_HEADERS_SHORT
 logger = logging.getLogger(__name__)
 
 # 默认策略参数
@@ -49,6 +47,21 @@ SCORE_ADD = 3            # >= 3 加仓
 _runtime_config = DEFAULT_CONFIG.copy()
 
 
+def _normalize_a_share_ts_code(value: str) -> str:
+    """规范化 A 股代码，避免上游已带交易所后缀时重复拼接。"""
+    raw = str(value or '').strip().upper()
+    if not raw:
+        return ''
+    code = raw.split('.', 1)[0]
+    if not (code.isdigit() and len(code) == 6):
+        return raw
+    if code.startswith(('4', '8', '92', '87', '89')):
+        return f'{code}.BJ'
+    if code.startswith(('5', '6', '9')):
+        return f'{code}.SH'
+    return f'{code}.SZ'
+
+
 def get_config():
     return _runtime_config.copy()
 
@@ -59,6 +72,9 @@ def update_config(new_config: dict):
 
 def _find_sector_for_stock(db, ts_code: str) -> Optional[str]:
     """从 stock_flow 表查找股票所属板块（跳过空 sector 记录）"""
+    ts_code = _normalize_a_share_ts_code(ts_code)
+    if not ts_code:
+        return None
     row = db.query(StockFlow.sector).filter(
         StockFlow.ts_code == ts_code,
         StockFlow.sector != None,
@@ -68,17 +84,53 @@ def _find_sector_for_stock(db, ts_code: str) -> Optional[str]:
 
 
 def _get_sector_trend(db, sector: str, days: int) -> dict:
-    """获取板块最近N天的趋势数据"""
+    """获取板块最近 N 个完整交易日的趋势数据。"""
+    expected_dates = [
+        row[0] for row in db.query(StockFlow.trade_date).distinct().order_by(
+            StockFlow.trade_date.desc()
+        ).limit(days).all()
+    ]
+    if not expected_dates:
+        return {
+            "sector": sector, "available": False, "status": "MISSING",
+            "source": "database", "data_as_of": None,
+        }
     rows = db.query(SectorFlow).filter(
-        SectorFlow.sector == sector
+        SectorFlow.sector == sector,
+        SectorFlow.trade_date.in_(expected_dates),
     ).order_by(SectorFlow.trade_date.desc()).limit(days).all()
 
-    if not rows:
-        return {"sector": sector, "available": False}
+    row_dates = [row.trade_date for row in rows]
+    if row_dates != expected_dates:
+        latest_date = db.query(func.max(SectorFlow.trade_date)).filter(
+            SectorFlow.sector == sector,
+        ).scalar()
+        status = "STALE" if latest_date and latest_date < expected_dates[0] else "INSUFFICIENT"
+        return {
+            "sector": sector, "available": False, "status": status,
+            "source": "database",
+            "data_as_of": latest_date.isoformat() if latest_date else None,
+            "expected_data_as_of": expected_dates[0].isoformat(),
+            "coverage": {"available_periods": len(rows), "required_periods": len(expected_dates)},
+        }
 
-    heat_scores = [float(r.heat_score or 0) for r in rows]
-    net_flows = [float(r.net_flow or 0) for r in rows]
-    avg_chgs = [float(r.avg_chg or 0) for r in rows]
+    required_fields = ('heat_score', 'net_flow', 'avg_chg', 'rise_ratio')
+    missing_fields = sorted({
+        field for row in rows for field in required_fields
+        if getattr(row, field) is None
+    })
+    if missing_fields:
+        return {
+            "sector": sector, "available": False, "status": "PARTIAL",
+            "source": "database", "data_as_of": rows[0].trade_date.isoformat(),
+            "expected_data_as_of": expected_dates[0].isoformat(),
+            "missing_fields": missing_fields,
+            "coverage": {"available_periods": len(rows), "required_periods": len(expected_dates)},
+        }
+
+    heat_scores = [float(r.heat_score) for r in rows]
+    net_flows = [float(r.net_flow) for r in rows]
+    avg_chgs = [float(r.avg_chg) for r in rows]
 
     # 趋势方向：比较最近一天与前面均值
     latest_heat = heat_scores[0]
@@ -95,11 +147,16 @@ def _get_sector_trend(db, sector: str, days: int) -> dict:
 
     # 资金流向
     total_net_flow = sum(net_flows)
-    flow_direction = "inflow" if total_net_flow > 0 else "outflow"
+    flow_direction = "inflow" if total_net_flow > 0 else "outflow" if total_net_flow < 0 else "flat"
 
     return {
         "sector": sector,
         "available": True,
+        "status": "READY",
+        "source": "database",
+        "data_as_of": rows[0].trade_date.isoformat(),
+        "expected_data_as_of": expected_dates[0].isoformat(),
+        "coverage": {"available_periods": len(rows), "required_periods": len(expected_dates)},
         "latest_heat": round(latest_heat, 1),
         "avg_heat": round(avg_heat, 1),
         "heat_series": [
@@ -110,7 +167,8 @@ def _get_sector_trend(db, sector: str, days: int) -> dict:
         "decline_days": decline_days,
         "total_net_flow": round(total_net_flow, 0),
         "flow_direction": flow_direction,
-        "latest_avg_chg": round(avg_chgs[0], 2) if avg_chgs else 0,
+        "latest_avg_chg": round(avg_chgs[0], 2),
+        "rise_ratio": round(float(rows[0].rise_ratio), 2),
         "latest_date": rows[0].trade_date.strftime('%Y-%m-%d') if rows[0].trade_date else None,
         "heat_history": heat_scores[::-1],  # 正序：旧→新
     }
@@ -264,10 +322,6 @@ def generate_signals(positions: List[dict], total_assets: float):
     return _generate_signals_async(positions, total_assets)
 
 
-# 新浪实时行情缓存（30秒，与 watchlist 口径一致）
-_quote_cache = {}
-_QUOTE_CACHE_TTL = 30
-
 # 数据校验：确保每个 signal 包含与自选股一致的字段
 _REQUIRED_SIGNAL_FIELDS = {
     'secCode', 'secName', 'signal', 'signalLabel', 'signalColor',
@@ -284,48 +338,10 @@ def _validate_signal(sig: dict) -> list:
 
 
 async def _get_quote(code: str):
-    """获取新浪实时行情（缓存30秒，与 watchlist._get_quote 口径一致）"""
-    cached = _quote_cache.get(code)
-    if cached and time.time() - cached[1] < _QUOTE_CACHE_TTL:
-        return cached[0]
+    """读取数据库行情；策略计算不直接访问行情网站。"""
+    from api.watchlist._shared import get_quote
 
-    sina_code = f'sh{code}' if code[0] in ('6', '9') else f'sz{code}'
-    url = f"https://hq.sinajs.cn/list={sina_code}"
-    try:
-        async with httpx.AsyncClient(timeout=8) as client:
-            resp = await client.get(url, headers=SINA_HEADERS_SHORT)
-            resp.encoding = 'gbk'
-            text = resp.text
-        if '"' not in text or len(text.split('"')) < 3:
-            _quote_cache[code] = (None, time.time())
-            return None
-        parts = text.split('"')[1].split(',')
-        if len(parts) < 10:
-            _quote_cache[code] = (None, time.time())
-            return None
-        # 新浪格式: name, 今开盘, 昨收盘, 当前价, ...
-        yesterday_close = float(parts[2])
-        current_price = float(parts[3])
-        change = current_price - yesterday_close
-        change_pct = (change / yesterday_close * 100) if yesterday_close else 0
-        result = {
-            'code': code,
-            'name': parts[0],
-            'price': current_price,
-            'yesterdayClose': yesterday_close,
-            'open': float(parts[1]),
-            'high': float(parts[4]),
-            'low': float(parts[5]),
-            'volume': int(float(parts[8])),
-            'change': round(change, 3),
-            'changePct': round(change_pct, 2),
-        }
-        _quote_cache[code] = (result, time.time())
-        return result
-    except Exception:
-        logger.debug(f"function fallback", exc_info=True)
-        _quote_cache[code] = (None, time.time())
-        return None
+    return await get_quote(code)
 
 
 async def _fetch_quotes_batch(sec_codes: list) -> dict:
@@ -380,7 +396,8 @@ async def _generate_signals_async(positions: List[dict], total_assets: float) ->
             if sig["riskLevel"] == "high":
                 high_risk_count += 1
 
-        # 并发拉取所有持仓的新浪实时行情（与自选股口径一致）
+        # 并发读取所有持仓的数据库行情（与自选股口径一致）。
+        db.rollback()
         sec_codes = [sig.get("secCode", "") for sig in signals]
         quotes_map = await _fetch_quotes_batch(sec_codes)
 

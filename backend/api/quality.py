@@ -7,14 +7,14 @@
 - /api/quality/sources         数据源可靠性统计
 - /api/quality/anomalies       异常数据列表
 """
-from fastapi import APIRouter, Query, Body
+from fastapi import APIRouter, Query, Body, HTTPException
 from sqlalchemy import func, desc, and_
 from datetime import datetime, date, timedelta
 from db.connection import get_db
 from db.session import get_db_session
 from db.models import (
     DataQualityLog, ManualReviewQueue, DataSourceReliability,
-    RealtimeStockFlow, RealtimeSectorFlow,
+    RealtimeStockFlow, RealtimeSectorFlow, RealtimeMoneyFlowSnapshot,
     SectorFlow, StockFlow, LeaderLifecycle, BSStrategy
 )
 import json
@@ -25,14 +25,20 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/quality", tags=["quality"])
 
 
+def _resolve_trade_date(db, raw_date, model):
+    if raw_date:
+        try:
+            return datetime.strptime(raw_date, '%Y-%m-%d').date()
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="trade_date must be YYYY-MM-DD") from exc
+    return db.query(func.max(model.trade_date)).scalar() or date.today()
+
+
 @router.get("/overview")
 def quality_overview(trade_date: str = Query(None)):
     """质量总览"""
     with get_db_session() as db:
-        if trade_date:
-            target_date = datetime.strptime(trade_date, '%Y-%m-%d').date()
-        else:
-            target_date = date.today()
+        target_date = _resolve_trade_date(db, trade_date, RealtimeStockFlow)
 
         # 个股数据置信度分布
         latest_time = db.query(func.max(RealtimeStockFlow.snapshot_time)).filter(
@@ -93,12 +99,8 @@ def quality_logs(
     """质量日志查询"""
     with get_db_session() as db:
         q = db.query(DataQualityLog)
-        if trade_date:
-            target_date = datetime.strptime(trade_date, '%Y-%m-%d').date()
-            q = q.filter(DataQualityLog.trade_date == target_date)
-        else:
-            # 默认今天
-            q = q.filter(DataQualityLog.trade_date == date.today())
+        target_date = _resolve_trade_date(db, trade_date, DataQualityLog)
+        q = q.filter(DataQualityLog.trade_date == target_date)
         if indicator:
             q = q.filter(DataQualityLog.indicator == indicator)
         if action:
@@ -162,9 +164,11 @@ def handle_review(review_id: int, action: str = Body(..., embed=True), final_val
                 item.final_value = final_value
             db.commit()
             return {"status": "ok", "review_id": review_id, "action": item.status}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.exception(f"[quality] handle_review error: {e}")
-        return {"error": "Internal server error"}
+        raise HTTPException(status_code=500, detail="Internal server error") from e
 
 
 @router.get("/sources")
@@ -304,10 +308,7 @@ def trigger_auto_review():
 def anomaly_list(trade_date: str = Query(None), limit: int = Query(50, le=200)):
     """异常数据列表（低置信度/被修正/有异常源）"""
     with get_db_session() as db:
-        if trade_date:
-            target_date = datetime.strptime(trade_date, '%Y-%m-%d').date()
-        else:
-            target_date = date.today()
+        target_date = _resolve_trade_date(db, trade_date, RealtimeStockFlow)
 
         q = db.query(RealtimeStockFlow).filter(
             RealtimeStockFlow.trade_date == target_date,
@@ -377,6 +378,7 @@ def data_freshness():
         is_trading_hours = is_trading_day and (
             (930 <= hm <= 1130) or (1300 <= hm <= 1500)
         )
+        realtime_expected_date = today if is_trading_day and hm >= 930 else last_trade_day
 
         sources = []
 
@@ -425,7 +427,7 @@ def data_freshness():
         rt_sector_date = rt_sector_row.trade_date if rt_sector_row else None
         rt_sector_time = rt_sector_row.snapshot_time if rt_sector_row else None
         rt_sector_status = _check_realtime_freshness(
-            rt_sector_date, rt_sector_time, today, now, is_trading_hours
+            rt_sector_date, rt_sector_time, realtime_expected_date, now, is_trading_hours
         )
         sources.append({
             "name": "实时板块资金",
@@ -443,7 +445,7 @@ def data_freshness():
         rt_stock_date = rt_stock_row.trade_date if rt_stock_row else None
         rt_stock_time = rt_stock_row.snapshot_time if rt_stock_row else None
         rt_stock_status = _check_realtime_freshness(
-            rt_stock_date, rt_stock_time, today, now, is_trading_hours
+            rt_stock_date, rt_stock_time, realtime_expected_date, now, is_trading_hours
         )
         sources.append({
             "name": "实时个股资金",
@@ -454,7 +456,33 @@ def data_freshness():
             **rt_stock_status,
         })
 
-        # 6. 数据质量日志
+        # 6. 实时概念/行业资金流中转层。它们独立于 realtime_sector_flow，必须单独监控。
+        for dimension, label in (("concept", "实时概念资金流"), ("industry", "实时行业资金流")):
+            row = db.query(RealtimeMoneyFlowSnapshot).filter(
+                RealtimeMoneyFlowSnapshot.dimension == dimension
+            ).order_by(
+                desc(RealtimeMoneyFlowSnapshot.trade_date),
+                desc(RealtimeMoneyFlowSnapshot.minute)
+            ).first()
+            snapshot_time = None
+            if row:
+                snapshot_time = datetime.strptime(
+                    f'{row.trade_date.isoformat()} {row.minute}', '%Y-%m-%d %H:%M'
+                )
+            status = _check_realtime_freshness(
+                row.trade_date if row else None, snapshot_time,
+                realtime_expected_date, now, is_trading_hours,
+            )
+            sources.append({
+                "name": label,
+                "table": "realtime_money_flow_snapshot",
+                "category": "实时",
+                "latest_date": row.trade_date.isoformat() if row else None,
+                "latest_time": row.minute if row else None,
+                **status,
+            })
+
+        # 8. 数据质量日志
         dq_latest = db.query(func.max(DataQualityLog.trade_date)).scalar()
         dq_status = _check_freshness(dq_latest, today, is_trading_day, last_trade_day, "盘后")
         sources.append({
@@ -467,12 +495,14 @@ def data_freshness():
         })
 
         # 7. BS策略配置
+        bs_count = db.query(func.count(BSStrategy.id)).scalar() or 0
         bs_latest = db.query(func.max(BSStrategy.created_at)).scalar()
-        bs_status = _check_runtime_freshness(bs_latest, now, hours=24)
+        bs_status = _check_config_availability(bs_count)
         sources.append({
             "name": "BS策略配置",
             "table": "bs_strategies",
             "category": "运行时",
+            "count": bs_count,
             "latest_date": bs_latest.strftime('%Y-%m-%d') if bs_latest else None,
             "latest_time": bs_latest.strftime('%H:%M:%S') if bs_latest else None,
             **bs_status,
@@ -518,32 +548,27 @@ def _check_freshness(data_date, today, is_trading_day, last_trade_day, category)
         return {"status": "stale", "delay_days": delay, "message": f"严重滞后{delay}个交易日", "expected_date": expected.isoformat()}
 
 
-def _check_realtime_freshness(data_date, snapshot_time, today, now, is_trading_hours):
+def _check_realtime_freshness(data_date, snapshot_time, expected_date, now, is_trading_hours):
     """检查实时数据新鲜度"""
     if data_date is None:
         return {"status": "error", "delay_days": 99, "message": "无数据", "expected_date": None}
 
-    delay = _trading_day_diff(today, data_date)
+    delay = _trading_day_diff(expected_date, data_date)
     if delay > 0:
-        return {"status": "stale", "delay_days": delay, "message": f"数据日期滞后{delay}天", "expected_date": today.isoformat()}
+        return {"status": "stale", "delay_days": delay, "message": f"数据日期滞后{delay}天", "expected_date": expected_date.isoformat()}
 
     # 盘中检查快照时间
     if is_trading_hours and snapshot_time:
         minutes_ago = (now.hour * 60 + now.minute) - (snapshot_time.hour * 60 + snapshot_time.minute)
         if minutes_ago > 10:
-            return {"status": "stale", "delay_days": 0, "message": f"盘中快照已{minutes_ago}分钟未更新", "expected_date": today.isoformat()}
-        return {"status": "fresh", "delay_days": 0, "message": "盘中实时", "expected_date": today.isoformat()}
+            return {"status": "stale", "delay_days": 0, "message": f"盘中快照已{minutes_ago}分钟未更新", "expected_date": expected_date.isoformat()}
+        return {"status": "fresh", "delay_days": 0, "message": "盘中实时", "expected_date": expected_date.isoformat()}
 
-    return {"status": "fresh", "delay_days": 0, "message": "最新", "expected_date": today.isoformat()}
+    return {"status": "fresh", "delay_days": 0, "message": "最新", "expected_date": expected_date.isoformat()}
 
 
-def _check_runtime_freshness(updated_at, now, hours=24):
-    """检查运行时数据新鲜度"""
-    if updated_at is None:
+def _check_config_availability(count):
+    """静态配置只检查是否存在；长期未修改不代表已经过期。"""
+    if count <= 0:
         return {"status": "error", "delay_days": 99, "message": "无数据", "expected_date": None}
-    diff = now - updated_at
-    if diff.total_seconds() < hours * 3600:
-        return {"status": "fresh", "delay_days": 0, "message": "最新", "expected_date": None}
-    else:
-        days = int(diff.total_seconds() / 86400)
-        return {"status": "stale", "delay_days": days, "message": f"{days}天未更新", "expected_date": None}
+    return {"status": "fresh", "delay_days": 0, "message": f"已配置{count}个策略", "expected_date": None}

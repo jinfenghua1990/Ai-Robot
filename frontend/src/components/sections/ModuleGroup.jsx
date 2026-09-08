@@ -1,3 +1,15 @@
+function ModuleCell({ children }) {
+  return <div className="min-w-0">{children}</div>;
+}
+
+function ModuleContentCell({ children, autoHeight }) {
+  return (
+    <div className="flex flex-col" style={{ minHeight: autoHeight ? undefined : '280px' }}>
+      {children}
+    </div>
+  );
+}
+
 /**
  * 模块组：统一的通栏对比容器
  * 标题在通栏顶部，下方左右两栏按【标题行】【副标题行】【内容行】分别对齐，
@@ -26,18 +38,6 @@ export function ModuleGroup({ title, badge, extra, children, contentHeight = '28
   const isAutoHeight = contentHeight === 'auto';
   const resolvedContentHeight = isAutoHeight ? 'auto' : contentHeight;
 
-  const Cell = ({ children }) => (
-    <div className="min-w-0">
-      {children}
-    </div>
-  );
-
-  const ContentCell = ({ children }) => (
-    <div className="flex flex-col" style={{ minHeight: isAutoHeight ? undefined : '280px' }}>
-      {children}
-    </div>
-  );
-
   return (
     <div className="rounded-xl border p-2.5"
       style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
@@ -58,24 +58,24 @@ export function ModuleGroup({ title, badge, extra, children, contentHeight = '28
       {/* 左右两栏：标题行 / 副标题行 / 内容行 分别对齐 */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-2"
         style={{ gridTemplateRows: `auto auto ${resolvedContentHeight}` }}>
-        <Cell>{slots.header.left}</Cell>
-        <Cell>{slots.header.right}</Cell>
+        <ModuleCell>{slots.header.left}</ModuleCell>
+        <ModuleCell>{slots.header.right}</ModuleCell>
         {slots.subHeader.left || slots.subHeader.right ? (
           <>
-            <Cell>{slots.subHeader.left}</Cell>
-            <Cell>{slots.subHeader.right}</Cell>
+            <ModuleCell>{slots.subHeader.left}</ModuleCell>
+            <ModuleCell>{slots.subHeader.right}</ModuleCell>
           </>
         ) : null}
-        <ContentCell>{slots.content.left}</ContentCell>
-        <ContentCell>{slots.content.right}</ContentCell>
+        <ModuleContentCell autoHeight={isAutoHeight}>{slots.content.left}</ModuleContentCell>
+        <ModuleContentCell autoHeight={isAutoHeight}>{slots.content.right}</ModuleContentCell>
       </div>
     </div>
   );
 }
 
-function ModuleGroupHeader({ left, right }) { return null; }
-function ModuleGroupSubHeader({ left, right }) { return null; }
-function ModuleGroupContent({ left, right }) { return null; }
+function ModuleGroupHeader() { return null; }
+function ModuleGroupSubHeader() { return null; }
+function ModuleGroupContent() { return null; }
 
 ModuleGroup.Header = ModuleGroupHeader;
 ModuleGroup.SubHeader = ModuleGroupSubHeader;

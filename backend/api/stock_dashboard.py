@@ -17,7 +17,8 @@ GET /api/stock-dashboard/batch?codes=000001.SZ,600536.SH
 
 操作建议标签：🟢 可持有/加仓 / 🟡 观望 / 🟠 减仓观察 / 🔴 远离
 
-数据来源：StockFeaturesDaily + StockFlow + SectorFlow + StockMoneyFlowDetail + StockDailyKline
+数据来源：StockFeaturesDaily + StockFlow + SectorFlow + StockMoneyFlowDetail + StockDailyKline。
+历史个股资金评分统一以 StockMoneyFlowDetail 为准；StockFlow 仅承担行情快照、名称与板块归属。
 （全部现成，零新增采集）
 """
 import asyncio
@@ -26,6 +27,7 @@ import threading
 import time as _time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, date
+from zoneinfo import ZoneInfo
 from sqlalchemy import func, desc
 
 from fastapi import APIRouter, Query
@@ -34,12 +36,13 @@ from starlette.concurrency import run_in_threadpool
 from db.session import get_db_session
 from typing import Optional
 from db.models import (
-    StockFeaturesDaily, StockFlow, SectorFlow, StockMoneyFlowDetail, StockDailyKline,
+    StockFeaturesDaily, StockFlow, SectorFlow, StockMoneyFlowDetail, StockDailyKline, Watchlist,
     RealtimeStockFlow, StockMoneyFlowRealtime, RealtimeSectorFlow,
 )
 from analyzers.stock_scores import calc_technical
 from analyzers.strategy_engine import _find_sector_for_stock
 from services.indicators import calc_kdj, calc_macd
+from utils import should_defer_current_daily_analysis
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -92,6 +95,60 @@ def _dash_cache_pop(code: str):
         _DASH_CACHE.pop(code, None)
 
 
+# ===== 沪深300 当日涨跌（强弱对比用） =====
+# 复用 index_flow 的 stock_flow 成分股 DB 聚合（纯本地，无外部采集），
+# 与页面「指数资金流向 rank」同口径；按交易日固定，缓存 6 小时。
+_INDEX_CHG_CACHE = {'ts': 0, 'value': None}
+_INDEX_CHG_CACHE_TTL = 21600
+_INDEX_CHG_LOCK = threading.Lock()
+
+
+def _hs300_pct_live_fallback():
+    """现场聚合兜底：index_daily 表未就绪时从 stock_flow 实时算沪深300涨幅。"""
+    value = None
+    try:
+        from api.index_flow import MAJOR_INDICES, _resolve_index_members
+        idx_def = next(i for i in MAJOR_INDICES if i['ts_code'] == '000300.SH')
+        members = _resolve_index_members(idx_def, allow_remote_constituents=False)
+        with get_db_session() as db:
+            recent_days = [r[0] for r in db.query(StockFlow.trade_date).distinct().order_by(
+                StockFlow.trade_date.desc()).limit(8)]
+            rows = db.query(StockFlow.trade_date, func.avg(StockFlow.price_chg).label('chg')).filter(
+                StockFlow.trade_date.in_(recent_days),
+                StockFlow.ts_code.in_(members),
+            ).group_by(StockFlow.trade_date).order_by(StockFlow.trade_date.desc()).all()
+            for r in rows:
+                chg = float(r.chg or 0)
+                if abs(chg) > 1e-6:
+                    value = round(chg, 2)
+                    break
+    except Exception as e:
+        logger.debug(f'[dashboard] hs300 live fallback error: {e}')
+    return value
+
+
+def _fetch_hs300_pct():
+    """沪深300 最近一个有效交易日的涨跌幅（%）。
+
+    常规读 index_daily（每日定时落库，纯 DB 无外部采集）；表未就绪时现场聚合兜底。
+    """
+    with _INDEX_CHG_LOCK:
+        now = _time.time()
+        if _INDEX_CHG_CACHE['value'] is not None and now - _INDEX_CHG_CACHE['ts'] < _INDEX_CHG_CACHE_TTL:
+            return _INDEX_CHG_CACHE['value']
+        value = None
+        try:
+            from api.index_daily import get_index_daily_pct
+            value = get_index_daily_pct('000300.SH')
+        except Exception as e:
+            logger.debug(f'[dashboard] index_daily read error: {e}')
+        if value is None:
+            value = _hs300_pct_live_fallback()
+        _INDEX_CHG_CACHE['ts'] = now
+        _INDEX_CHG_CACHE['value'] = value
+        return value
+
+
 # ===== 技术指标 KDJ / MACD =====
 def _compute_technical_indicators(ts_code: str, db, target_date) -> dict:
     """计算 KDJ / MACD 技术指标及买卖信号。
@@ -109,14 +166,17 @@ def _compute_technical_indicators(ts_code: str, db, target_date) -> dict:
     klines = db.query(StockDailyKline).filter(
         StockDailyKline.ts_code == ts_code,
         StockDailyKline.trade_date <= target_date,
-    ).order_by(StockDailyKline.trade_date.asc()).limit(60).all()
+        StockDailyKline.high.isnot(None),
+        StockDailyKline.low.isnot(None),
+        StockDailyKline.close.isnot(None),
+    ).order_by(StockDailyKline.trade_date.desc()).limit(60).all()[::-1]
 
     if len(klines) < 35:  # MACD 最少需要 26+9 个点
         return {'available': False}
 
-    highs = [float(k.high or 0) for k in klines]
-    lows = [float(k.low or 0) for k in klines]
-    closes = [float(k.close or 0) for k in klines]
+    highs = [float(k.high) for k in klines]
+    lows = [float(k.low) for k in klines]
+    closes = [float(k.close) for k in klines]
 
     # KDJ
     k_vals, d_vals, j_vals = calc_kdj(highs, lows, closes)
@@ -217,18 +277,23 @@ def _compute_bs_interval(ts_code: str, current_price: float, db, target_date) ->
     kline_rows = db.query(StockDailyKline).filter(
         StockDailyKline.ts_code == ts_code,
         StockDailyKline.trade_date <= target_date,
-    ).order_by(StockDailyKline.trade_date.asc()).limit(150).all()
+        StockDailyKline.open.isnot(None),
+        StockDailyKline.close.isnot(None),
+        StockDailyKline.high.isnot(None),
+        StockDailyKline.low.isnot(None),
+        StockDailyKline.volume.isnot(None),
+    ).order_by(StockDailyKline.trade_date.desc()).limit(150).all()[::-1]
 
     if len(kline_rows) < 35:
         return {'state': 'unknown', 'klines': []}
 
     klines = [{
         'date': k.trade_date.strftime('%Y-%m-%d') if hasattr(k.trade_date, 'strftime') else str(k.trade_date),
-        'open': float(k.open or 0),
-        'close': float(k.close or 0),
-        'high': float(k.high or 0),
-        'low': float(k.low or 0),
-        'volume': float(k.volume or 0),
+        'open': float(k.open),
+        'close': float(k.close),
+        'high': float(k.high),
+        'low': float(k.low),
+        'volume': float(k.volume),
     } for k in kline_rows]
 
     try:
@@ -270,6 +335,18 @@ def _clamp(v, lo=0, hi=100):
     return max(lo, min(hi, v))
 
 
+def _optional_float(value):
+    return float(value) if value is not None else None
+
+
+def _optional_int(value):
+    return int(value) if value is not None else None
+
+
+def _round_optional(value, digits: int = 1):
+    return round(value, digits) if value is not None else None
+
+
 def _features_to_dict(f) -> dict:
     return {
         'rsi_14': f.rsi_14,
@@ -292,114 +369,195 @@ def _features_to_dict(f) -> dict:
 # ===== 兜底：StockFeaturesDaily 缺失时，从 K 线 + StockFlow 现场算近似特征 =====
 # 解决「共振列表 90%+ 股票不在 watchlist，features_daily 未被采集」导致 dashboard 不可用的问题。
 # 仅覆盖 dashboard 用到的核心指标：MA/ATR/RSI/close_vs_ma20/volume_ratio/higher_high/momentum/连续性。
-# sector_strength / noise_ratio 等仅在 features 里有真值，缺失时给中性默认（0.5 / 1.0）。
+# sector_strength / noise_ratio 没有对应数据库字段时保持空值。
 def _features_from_kline_fallback(ts_code: str, target_date, db) -> Optional[dict]:
     """从 K 线 + 资金流现场合成 features 字典，返回 None 表示 K 线不足。"""
     klines = db.query(StockDailyKline).filter(
         StockDailyKline.ts_code == ts_code,
         StockDailyKline.trade_date <= target_date,
-    ).order_by(StockDailyKline.trade_date.asc()).limit(120).all()
+        StockDailyKline.open.isnot(None),
+        StockDailyKline.close.isnot(None),
+        StockDailyKline.high.isnot(None),
+        StockDailyKline.low.isnot(None),
+    ).order_by(StockDailyKline.trade_date.desc()).limit(120).all()[::-1]
     if len(klines) < 30:
         return None
 
-    closes = [float(k.close or 0) for k in klines if k.close is not None]
-    volumes = [float(k.volume or 0) for k in klines if k.volume is not None]
-    highs = [float(k.high or 0) for k in klines if k.high is not None]
-    lows = [float(k.low or 0) for k in klines if k.low is not None]
+    closes = [float(k.close) for k in klines]
+    highs = [float(k.high) for k in klines]
+    lows = [float(k.low) for k in klines]
 
     if len(closes) < 30:
         return None
 
     close = closes[-1]
-    ma5 = sum(closes[-5:]) / 5 if len(closes) >= 5 else close
     ma20 = sum(closes[-20:]) / 20 if len(closes) >= 20 else close
-    ma60 = sum(closes[-60:]) / 60 if len(closes) >= 60 else close
-    close_vs_ma20 = (close / ma20 - 1) if ma20 > 0 else 0
+    close_vs_ma20 = (close / ma20 - 1) if ma20 > 0 else None
     # MA20 斜率：今日 ma20 vs 5 日前 ma20 的变化率
     if len(closes) >= 25:
         ma20_5d_ago = sum(closes[-25:-5]) / 20
-        ma20_slope = (ma20 / ma20_5d_ago - 1) if ma20_5d_ago > 0 else 0
+        ma20_slope = (ma20 / ma20_5d_ago - 1) if ma20_5d_ago > 0 else None
     else:
-        ma20_slope = 0
+        ma20_slope = None
 
-    # ATR(14)：True Range 14 日平均
+    # ATR(14)：True Range 14 日平均（range(-14,0) 即为最近 14 个交易日，无需跳过）
     trs = []
     for i in range(-14, 0):
-        if i == -14:
-            continue
         h = highs[i]
         l = lows[i]
         pc = closes[i - 1]
         tr = max(h - l, abs(h - pc), abs(l - pc))
         trs.append(tr)
-    atr_14 = sum(trs) / len(trs) if trs else 0
+    atr_14 = sum(trs) / len(trs) if trs else None
 
     # Volume ratio：今日 vol / 20日均量
-    vol_20_avg = sum(volumes[-20:]) / 20 if len(volumes) >= 20 else (volumes[-1] if volumes else 1)
-    volume_ratio = (volumes[-1] / vol_20_avg) if vol_20_avg > 0 else 1
+    recent_volumes = [k.volume for k in klines[-20:]]
+    if len(recent_volumes) == 20 and all(value is not None for value in recent_volumes):
+        volumes = [float(value) for value in recent_volumes]
+        vol_20_avg = sum(volumes) / 20
+        volume_ratio = (volumes[-1] / vol_20_avg) if vol_20_avg > 0 else None
+    else:
+        volume_ratio = None
 
     # higher_high / higher_low_flag：今日 high/low 是否创 20 日新高/新低（严格 > / <）
-    high_20 = max(highs[-20:]) if len(highs) >= 20 else highs[-1]
-    low_20 = min(lows[-20:]) if len(lows) >= 20 else lows[-1]
-    higher_high_flag = 1 if highs[-1] > high_20 else 0
-    higher_low_flag = 1 if lows[-1] > low_20 else 0
+    if len(highs) >= 21:
+        previous_high_20 = max(highs[-21:-1])
+        previous_low_20 = min(lows[-21:-1])
+        higher_high_flag = 1 if highs[-1] > previous_high_20 else 0
+        higher_low_flag = 1 if lows[-1] > previous_low_20 else 0
+    else:
+        higher_high_flag = None
+        higher_low_flag = None
 
     # trend_consistency_score：近 20 日 close > ma20 的占比（0-1）
     if len(closes) >= 20:
         above = sum(1 for i in range(-20, 0) if closes[i] > ma20)
         trend_consistency_score = above / 20
     else:
-        trend_consistency_score = 0.5
+        trend_consistency_score = None
 
-    # RSI(14)：Wilder 平滑
-    rsi_14 = 50
+    # RSI(14)：Wilder 平滑（与 StockFeaturesDaily 同口径：首段 SMA 打底，之后逐日递推平滑）
+    rsi_14 = None
     if len(closes) >= 15:
-        gains, losses = [], []
-        for i in range(-14, 0):
-            diff = closes[i] - closes[i - 1]
-            gains.append(max(diff, 0))
-            losses.append(max(-diff, 0))
-        avg_gain = sum(gains) / 14
-        avg_loss = sum(losses) / 14
-        if avg_loss > 0:
-            rs = avg_gain / avg_loss
-            rsi_14 = 100 - 100 / (1 + rs)
-        else:
-            rsi_14 = 100 if avg_gain > 0 else 50
+        deltas = [closes[i] - closes[i - 1] for i in range(1, len(closes))]
+        gains = [max(d, 0) for d in deltas]
+        losses = [max(-d, 0) for d in deltas]
+        if len(gains) >= 14:
+            avg_gain = sum(gains[:14]) / 14
+            avg_loss = sum(losses[:14]) / 14
+            for g, l in zip(gains[14:], losses[14:]):
+                avg_gain = (avg_gain * 13 + g) / 14
+                avg_loss = (avg_loss * 13 + l) / 14
+            if avg_loss > 0:
+                rs = avg_gain / avg_loss
+                rsi_14 = 100 - 100 / (1 + rs)
+            else:
+                rsi_14 = 100 if avg_gain > 0 else 50
 
-    # 资金流连续性：近 5 日 StockFlow 主力净流入正的天数
-    code6 = ts_code.split('.')[0]
+    # 资金流连续性：只接受与最近 K 线交易日逐日对齐的 StockFlow。
+    # 资金表滞后时不能把旧日资金冒充为当前日资金。
     flows = db.query(StockFlow).filter(
         StockFlow.ts_code == ts_code,
         StockFlow.trade_date <= target_date,
     ).order_by(StockFlow.trade_date.desc()).limit(5).all()
-    inflow_1d = float(flows[0].main_force_inflow or 0) if len(flows) >= 1 else 0
-    inflow_3d = sum(float(f.main_force_inflow or 0) for f in flows[:3]) if flows else 0
-    inflow_5d = sum(float(f.main_force_inflow or 0) for f in flows[:5]) if flows else 0
-    flow_continuity = sum(1 for f in flows if float(f.main_force_inflow or 0) > 0) if flows else 0
+    expected_flow_dates = [k.trade_date for k in klines[-5:]][::-1]
+    flow_values = []
+    for expected_date, flow in zip(expected_flow_dates, flows):
+        if flow.trade_date != expected_date or flow.main_force_inflow is None:
+            break
+        flow_values.append(float(flow.main_force_inflow))
+
+    def exact_flow_sum(period: int):
+        values = flow_values[:period]
+        if len(values) < period or any(value is None for value in values):
+            return None
+        return sum(values)
+
+    inflow_1d = flow_values[0] if flow_values and flow_values[0] is not None else None
+    inflow_3d = exact_flow_sum(3)
+    inflow_5d = exact_flow_sum(5)
+    if not flow_values:
+        flow_continuity = None
+    else:
+        flow_continuity = 0
+        for value in flow_values:
+            if value > 0:
+                flow_continuity += 1
+            else:
+                break
 
     return {
-        'rsi_14': round(rsi_14, 2),
-        'volume_ratio': round(volume_ratio, 2),
-        'close_vs_ma20': round(close_vs_ma20, 4),
+        'rsi_14': round(rsi_14, 2) if rsi_14 is not None else None,
+        'volume_ratio': round(volume_ratio, 2) if volume_ratio is not None else None,
+        'close_vs_ma20': round(close_vs_ma20, 4) if close_vs_ma20 is not None else None,
         'higher_high_flag': higher_high_flag,
         'higher_low_flag': higher_low_flag,
-        'trend_consistency_score': round(trend_consistency_score, 2),
-        'ma20_slope': round(ma20_slope, 4),
+        'trend_consistency_score': round(trend_consistency_score, 2) if trend_consistency_score is not None else None,
+        'ma20_slope': round(ma20_slope, 4) if ma20_slope is not None else None,
         'main_net_inflow_1d': inflow_1d,
         'main_net_inflow_3d': inflow_3d,
         'main_net_inflow_5d': inflow_5d,
         'flow_continuity': flow_continuity,
-        'sector_strength': 0,      # 兜底默认中性
-        'noise_ratio': 1.0,        # 兜底默认中性
-        'atr_14': round(atr_14, 4),
+        'sector_strength': None,
+        'noise_ratio': None,
+        'atr_14': round(atr_14, 4) if atr_14 is not None else None,
         # 同步供 _compute_dashboard 后续用（避免再查一次）
         '_close': close,
     }
 
 
+def _canonical_money_flow_inputs(ts_code: str, target_date, db, days: int = 5) -> dict:
+    """读取同一交易日序列的个股历史资金输入，单位统一为元。
+
+    StockFlow 是东方财富快照表，StockMoneyFlowDetail 是有完整分单明细的日频落库表。
+    页面资金明细、机构信号和资金评分必须使用后者，避免同一页面出现正负方向相反的“主力资金”。
+    """
+    kline_dates = [row[0] for row in db.query(StockDailyKline.trade_date).filter(
+        StockDailyKline.ts_code == ts_code,
+        StockDailyKline.trade_date <= target_date,
+        StockDailyKline.close.isnot(None),
+    ).order_by(StockDailyKline.trade_date.desc()).limit(days).all()]
+    if not kline_dates:
+        return {
+            'current': None, 'inflow_3d': None, 'inflow_5d': None,
+            'continuity': None, 'detail': None,
+        }
+
+    detail_rows = db.query(StockMoneyFlowDetail).filter(
+        StockMoneyFlowDetail.ts_code == ts_code,
+        StockMoneyFlowDetail.trade_date.in_(kline_dates),
+    ).all()
+    by_date = {row.trade_date: row for row in detail_rows}
+    values = []
+    for trade_date in kline_dates:
+        detail = by_date.get(trade_date)
+        if detail is None or detail.main_net is None:
+            break
+        values.append(float(detail.main_net))
+
+    def exact_sum(period: int):
+        return sum(values[:period]) if len(values) >= period else None
+
+    continuity = None
+    if values:
+        continuity = 0
+        for value in values:
+            if value > 0:
+                continuity += 1
+            else:
+                break
+
+    return {
+        'current': values[0] if values else None,
+        'inflow_3d': exact_sum(3),
+        'inflow_5d': exact_sum(5),
+        'continuity': continuity,
+        'detail': by_date.get(target_date),
+    }
+
+
 # ===== 实时维度计算 =====
-def _compute_realtime(code: str, sector: str, db) -> dict:
+def _compute_realtime(ts_code: str, sector: str, db) -> dict:
     """从 RealtimeStockFlow / RealtimeSectorFlow / StockMoneyFlowRealtime 算实时维度分。
 
     取「最近一个有实时快照的交易日」而非严格今天，使盘后/非交易时段也能看到
@@ -409,37 +567,41 @@ def _compute_realtime(code: str, sector: str, db) -> dict:
     否则为「上一交易日收盘快照」，前端据此诚实标注，不把历史数据伪装成实时。
     """
     latest_rt = db.query(func.max(RealtimeStockFlow.trade_date)).filter(
-        RealtimeStockFlow.ts_code.like(f'{code}.%')
+        RealtimeStockFlow.ts_code == ts_code
     ).scalar()
     if not latest_rt:
         return {'available': False}
     today = latest_rt
 
-    now = datetime.now()
+    now = datetime.now(ZoneInfo('Asia/Shanghai'))
+    now_date = now.date()
     cur_time = now.time()
     in_session = cur_time >= datetime.strptime('09:30', '%H:%M').time() and \
                  cur_time <= datetime.strptime('15:00', '%H:%M').time()
-    live = (today == date.today()) and in_session
+    live = (today == now_date) and in_session
 
     rt_flow = db.query(RealtimeStockFlow).filter(
-        RealtimeStockFlow.ts_code.like(f'{code}.%'),
+        RealtimeStockFlow.ts_code == ts_code,
         RealtimeStockFlow.trade_date == today,
     ).order_by(RealtimeStockFlow.snapshot_time.desc()).first()
 
     if not rt_flow:
         return {'available': False}
 
-    rt_pct_chg = float(rt_flow.price_chg or 0)
-    rt_main_force = float(rt_flow.main_force_inflow or 0) * 10000  # 万元→元
+    rt_pct_chg = float(rt_flow.price_chg) if rt_flow.price_chg is not None else None
+    rt_main_force = (
+        float(rt_flow.main_force_inflow) * 10000
+        if rt_flow.main_force_inflow is not None else None
+    )  # 万元→元
     rt_snapshot_time = rt_flow.snapshot_time
 
     # 机构
     rt_money = db.query(StockMoneyFlowRealtime).filter(
-        StockMoneyFlowRealtime.ts_code.like(f'{code}.%'),
+        StockMoneyFlowRealtime.ts_code == ts_code,
         StockMoneyFlowRealtime.trade_date == today,
     ).order_by(StockMoneyFlowRealtime.snapshot_time.desc()).first()
 
-    rt_main_net = float(rt_money.main_net or 0) if rt_money else 0
+    rt_main_net = float(rt_money.main_net) if rt_money and rt_money.main_net is not None else None
 
     # 板块
     rt_sector = db.query(RealtimeSectorFlow).filter(
@@ -447,41 +609,54 @@ def _compute_realtime(code: str, sector: str, db) -> dict:
         RealtimeSectorFlow.trade_date == today,
     ).order_by(RealtimeSectorFlow.snapshot_time.desc()).first() if sector else None
 
-    rt_sector_net = float(rt_sector.net_flow or 0) if rt_sector else 0
-    rt_sector_rise = float(rt_sector.rise_ratio or 0) if rt_sector else 0
+    rt_sector_net = float(rt_sector.net_flow) if rt_sector and rt_sector.net_flow is not None else None
+    rt_sector_rise = float(rt_sector.rise_ratio) if rt_sector and rt_sector.rise_ratio is not None else None
 
     # ---- 5 个可算维度 ----
-    trend_rt = _clamp(50 + rt_pct_chg * (10 if rt_pct_chg >= 0 else 8), 0, 100)
+    trend_rt = (
+        _clamp(50 + rt_pct_chg * (10 if rt_pct_chg >= 0 else 8), 0, 100)
+        if rt_pct_chg is not None else None
+    )
 
-    mag_bonus = min(abs(rt_main_force) / 1e8, 3) * 10 if rt_main_force > 0 else \
-                -min(abs(rt_main_force) / 1e8, 2) * 8
-    capital_rt = _clamp(50 + mag_bonus, 0, 100)
+    if rt_main_force is not None:
+        mag_bonus = min(abs(rt_main_force) / 1e8, 3) * 10 if rt_main_force > 0 else \
+                    -min(abs(rt_main_force) / 1e8, 2) * 8
+        capital_rt = _clamp(50 + mag_bonus, 0, 100)
+    else:
+        capital_rt = None
 
-    same_dir = (rt_main_force > 0) == (rt_sector_net > 0)
-    resonance_rt = 75 if (same_dir and abs(rt_main_force) > 1e6) else \
-                   55 if abs(rt_main_force) < 1e6 else 25
+    if rt_main_force is not None and rt_sector_net is not None:
+        same_dir = (rt_main_force > 0) == (rt_sector_net > 0)
+        # 与盘后 resonance 同口径：强同向=75；弱流向(<1e6)无论方向=50；强反向=25
+        resonance_rt = 75 if (same_dir and abs(rt_main_force) > 1e6) else \
+                       (50 if abs(rt_main_force) <= 1e6 else 25)
+    else:
+        resonance_rt = None
 
-    relative_rt = _clamp(50 + (rt_pct_chg - rt_sector_rise) * 12, 0, 100)
+    relative_rt = (
+        _clamp(50 + (rt_pct_chg - rt_sector_rise) * 12, 0, 100)
+        if rt_pct_chg is not None and rt_sector_rise is not None else None
+    )
 
     inst_rt = _clamp(
         50 + (rt_main_net > 0) * 20 + min(abs(rt_main_net) / 5e7 * 15, 15) * (1 if rt_main_net > 0 else -1),
         0, 100,
-    ) if rt_money else None
+    ) if rt_main_net is not None else None
 
     # ---- 当日分时序列（真正的实时时间维度）：价格 + 主力净流入随快照时间变化 ----
     rt_series = db.query(RealtimeStockFlow).filter(
-        RealtimeStockFlow.ts_code.like(f'{code}.%'),
+        RealtimeStockFlow.ts_code == ts_code,
         RealtimeStockFlow.trade_date == today,
     ).order_by(RealtimeStockFlow.snapshot_time.asc()).all()
     intraday = [{
         't': r.snapshot_time.strftime('%H:%M') if r.snapshot_time else None,
-        'price': round(float(r.price or 0), 2) if r.price is not None else None,
-        'pct_chg': round(float(r.price_chg or 0), 2) if r.price_chg is not None else None,
-        'main_force': round(float(r.main_force_inflow or 0) * 10000) if r.main_force_inflow is not None else None,  # 万元→元
+        'price': round(float(r.price), 2) if r.price is not None else None,
+        'pct_chg': round(float(r.price_chg), 2) if r.price_chg is not None else None,
+        'main_force': round(float(r.main_force_inflow) * 10000) if r.main_force_inflow is not None else None,  # 万元→元
     } for r in rt_series]
 
     # ---- 从日内价格序列补齐剩余 3 个维度，使盘后/实时左右 8 维对齐 ----
-    prices = [float(r.price or 0) for r in rt_series if r.price is not None]
+    prices = [float(r.price) for r in rt_series if r.price is not None]
     if len(prices) >= 2:
         rt_high = max(prices)
         rt_low = min(prices)
@@ -497,24 +672,32 @@ def _compute_realtime(code: str, sector: str, db) -> dict:
             else:
                 volatility_rt = 35
         else:
-            volatility_rt = 50
+            volatility_rt = None
 
         # 回撤状态：当前价相对日内高点的回撤
         if rt_high > 0:
             rt_dd = (rt_current - rt_high) / rt_high * 100  # 负值=回撤
             drawdown_rt = _clamp(100 + rt_dd * 8, 0, 100)
         else:
-            drawdown_rt = 100
+            drawdown_rt = None
     else:
-        volatility_rt = 50
-        drawdown_rt = 100
+        volatility_rt = None
+        drawdown_rt = None
 
-    # 量能健康：实时无逐笔成交量比，用主力净流入强度代理（与资金动能同向但口径不同）
-    if abs(rt_main_force) > 1e6:
-        vol_bonus = min(abs(rt_main_force) / 1e8, 3) * 10
-        volume_rt = _clamp(50 + (1 if rt_main_force > 0 else -1) * vol_bonus, 0, 100)
-    else:
-        volume_rt = 50
+    # 实时快照没有成交量比，量能健康度保持空值，不能用资金流强度冒充成交量。
+    volume_rt = None
+
+    dimensions = {
+        'trend_strength': trend_rt,
+        'capital_momentum': capital_rt,
+        'sector_resonance': resonance_rt,
+        'relative_strength': relative_rt,
+        'volume_health': volume_rt,
+        'volatility_health': volatility_rt,
+        'drawdown_status': drawdown_rt,
+        'institution_signal': inst_rt,
+    }
+    missing_dimensions = [key for key, value in dimensions.items() if value is None]
 
     return {
         'available': True,
@@ -524,23 +707,26 @@ def _compute_realtime(code: str, sector: str, db) -> dict:
         #   closed_today —— 今天有实时数据但已收盘（或尚未开盘前），定格在今天最后 1 分钟快照，
         #                   即「盘后」视图，一直挂到下一个开盘才重新计算
         #   previous     —— 今天尚无任何实时数据（如周末/休市/开盘前），回退到最近一个交易日
-        'mode': 'live' if live else ('closed_today' if today == date.today() else 'previous'),
+        'mode': 'live' if live else ('closed_today' if today == now_date else 'previous'),
         'date': today.isoformat(),
         'snapshot_time': rt_snapshot_time.strftime('%Y-%m-%dT%H:%M') if rt_snapshot_time else None,
-        'trend_strength': round(trend_rt, 1),
-        'capital_momentum': round(capital_rt, 1),
-        'sector_resonance': round(resonance_rt, 1),
-        'relative_strength': round(relative_rt, 1),
-        'volume_health': round(volume_rt, 1),
-        'volatility_health': round(volatility_rt, 1),
-        'drawdown_status': round(drawdown_rt, 1),
+        'status': 'PARTIAL' if missing_dimensions else 'READY',
+        'source': 'database',
+        'missing_dimensions': missing_dimensions,
+        'trend_strength': round(trend_rt, 1) if trend_rt is not None else None,
+        'capital_momentum': round(capital_rt, 1) if capital_rt is not None else None,
+        'sector_resonance': round(resonance_rt, 1) if resonance_rt is not None else None,
+        'relative_strength': round(relative_rt, 1) if relative_rt is not None else None,
+        'volume_health': None,
+        'volatility_health': round(volatility_rt, 1) if volatility_rt is not None else None,
+        'drawdown_status': round(drawdown_rt, 1) if drawdown_rt is not None else None,
         'institution_signal': round(inst_rt, 1) if inst_rt is not None else None,
-        'price_chg': round(rt_pct_chg, 2),
+        'price_chg': round(rt_pct_chg, 2) if rt_pct_chg is not None else None,
         # 资金流向拆解（实时端仅主力/散户/板块有，4 档拆解实时暂无）
-        'main_net': round(rt_main_net),
-        'retail_net': round(float(rt_money.retail_net or 0)) if rt_money else None,
-        'sector_net': round(rt_sector_net * 10000) if rt_sector else None,  # 万元→元
-        'sector_rise': round(rt_sector_rise, 2) if rt_sector else None,  # 板块实时涨幅%（供前端「个股 vs 板块」对照）
+        'main_net': round(rt_main_net) if rt_main_net is not None else None,
+        'retail_net': round(float(rt_money.retail_net)) if rt_money and rt_money.retail_net is not None else None,
+        'sector_net': round(rt_sector_net * 10000) if rt_sector_net is not None else None,  # 万元→元
+        'sector_rise': round(rt_sector_rise, 2) if rt_sector_rise is not None else None,  # 板块实时涨幅%（供前端「个股 vs 板块」对照）
         # 当日分时序列（真实时间维度）
         'intraday': intraday,
     }
@@ -548,56 +734,58 @@ def _compute_realtime(code: str, sector: str, db) -> dict:
 
 # ===== 主力净流入累计（多周期） =====
 def _compute_cumulative(ts_code: str, sector: str, db, target_date, periods=(1, 2, 3, 5, 10, 20)) -> dict:
-    """按最近 N 个有数据的交易日累加主力净流入（个股用 main_net，板块用 net_flow），单位元。
+    """按日K交易日序列累加主力净流入（个股用 main_net，板块用 net_flow），单位元。
 
-    说明：交易所有休市/停牌，故"近N日"=最近 N 个有数据的交易日，而非自然日。
-    若历史交易日不足 N 个，则该周期返回 None（前端显示为空，不做虚假补全）。
+    缺任一对应交易日即返回 None：不能把“最近 N 个有资金数据的日期”伪装成“近 N 日”。
     """
     max_p = max(periods)
 
-    # 个股：取最近 max_p 个交易日的 main_net
-    stock_dates = [d[0] for d in db.query(StockMoneyFlowDetail.trade_date).filter(
+    expected_dates = [row[0] for row in db.query(StockDailyKline.trade_date).filter(
+        StockDailyKline.ts_code == ts_code,
+        StockDailyKline.trade_date <= target_date,
+        StockDailyKline.close.isnot(None),
+    ).order_by(StockDailyKline.trade_date.desc()).limit(max_p).all()]
+
+    stock_rows = db.query(StockMoneyFlowDetail).filter(
         StockMoneyFlowDetail.ts_code == ts_code,
-        StockMoneyFlowDetail.trade_date <= target_date,
-    ).distinct().order_by(StockMoneyFlowDetail.trade_date.desc()).limit(max_p).all()]
+        StockMoneyFlowDetail.trade_date.in_(expected_dates),
+    ).all() if expected_dates else []
+    stock_by_date = {row.trade_date: _optional_float(row.main_net) for row in stock_rows}
 
-    stock = {}
-    for p in periods:
-        if len(stock_dates) >= p:
-            sel = stock_dates[:p]
-            s = db.query(func.sum(StockMoneyFlowDetail.main_net)).filter(
-                StockMoneyFlowDetail.ts_code == ts_code,
-                StockMoneyFlowDetail.trade_date.in_(sel),
-            ).scalar() or 0
-            stock[p] = round(float(s))
-        else:
-            stock[p] = None
+    def exact_sum(values_by_date: dict, period: int):
+        dates = expected_dates[:period]
+        if len(dates) < period:
+            return None
+        values = [values_by_date.get(trade_date) for trade_date in dates]
+        return round(sum(values)) if all(value is not None for value in values) else None
 
-    # 板块：取最近 max_p 个交易日的 net_flow
+    stock = {period: exact_sum(stock_by_date, period) for period in periods}
+
     sector_cum = {}
-    if sector:
-        sec_dates = [d[0] for d in db.query(SectorFlow.trade_date).filter(
+    if sector and expected_dates:
+        sector_rows = db.query(SectorFlow).filter(
             SectorFlow.sector == sector,
-            SectorFlow.trade_date <= target_date,
-        ).distinct().order_by(SectorFlow.trade_date.desc()).limit(max_p).all()]
-        for p in periods:
-            if len(sec_dates) >= p:
-                sel = sec_dates[:p]
-                s = db.query(func.sum(SectorFlow.net_flow)).filter(
-                    SectorFlow.sector == sector,
-                    SectorFlow.trade_date.in_(sel),
-                ).scalar() or 0
-                sector_cum[p] = round(float(s))
-            else:
-                sector_cum[p] = None
+            SectorFlow.trade_date.in_(expected_dates),
+        ).all()
+        # SectorFlow.net_flow 存储单位为万元；接口统一返回元。
+        sector_by_date = {
+            row.trade_date: (_optional_float(row.net_flow) * 10000 if row.net_flow is not None else None)
+            for row in sector_rows
+        }
+        sector_cum = {period: exact_sum(sector_by_date, period) for period in periods}
     else:
-        for p in periods:
-            sector_cum[p] = None
+        sector_cum = {period: None for period in periods}
 
     return {'periods': list(periods), 'stock': stock, 'sector': sector_cum}
 
 
-def _compute_sector_rotation(sector: str, db, target_date, lookback_days: int = 10) -> Optional[dict]:
+def _compute_sector_rotation(
+    sector: str,
+    db,
+    target_date,
+    ts_code: Optional[str] = None,
+    lookback_days: int = 10,
+) -> Optional[dict]:
     """板块轮动完整版计算——基于历史 N 日数据计算轮动阶段、资金连续性、龙头持续性等信号。
 
     返回字段：
@@ -620,23 +808,66 @@ def _compute_sector_rotation(sector: str, db, target_date, lookback_days: int = 
     if not sector:
         return None
 
-    # 取最近 lookback_days 个交易日的板块数据
-    rows = db.query(SectorFlow).filter(
-        SectorFlow.sector == sector,
-        SectorFlow.trade_date <= target_date,
-    ).order_by(SectorFlow.trade_date.desc()).limit(lookback_days).all()
+    # 以当前个股的日 K 交易日序列为准。若板块缺某天，不能把较早记录挤进来伪装成“近 N 日”。
+    expected_dates = []
+    if ts_code:
+        expected_dates = [row[0] for row in db.query(StockDailyKline.trade_date).filter(
+            StockDailyKline.ts_code == ts_code,
+            StockDailyKline.trade_date <= target_date,
+            StockDailyKline.close.isnot(None),
+        ).order_by(StockDailyKline.trade_date.desc()).limit(lookback_days).all()]
+
+    if expected_dates:
+        sector_rows = db.query(SectorFlow).filter(
+            SectorFlow.sector == sector,
+            SectorFlow.trade_date.in_(expected_dates),
+        ).all()
+        by_date = {row.trade_date: row for row in sector_rows}
+        missing_dates = [trade_date for trade_date in expected_dates if trade_date not in by_date]
+        if missing_dates:
+            return {
+                'status': 'PARTIAL',
+                'source': 'database',
+                'data_as_of': target_date.isoformat(),
+                'coverage_days': len(sector_rows),
+                'lookback_days': len(expected_dates),
+                'missing_dates': [trade_date.isoformat() for trade_date in missing_dates],
+                'rotation_signal': '板块资金数据不足',
+                'rotation_color': '#94a3b8',
+                'rotation_icon': '⏳',
+                'rotation_detail': f'缺少 {len(missing_dates)} 个对应交易日，未生成轮动结论',
+                'days_to_buy': None,
+            }
+        rows = [by_date[trade_date] for trade_date in expected_dates]
+    else:
+        # 兼容内部直接调用；主页面始终传 ts_code，因此不会走到这个分支。
+        rows = db.query(SectorFlow).filter(
+            SectorFlow.sector == sector,
+            SectorFlow.trade_date <= target_date,
+        ).order_by(SectorFlow.trade_date.desc()).limit(lookback_days).all()
 
     if not rows:
         return None
 
     # rows[0] = 今日，rows[1] = 昨日，...
     today = rows[0]
-    net_flows = [float(r.net_flow or 0) for r in rows]  # 万元
+    net_flows = [float(r.net_flow) if r.net_flow is not None else None for r in rows]  # 万元
     heat_scores = [float(r.heat_score) if r.heat_score is not None else None for r in rows]
     leader_stocks = [r.leader_stock for r in rows]
     leader_strengths = [float(r.leader_strength) if r.leader_strength is not None else None for r in rows]
-    avg_chgs = [float(r.avg_chg) if r.avg_chg is not None else 0 for r in rows]
-    limit_up_counts = [int(r.limit_up_count or 0) for r in rows]
+    avg_chgs = [float(r.avg_chg) if r.avg_chg is not None else None for r in rows]
+
+    if any(value is None for value in net_flows):
+        return {
+            'status': 'PARTIAL',
+            'source': 'database',
+            'data_as_of': today.trade_date.isoformat(),
+            'rotation_signal': '资金流数据不足',
+            'rotation_color': '#94a3b8',
+            'rotation_icon': '⏳',
+            'rotation_detail': '数据库存在空值，未生成轮动结论',
+            'days_to_buy': None,
+        }
 
     # 1. 资金连续性
     consecutive_inflow_days = 0
@@ -713,8 +944,8 @@ def _compute_sector_rotation(sector: str, db, target_date, lookback_days: int = 
                      leader_stocks[0] != leader_stocks[1])
 
     # 4. 累计涨幅
-    cumulative_chg_5d = round(sum(avg_chgs[:5]), 2) if len(avg_chgs) >= 5 else None
-    cumulative_chg_10d = round(sum(avg_chgs[:10]), 2) if len(avg_chgs) >= 10 else None
+    cumulative_chg_5d = round(sum(avg_chgs[:5]), 2) if len(avg_chgs) >= 5 and all(v is not None for v in avg_chgs[:5]) else None
+    cumulative_chg_10d = round(sum(avg_chgs[:10]), 2) if len(avg_chgs) >= 10 and all(v is not None for v in avg_chgs[:10]) else None
 
     # 5. 综合轮动信号（核心）
     rotation_signal = None
@@ -732,9 +963,17 @@ def _compute_sector_rotation(sector: str, db, target_date, lookback_days: int = 
         return f'{wan:.0f}万'
 
     cum_flow_str = _fmt_flow(cumulative_net_flow)
-    # 详情字符串：天数+累计金额（前端单独展示，避免信号过长换行）
-    flow_direction = '流入' if cumulative_net_flow >= 0 else '流出'
-    rotation_detail = f'{consecutive_inflow_days if cumulative_net_flow >= 0 else consecutive_outflow_days}天{flow_direction}·累计{cum_flow_str}'
+    # 详情必须描述当前连续方向；累计值只说明最近窗口的总体结果，不能反过来决定“流入/流出”。
+    if consecutive_inflow_days:
+        flow_direction = '流入'
+        flow_days = consecutive_inflow_days
+    elif consecutive_outflow_days:
+        flow_direction = '流出'
+        flow_days = consecutive_outflow_days
+    else:
+        flow_direction = '中性'
+        flow_days = 0
+    rotation_detail = f'{flow_days}天{flow_direction} · 近{len(rows)}日累计{cum_flow_str}'
 
     if consecutive_inflow_days >= 7 and cumulative_net_flow >= 200000:
         # 连续7天+流入且累计≥20亿 → 主升浪
@@ -760,10 +999,15 @@ def _compute_sector_rotation(sector: str, db, target_date, lookback_days: int = 
         rotation_color = '#eab308'
         rotation_icon = '👀'
     elif consecutive_inflow_days >= 1:
-        # 单日流入
-        rotation_signal = f'资金流入·观察'
-        rotation_color = '#3b82f6'
-        rotation_icon = '💧'
+        # 单日回流不足以反转窗口总体流出，文案必须把两者区分开。
+        if cumulative_net_flow < 0:
+            rotation_signal = '单日回流·仍待确认'
+            rotation_color = '#eab308'
+            rotation_icon = '👀'
+        else:
+            rotation_signal = '资金流入·观察'
+            rotation_color = '#3b82f6'
+            rotation_icon = '💧'
     elif consecutive_outflow_days >= 5 and cumulative_net_flow <= -100000:
         # 连续5天+流出且累计≥10亿 → 主力出货
         rotation_signal = f'主力出货·坚决回避'
@@ -775,10 +1019,15 @@ def _compute_sector_rotation(sector: str, db, target_date, lookback_days: int = 
         rotation_color = '#3b82f6'
         rotation_icon = '📉'
     elif consecutive_outflow_days >= 1:
-        # 单日流出
-        rotation_signal = f'资金流出·谨慎'
-        rotation_color = '#94a3b8'
-        rotation_icon = '💧'
+        # 与单日回流对称：总体仍流入时不能直接写成撤退。
+        if cumulative_net_flow > 0:
+            rotation_signal = '单日流出·分歧观察'
+            rotation_color = '#eab308'
+            rotation_icon = '👀'
+        else:
+            rotation_signal = '资金流出·谨慎'
+            rotation_color = '#94a3b8'
+            rotation_icon = '💧'
     else:
         rotation_signal = '资金中性·观望'
         rotation_color = '#94a3b8'
@@ -805,6 +1054,11 @@ def _compute_sector_rotation(sector: str, db, target_date, lookback_days: int = 
     }.get(heat_trend, '热度未知')
 
     return {
+        'status': 'READY' if len(rows) >= lookback_days else 'PARTIAL',
+        'source': 'database',
+        'data_as_of': today.trade_date.isoformat(),
+        'coverage_days': len(rows),
+        'lookback_days': lookback_days,
         'consecutive_inflow_days': consecutive_inflow_days,
         'consecutive_outflow_days': consecutive_outflow_days,
         'cumulative_net_flow_wan': cumulative_net_flow,  # 万元
@@ -827,6 +1081,58 @@ def _compute_sector_rotation(sector: str, db, target_date, lookback_days: int = 
 
 
 # ===== 8 维盘后计算（原有） =====
+def _daily_analysis_inputs_ready(code6: str, ts_code: str, target_date, db) -> bool:
+    """日度评分所需的特征和分单资金是否已按同一交易日落库。"""
+    date_str = target_date.strftime('%Y%m%d')
+    feature_ready = db.query(StockFeaturesDaily.id).filter(
+        StockFeaturesDaily.stock_code == code6,
+        StockFeaturesDaily.trade_date == date_str,
+    ).first() is not None
+    money_ready = db.query(StockMoneyFlowDetail.id).filter(
+        StockMoneyFlowDetail.ts_code == ts_code,
+        StockMoneyFlowDetail.trade_date == target_date,
+    ).first() is not None
+    return feature_ready and money_ready
+
+
+def _fetch_sector_peers(sector: str, current_code6: str, db, limit: int = 8) -> list:
+    """全市场同板块标的（复用库内 stock_flow 板块映射，纯 DB，无外部请求）。
+
+    在最新一个有效交易日里，从 stock_flow 查板块相同、但非当前股的股票，
+    剔除 price_chg 为空的行，按涨幅降序取前 limit 只。
+    返回 [{code, name, chg}]。
+    """
+    if not sector:
+        return []
+    try:
+        rows = db.query(StockFlow).filter(
+            StockFlow.sector == sector,
+            StockFlow.ts_code != f'{current_code6}.SH',
+            StockFlow.ts_code != f'{current_code6}.SZ',
+            StockFlow.ts_code != f'{current_code6}.BJ',
+        ).order_by(StockFlow.trade_date.desc(), StockFlow.price_chg.desc()).all()
+    except Exception as e:
+        logger.warning(f'[dashboard] sector peers query error: {e}')
+        return []
+    peers = []
+    seen_date = None
+    for r in rows:
+        if seen_date is None:
+            seen_date = r.trade_date
+        elif r.trade_date != seen_date:
+            break  # 只取最新一个交易日
+        if r.price_chg is None:
+            continue
+        peers.append({
+            'code': r.ts_code.split('.')[0],
+            'name': r.name or r.ts_code.split('.')[0],
+            'chg': float(r.price_chg),
+        })
+        if len(peers) >= limit:
+            break
+    return peers
+
+
 def _compute_dashboard(code: str, db) -> Optional[dict]:
     """核心计算——单只股票的 8 维指数 + 操作建议"""
     # 容错：剥掉 ts_code 后缀（.SZ/.SH/.BJ/.sh/.sz/.bj），兼容前端传入 6位或 9位
@@ -835,13 +1141,34 @@ def _compute_dashboard(code: str, db) -> Optional[dict]:
     if not code6:
         return None
 
-    # 优先按 StockFlow 定位最新交易日（覆盖全市场，比 features_daily 范围广得多）
-    # features_daily 只覆盖自选股（113 只/日），共振列表 250+ 只无法命中。
-    # 但 StockFlow 是全市场入库的，所以先查 StockFlow，再回退 features_daily。
+    # 交易日以有效日线为准。StockFlow 可能比日线迟一批入库，不能以它决定整页日期，
+    # 否则会把 8/24 的评分、8/25 的价位和盘中报价混在同一个页面。
+    latest_kline = db.query(StockDailyKline).filter(
+        StockDailyKline.ts_code.like(f'{code6}.%'),
+        StockDailyKline.close.isnot(None),
+        StockDailyKline.close > 0,
+    ).order_by(StockDailyKline.trade_date.desc()).first()
     latest_flow = db.query(StockFlow).filter(
         StockFlow.ts_code.like(f'{code6}.%')
     ).order_by(StockFlow.trade_date.desc()).first()
-    if latest_flow:
+    if latest_kline:
+        target_date = latest_kline.trade_date
+        ts_code = latest_kline.ts_code
+        # 当日盘中 K 线只是实时采集过程中的半成品。只有特征和日资金明细
+        # 同日落库后才可以进入评分；否则始终保留上一交易日的完整分析。
+        if should_defer_current_daily_analysis(
+            target_date,
+            _daily_analysis_inputs_ready(code6, ts_code, target_date, db),
+        ):
+            prior_kline = db.query(StockDailyKline).filter(
+                StockDailyKline.ts_code == ts_code,
+                StockDailyKline.trade_date < target_date,
+                StockDailyKline.close.isnot(None),
+                StockDailyKline.close > 0,
+            ).order_by(StockDailyKline.trade_date.desc()).first()
+            if prior_kline:
+                target_date = prior_kline.trade_date
+    elif latest_flow:
         target_date = latest_flow.trade_date
         ts_code = latest_flow.ts_code
     else:
@@ -870,92 +1197,151 @@ def _compute_dashboard(code: str, db) -> Optional[dict]:
         StockFeaturesDaily.trade_date == date_str,
     ).first()
 
+    # 指标数据口径：'features_daily'(精确入库) / 'kline_fallback'(K线现场近似)
+    metric_source = 'features_daily'
     if feat:
         features = _features_to_dict(feat)
-        cv = float(feat.close_vs_ma20 or 0)
-        tc = float(feat.trend_consistency_score or 0)
-        hh = int(feat.higher_high_flag or 0)
-        rsi = float(feat.rsi_14 or 50)
-        inflow_3d = float(feat.main_net_inflow_3d or 0)
-        flow_cont = int(feat.flow_continuity or 0)
-        close = float(feat.close or 1)
-        atr = float(feat.atr_14 or 0)
-        vr = float(feat.volume_ratio or 1)
+        cv = _optional_float(feat.close_vs_ma20)
+        tc = _optional_float(feat.trend_consistency_score)
+        hh = _optional_int(feat.higher_high_flag)
+        rsi = _optional_float(feat.rsi_14)
+        close = _optional_float(feat.close)
+        atr = _optional_float(feat.atr_14)
+        vr = _optional_float(feat.volume_ratio)
     else:
         # 兜底：从 K 线 + 资金流现场算近似 features
+        metric_source = 'kline_fallback'
         kline_feats = _features_from_kline_fallback(ts_code, target_date, db)
         if not kline_feats:
             return None
         features = {k: v for k, v in kline_feats.items() if not k.startswith('_')}
-        cv = float(features.get('close_vs_ma20', 0) or 0)
-        tc = float(features.get('trend_consistency_score', 0) or 0)
-        hh = int(features.get('higher_high_flag', 0) or 0)
-        rsi = float(features.get('rsi_14', 50) or 50)
-        inflow_3d = float(features.get('main_net_inflow_3d', 0) or 0)
-        flow_cont = int(features.get('flow_continuity', 0) or 0)
-        close = float(kline_feats.get('_close', 1) or 1)
-        atr = float(features.get('atr_14', 0) or 0)
-        vr = float(features.get('volume_ratio', 1) or 1)
-        logger.info(f"[stock_dashboard] {ts_code} features_daily 缺失，使用 K 线兜底（cv={cv:.3f}, tc={tc:.2f}, rsi={rsi:.1f}）")
+        cv = _optional_float(features.get('close_vs_ma20'))
+        tc = _optional_float(features.get('trend_consistency_score'))
+        hh = _optional_int(features.get('higher_high_flag'))
+        rsi = _optional_float(features.get('rsi_14'))
+        close = _optional_float(kline_feats.get('_close'))
+        atr = _optional_float(features.get('atr_14'))
+        vr = _optional_float(features.get('volume_ratio'))
+        logger.info(f"[stock_dashboard] {ts_code} features_daily 缺失，使用数据库 K 线计算")
 
-    # StockFlow（板块、涨幅、主力净流入）
+    # StockFlow 只用于板块、名称和日行情。历史资金分数统一取分单明细表，
+    # 与页面中的“个股资金明细”和机构信号保持同一条数据库口径。
     flow = db.query(StockFlow).filter(
         StockFlow.trade_date == target_date,
     ).filter(StockFlow.ts_code == ts_code).first()
-    if not flow:
-        # 兜底：features_daily 路径下没找到 flow，尝试最新日
-        flow = latest_flow or db.query(StockFlow).filter(
-            StockFlow.ts_code == ts_code,
-        ).order_by(StockFlow.trade_date.desc()).first()
-    if not flow:
-        return None
+    # 仅同日资金流可进入资金、板块评分；旧行只用来回填名称/板块归属。
+    flow_reference = flow or latest_flow
+    watchlist_name = db.query(Watchlist.stock_name).filter(
+        Watchlist.stock_code == code6,
+        Watchlist.stock_name.isnot(None),
+    ).scalar()
 
     # 板块归属：复用 strategy_engine 的解析（从 stock_flow 取最近一个非空 sector），
     # 与顶部 sectorTrend 同口径；最新行 sector 为空时也能正确回退，避免板块名对不上导致查不到。
-    sector = _find_sector_for_stock(db, ts_code) or flow.sector or ''
-    main_inflow = float(flow.main_force_inflow or 0)
-    own_chg = float(flow.price_chg or 0)
-    price = float(flow.price or close)
+    sector = _find_sector_for_stock(db, ts_code) or (flow_reference.sector if flow_reference else '') or ''
+    canonical_flow = _canonical_money_flow_inputs(ts_code, target_date, db)
+    inst = canonical_flow['detail']
+    main_inflow = canonical_flow['current']
+    inflow_3d = canonical_flow['inflow_3d']
+    flow_cont = canonical_flow['continuity']
+    features = {
+        **features,
+        'main_net_inflow_1d': main_inflow,
+        'main_net_inflow_3d': inflow_3d,
+        'main_net_inflow_5d': canonical_flow['inflow_5d'],
+        'flow_continuity': flow_cont,
+    }
+    flow_price = _optional_float(flow.price) if flow else None
+    latest_kline = db.query(StockDailyKline).filter(
+        StockDailyKline.ts_code == ts_code,
+        StockDailyKline.trade_date <= target_date,
+        StockDailyKline.close.isnot(None),
+        StockDailyKline.close > 0,
+    ).order_by(StockDailyKline.trade_date.desc()).first()
+    kline_price = _optional_float(latest_kline.close) if latest_kline else None
+    kline_change = _optional_float(latest_kline.pct_chg) if latest_kline else None
+    # StockFlow 某些批次的行情列会整批写成 0，但资金流列仍有效。
+    # 价格无效时只在数据库内部回退到同日/最近日 K 线。
+    price = flow_price if flow_price is not None and flow_price > 0 else (kline_price or close)
+    own_chg = (
+        _optional_float(flow.price_chg)
+        if flow is not None and flow_price is not None and flow_price > 0 else kline_change
+    )
 
     # calc_technical（复用现有技术形态评分）
-    technical = calc_technical(features)
-    tech_score = (technical or {}).get('score', 50)
+    technical_inputs = (
+        hh,
+        features.get('higher_low_flag'),
+        tc,
+        cv,
+        features.get('ma20_slope'),
+        rsi,
+        vr,
+    )
+    technical = calc_technical(features) if all(value is not None for value in technical_inputs) else None
+    tech_score = (technical or {}).get('score')
 
     # 1. 趋势强度 0-100
-    trend_strength = _clamp(
-        tech_score * 0.5 + (cv * 200 + 50) * 0.3 + tc * 100 * 0.2,
-        0, 100,
+    trend_strength = (
+        _clamp(
+            tech_score * 0.5 + (cv * 200 + 50) * 0.3 + tc * 100 * 0.2,
+            0, 100,
+        )
+        if None not in (tech_score, cv, tc) else None
     )
 
     # 2. 资金动能 0-100
-    mag_bonus = min(abs(main_inflow) / 1e8, 3) * 10 if main_inflow > 0 else \
-                -min(abs(main_inflow) / 1e8, 2) * 8
-    capital_momentum = _clamp(
-        50 + mag_bonus + flow_cont * 5 + (inflow_3d > 0) * 10,
-        0, 100,
-    )
+    if None not in (main_inflow, flow_cont, inflow_3d):
+        mag_bonus = min(abs(main_inflow) / 1e8, 3) * 10 if main_inflow > 0 else \
+                    -min(abs(main_inflow) / 1e8, 2) * 8
+        capital_momentum = _clamp(
+            50 + mag_bonus + flow_cont * 5 + (inflow_3d > 0) * 10,
+            0, 100,
+        )
+    else:
+        capital_momentum = None
 
     # 3. 板块共振 0-100
     # 板块净流入：与顶部 sectorTrend.total_net_flow 完全同口径 —— 近 7 日 SectorFlow.net_flow 累加
     # （strategy_engine._get_sector_trend 即 limit(7) 后 sum(net_flows)）
-    sector_net = 0.0
-    if sector:
-        srows = db.query(SectorFlow.net_flow).filter(
-            SectorFlow.sector == sector,
-        ).order_by(SectorFlow.trade_date.desc()).limit(7).all()
-        sector_net = float(sum((r[0] or 0) for r in srows))
-    # 单日板块概览（平均涨幅 / 涨停数）：取该板块最近一个交易日
-    sf = db.query(SectorFlow).filter(
+    sector_dates = [
+        row[0] for row in db.query(StockDailyKline.trade_date).filter(
+            StockDailyKline.ts_code == ts_code,
+            StockDailyKline.trade_date <= target_date,
+            StockDailyKline.close.isnot(None),
+        ).order_by(StockDailyKline.trade_date.desc()).limit(7).all()
+    ]
+    srows = db.query(SectorFlow).filter(
         SectorFlow.sector == sector,
-    ).order_by(SectorFlow.trade_date.desc()).first() if sector else None
-    sector_avg_chg = float(sf.avg_chg or 0) if sf else 0
-    sector_limit_up = int(sf.limit_up_count or 0) if sf else 0
-    same_direction = (main_inflow > 0) == (sector_net > 0)
-    resonance = 75 if (same_direction and abs(main_inflow) > 1e6) else \
-                (55 if abs(main_inflow) < 1e6 else 25)
+        SectorFlow.trade_date.in_(sector_dates),
+    ).order_by(SectorFlow.trade_date.desc()).all() if sector and sector_dates else []
+    sector_row_dates = [row.trade_date for row in srows]
+    sector_missing_fields = sorted({
+        field for row in srows for field in ('net_flow', 'avg_chg', 'rise_ratio', 'heat_score')
+        if getattr(row, field) is None
+    })
+    sector_ready = (
+        bool(sector_dates) and sector_row_dates == sector_dates and not sector_missing_fields
+    )
+    # SectorFlow.net_flow 存万元，接口契约（main_net_cumulative 等同接口）统一返回元
+    sector_net = (
+        float(sum(row.net_flow for row in srows) * 10000) if sector_ready else None
+    )
+    # 单日板块概览必须与个股目标交易日相同，禁止回退到旧日期参与评分。
+    sf = srows[0] if sector_ready else None
+    sector_avg_chg = _optional_float(sf.avg_chg) if sf else None
+    sector_limit_up = _optional_int(sf.limit_up_count) if sf else None
+    if main_inflow is not None and sector_net is not None:
+        same_direction = (main_inflow > 0) == (sector_net > 0)
+        resonance = 75 if (same_direction and abs(main_inflow) > 1e6) else \
+                    (50 if abs(main_inflow) <= 1e6 else 25)
+    else:
+        resonance = None
 
     # 4. 量能健康度 0-100
-    if 0.8 <= vr <= 2.5:
+    if vr is None:
+        volume_health = None
+    elif 0.8 <= vr <= 2.5:
         volume_health = 85
     elif 0.5 <= vr <= 3.0:
         volume_health = 60
@@ -963,7 +1349,7 @@ def _compute_dashboard(code: str, db) -> Optional[dict]:
         volume_health = 35
 
     # 5. 波动健康度 0-100
-    if close > 0 and atr > 0:
+    if close is not None and atr is not None and close > 0 and atr > 0:
         vh_pct = atr / close * 100
         if 1.0 <= vh_pct <= 5.0:
             volatility_health = 80
@@ -972,100 +1358,162 @@ def _compute_dashboard(code: str, db) -> Optional[dict]:
         else:
             volatility_health = 35
     else:
-        volatility_health = 50
+        volatility_health = None
 
     # 6. 相对强度 0-100（个股涨幅 vs 板块平均涨幅）
-    diff = own_chg - sector_avg_chg
-    relative_strength = _clamp(50 + diff * 12, 0, 100)
+    relative_strength = (
+        _clamp(50 + (own_chg - sector_avg_chg) * 12, 0, 100)
+        if own_chg is not None and sector_avg_chg is not None else None
+    )
 
     # 7. 回撤状态 0-100
     klines = db.query(StockDailyKline).filter(
         StockDailyKline.ts_code == ts_code,
         StockDailyKline.trade_date <= target_date,
+        StockDailyKline.high.isnot(None),
     ).order_by(StockDailyKline.trade_date.desc()).limit(20).all()
-    if klines:
-        n_high = max(float(k.high or 0) for k in klines)
-        if n_high > 0:
-            dd = (close - n_high) / n_high * 100  # 负值=回撤
-        else:
-            dd = 0
+    if klines and close is not None:
+        n_high = max(float(k.high) for k in klines)
+        dd = (close - n_high) / n_high * 100 if n_high > 0 else None
     else:
-        dd = 0
-    drawdown_status = _clamp(100 + dd * 8, 0, 100)  # dd=-5% → 60; dd=-10% → 20
+        dd = None
+    drawdown_status = _clamp(100 + dd * 8, 0, 100) if dd is not None else None
 
     # 8. 机构信号 0-100
-    inst = db.query(StockMoneyFlowDetail).filter(
-        StockMoneyFlowDetail.trade_date == target_date,
-        StockMoneyFlowDetail.ts_code == ts_code,
-    ).first()
     inst_detail = {
         'has_data': False,
-        'super_large_net': 0, 'large_net': 0, 'medium_net': 0,
-        'small_net': 0, 'tiny_net': 0,
-        'main_net': 0, 'main_buy': 0, 'main_sell': 0,
-        'retail_net': 0, 'retail_buy': 0, 'retail_sell': 0,
+        'status': 'MISSING', 'source': 'database',
+        'super_large_net': None, 'large_net': None, 'medium_net': None,
+        'small_net': None, 'tiny_net': None,
+        'main_net': None, 'main_buy': None, 'main_sell': None,
+        'retail_net': None, 'retail_buy': None, 'retail_sell': None,
     }
     if inst:
-        super_large = float(inst.super_large_net or 0)
-        large = float(inst.large_net or 0)
-        medium = float(inst.medium_net or 0)
-        small = float(inst.small_net or 0)
-        tiny = float(inst.tiny_net or 0)
-        mn = float(inst.main_net or 0)
-        inst_score = _clamp(
-            50 + (super_large > 0) * 20 + (mn > 0) * 10 +
-            min(abs(super_large) / 5e7 * 15, 15) * (1 if super_large > 0 else -1),
-            0, 100,
+        super_large = _optional_float(inst.super_large_net)
+        large = _optional_float(inst.large_net)
+        medium = _optional_float(inst.medium_net)
+        small = _optional_float(inst.small_net)
+        tiny = _optional_float(inst.tiny_net)
+        mn = _optional_float(inst.main_net)
+        inst_score = (
+            _clamp(
+                50 + (super_large > 0) * 20 + (mn > 0) * 10 +
+                min(abs(super_large) / 5e7 * 15, 15) * (1 if super_large > 0 else -1),
+                0, 100,
+            )
+            if super_large is not None and mn is not None else None
         )
         inst_detail = {
             'has_data': True,
+            'status': 'READY' if all(value is not None for value in (
+                inst.super_large_net, inst.large_net, inst.medium_net,
+                inst.small_net, inst.tiny_net, inst.main_net,
+            )) else 'PARTIAL',
+            'source': 'database',
             'super_large_net': super_large,
             'large_net': large,
             'medium_net': medium,
             'small_net': small,
             'tiny_net': tiny,
             'main_net': mn,
-            'main_buy': float(inst.main_buy or 0),
-            'main_sell': float(inst.main_sell or 0),
-            'retail_net': float(inst.retail_net or 0),
-            'retail_buy': float(inst.retail_buy or 0),
-            'retail_sell': float(inst.retail_sell or 0),
+            'main_buy': _optional_float(inst.main_buy),
+            'main_sell': _optional_float(inst.main_sell),
+            'retail_net': _optional_float(inst.retail_net),
+            'retail_buy': _optional_float(inst.retail_buy),
+            'retail_sell': _optional_float(inst.retail_sell),
         }
     else:
-        inst_score = 50  # 无数据→中性
+        inst_score = None
+
+    # ===== 风险等级（独立反向维：分数越高越危险，不并入 higher=better 的综合分）=====
+    risk = {'has_data': False, 'status': 'MISSING', 'score': None, 'level': None, 'note': None}
+    if close is not None and atr is not None and close > 0:
+        atr_pct = atr / close * 100
+        vol_risk = _clamp((atr_pct - 0.5) / 9.5 * 100)
+        noise = features.get('noise_ratio')
+        if noise is not None:
+            risk['score'] = round(vol_risk * 0.6 + _clamp(noise / 3 * 100) * 0.4)
+            risk['status'] = 'READY'
+        else:
+            risk['score'] = round(vol_risk)
+            risk['status'] = 'PARTIAL'
+            risk['note'] = '噪声比暂无，风险仅按波动评估'
+        rs = risk['score']
+        risk['level'] = '安全' if rs < 30 else '中等' if rs < 50 else '偏高' if rs < 70 else '高危'
+        risk['has_data'] = True
 
     # ===== 操作建议标签 =====
-    core_avg = (trend_strength + capital_momentum + resonance + relative_strength) / 4
-    # 8 维综合评分（0-100）：与 watchlist API 的 overallScore 对齐
-    overall_score = round((trend_strength + capital_momentum + resonance + relative_strength
-                           + volume_health + volatility_health + drawdown_status + inst_score) / 8, 1)
-    if trend_strength >= 60 and capital_momentum >= 50 and resonance >= 50 and drawdown_status >= 60:
-        action_label = '可持有 / 加仓'
-        action_color = '#22c55e'
-    elif core_avg >= 48:
-        action_label = '观望'
-        action_color = '#eab308'
-    elif core_avg >= 32:
-        action_label = '减仓观察'
-        action_color = '#f97316'
+    dimensions = {
+        'trend_strength': trend_strength,
+        'capital_momentum': capital_momentum,
+        'sector_resonance': resonance,
+        'volume_health': volume_health,
+        'volatility_health': volatility_health,
+        'relative_strength': relative_strength,
+        'drawdown_status': drawdown_status,
+        'institution_signal': inst_score,
+    }
+    missing_dimensions = [key for key, value in dimensions.items() if value is None]
+    if missing_dimensions:
+        overall_score = None
+        action_label = '数据不足'
+        action_color = '#94a3b8'
     else:
-        action_label = '远离'
-        action_color = '#ef4444'
+        # 8 维加权综合分：突出趋势/资金/共振/回撤四主维，量能/波动/机构轻权重。
+        # 建议标签与综合分同一口径，消除“分数高却建议观望”的观感矛盾。
+        W = {
+            'trend_strength': 0.20, 'capital_momentum': 0.20, 'sector_resonance': 0.15,
+            'relative_strength': 0.10, 'volume_health': 0.05, 'volatility_health': 0.05,
+            'drawdown_status': 0.15, 'institution_signal': 0.10,
+        }
+        overall_score = round(sum(dimensions[k] * W[k] for k in dimensions), 1)
+        if trend_strength >= 60 and capital_momentum >= 50 and resonance >= 50 and drawdown_status >= 60:
+            action_label = '可持有 / 加仓'
+            action_color = '#22c55e'
+        elif overall_score >= 55:
+            action_label = '观望'
+            action_color = '#eab308'
+        elif overall_score >= 40:
+            action_label = '减仓观察'
+            action_color = '#f97316'
+        else:
+            action_label = '远离'
+            action_color = '#ef4444'
 
     return {
-        'trend_strength': round(trend_strength, 1),
-        'capital_momentum': round(capital_momentum, 1),
-        'sector_resonance': round(resonance, 1),
-        'volume_health': round(volume_health, 1),
-        'volatility_health': round(volatility_health, 1),
-        'relative_strength': round(relative_strength, 1),
-        'drawdown_status': round(drawdown_status, 1),
-        'institution_signal': round(inst_score, 1),
-        'overall_score': overall_score,  # 8 维综合评分（与 watchlist API 对齐）
+        'status': 'PARTIAL' if missing_dimensions else 'READY',
+        'source': 'database',
+        'data_as_of': target_date.isoformat(),
+        'missing_dimensions': missing_dimensions,
+        'trend_strength': _round_optional(trend_strength),
+        'capital_momentum': _round_optional(capital_momentum),
+        'sector_resonance': _round_optional(resonance),
+        'volume_health': _round_optional(volume_health),
+        'volatility_health': _round_optional(volatility_health),
+        'relative_strength': _round_optional(relative_strength),
+        'drawdown_status': _round_optional(drawdown_status),
+        'institution_signal': _round_optional(inst_score),
+        'overall_score': overall_score,  # 8 维加权综合分，与建议标签同口径
         'action_label': action_label,
         'action_color': action_color,
+        'metric_source': metric_source,   # 'features_daily' | 'kline_fallback'（K线近似）
+        'risk': risk,
+        'index_chg': _fetch_hs300_pct(),  # 沪深300 当日涨跌幅（%），强弱对比用；从 stock_flow DB 聚合
         'sector_flow': {
             'sector': sector,
+            'source': 'database',
+            'status': (
+                'READY' if sector_ready else
+                'PARTIAL' if sector_missing_fields else
+                'STALE' if srows else 'MISSING'
+            ),
+            'data_as_of': srows[0].trade_date.isoformat() if srows else None,
+            'expected_data_as_of': target_date.isoformat(),
+            'coverage': {
+                'available_periods': len(srows),
+                'required_periods': len(sector_dates),
+            },
+            'missing_fields': sector_missing_fields,
             'net_flow': sector_net,
             'avg_chg': sector_avg_chg,
             'limit_up_count': sector_limit_up,
@@ -1075,19 +1523,23 @@ def _compute_dashboard(code: str, db) -> Optional[dict]:
             'heat_score': float(sf.heat_score) if sf and sf.heat_score is not None else None,
         },
         'institution_flow': inst_detail,
-        'realtime': _compute_realtime(code6, sector, db),
+        'realtime': _compute_realtime(ts_code, sector, db),
         'main_net_cumulative': _compute_cumulative(ts_code, sector, db, target_date),
-        'sector_rotation': _compute_sector_rotation(sector, db, target_date),
+        'sector_rotation': _compute_sector_rotation(sector, db, target_date, ts_code=ts_code),
         'technical_indicators': _compute_technical_indicators(ts_code, db, target_date),
-        'bs_interval': _compute_bs_interval(ts_code, close, db, target_date),
+        'bs_interval': _compute_bs_interval(ts_code, price, db, target_date),
         'features': features,
         'quote': {
             'price': price,
             'change': own_chg,
-            'name': flow.name or code6,
+            'name': (flow_reference.name if flow_reference else None) or watchlist_name or code6,
+            'source': 'database',
+            'upstream_source': 'stock_flow' if flow is not None and flow_price is not None and flow_price > 0 else 'stock_daily_kline',
+            'status': 'READY' if price is not None and own_chg is not None else 'PARTIAL',
         },
         'date': target_date.isoformat(),
         'code': code,
+        'sector_peers': _fetch_sector_peers(sector, code6, db),
     }
 
 
@@ -1158,7 +1610,7 @@ async def stock_dashboard_batch(
 
 
 @router.get("/api/stock-dashboard/{code}")
-async def stock_dashboard(code: str, refresh: bool = Query(False, description="true 时强制重算并刷新缓存")):
+def stock_dashboard(code: str, refresh: bool = Query(False, description="true 时强制重算并刷新缓存")):
     """单个股票决策仪表盘（8维指数 + 操作建议）"""
     # 0) 强制刷新：清掉旧缓存
     if refresh:

@@ -349,6 +349,23 @@ CONCEPT_DESCRIPTIONS = {
 # SINA_HEADERS imported from utils.http_constants
 
 
+def _request_json(url, *, params, headers, attempts=3, timeout=10):
+    """读取公共行情 JSON；空响应和临时断连会做短退避重试。"""
+    last_error = None
+    for attempt in range(1, attempts + 1):
+        try:
+            response = requests.get(url, params=params, timeout=timeout, headers=headers)
+            response.raise_for_status()
+            if not response.content:
+                raise ValueError('empty response')
+            return response.json()
+        except Exception as exc:
+            last_error = exc
+            if attempt < attempts:
+                time.sleep(0.5 * attempt)
+    raise last_error
+
+
 def _normalize_ts_code(code):
     """统一成分股代码为 ts_code 格式"""
     code = str(code).strip()
@@ -395,14 +412,13 @@ def _run_threaded(worker, items, max_workers=4, ordered=False):
 
 def _sina_fetch_concept_list():
     """从新浪财经获取概念板块列表，返回 [(name, node, netamount), ...]"""
-    url = 'http://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/MoneyFlow.ssl_bkzj_bk'
+    url = 'https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/MoneyFlow.ssl_bkzj_bk'
     items = []
     for page in range(1, 20):
         try:
-            resp = requests.get(url, params={
+            data = _request_json(url, params={
                 'page': page, 'num': 100, 'sort': 'netamount', 'asc': 0, 'fenlei': 1
-            }, timeout=10, headers=SINA_HEADERS)
-            data = resp.json()
+            }, headers=SINA_HEADERS)
             if not data:
                 break
             for item in data:
@@ -417,7 +433,7 @@ def _sina_fetch_concept_list():
             if len(data) < 100:
                 break
         except Exception as e:
-            logger.warning(f'[sync_concept_sectors] sina list page {page} error: {e}', exc_info=True)
+            logger.warning(f'[sync_concept_sectors] sina list page {page} error: {e}')
             break
     # 按净流入排序，取前 200（避免成分股请求过多）
     items.sort(key=lambda x: x['netamount'], reverse=True)
@@ -427,14 +443,13 @@ def _sina_fetch_concept_list():
 
 def _sina_fetch_concept_cons(node, max_pages=10):
     """获取单个新浪概念板块的成分股 code 列表"""
-    url = 'http://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeData'
+    url = 'https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeData'
     codes = []
     for page in range(1, max_pages + 1):
         try:
-            resp = requests.get(url, params={
+            data = _request_json(url, params={
                 'page': page, 'num': 80, 'sort': 'symbol', 'asc': 1, 'node': node
-            }, timeout=10, headers=SINA_HEADERS)
-            data = resp.json()
+            }, headers=SINA_HEADERS)
             if not data:
                 break
             for item in data:
@@ -444,7 +459,7 @@ def _sina_fetch_concept_cons(node, max_pages=10):
             if len(data) < 80:
                 break
         except Exception as e:
-            logger.warning(f'[sync_concept_sectors] sina cons {node} page {page} error: {e}', exc_info=True)
+            logger.warning(f'[sync_concept_sectors] sina cons {node} page {page} error: {e}')
             break
     return codes
 
@@ -483,7 +498,7 @@ def fetch_from_akshare():
         df_list = ak.stock_board_concept_name_em()
         logger.info('[sync_concept_sectors] fetched %d concept boards from akshare', len(df_list))
     except Exception as e:
-        logger.warning(f'[sync_concept_sectors] akshare stock_board_concept_name_em error: {e}', exc_info=True)
+        logger.warning(f'[sync_concept_sectors] akshare stock_board_concept_name_em error: {e}')
         return {}
 
     names = []
@@ -564,17 +579,16 @@ def fetch_from_tushare_ths():
 
 def fetch_from_eastmoney():
     """从东方财富 HTTP API 拉取概念板块列表（暂无免费成分股接口，仅作名称补充）"""
-    url = 'http://push2.eastmoney.com/api/qt/clist/get'
+    url = 'https://push2.eastmoney.com/api/qt/clist/get'
     names = []
     for page in range(1, 5):
         try:
-            resp = requests.get(url, params={
+            data = _request_json(url, params={
                 'pn': page, 'pz': 100, 'po': 1, 'np': 1,
                 'fltt': 2, 'invt': 2, 'fid': 'f12',
                 'fs': 'm:90 t:3',
                 'fields': 'f12,f14'
-            }, timeout=10, headers={'User-Agent': 'Mozilla/5.0'})
-            data = resp.json()
+            }, headers={'User-Agent': 'Mozilla/5.0'})
             diff = data.get('data', {}).get('diff', {})
             if isinstance(diff, dict):
                 diff = list(diff.values())
@@ -585,7 +599,7 @@ def fetch_from_eastmoney():
                 if name and name not in names:
                     names.append(name)
         except Exception as e:
-            logger.warning(f'[sync_concept_sectors] eastmoney page {page} error: {e}', exc_info=True)
+            logger.warning(f'[sync_concept_sectors] eastmoney page {page} error: {e}')
             break
     print(f'[sync_concept_sectors] fetched {len(names)} concept names from eastmoney')
     return names
@@ -625,31 +639,39 @@ def merge_concepts(*sources):
     return merged
 
 
+def _can_prune_stale(existing_count: int, remote_count: int) -> bool:
+    """只有远端快照覆盖充分时才允许删除旧概念，防止临时断网毁掉数据库。"""
+    if existing_count <= 0:
+        return False
+    return remote_count >= max(20, int(existing_count * 0.6))
+
+
+def _fetch_merged_concepts():
+    """在数据库事务外采集并合并远端概念板块数据。"""
+    sina_concepts = fetch_from_sina()
+    akshare_concepts = fetch_from_akshare()
+    tushare_concepts = fetch_from_tushare_ths()
+    em_names = fetch_from_eastmoney()
+
+    merged = merge_concepts(sina_concepts, akshare_concepts, tushare_concepts, FALLBACK_CONCEPTS)
+    for name in em_names:
+        if name not in merged:
+            codes = akshare_concepts.get(name) or tushare_concepts.get(name) or FALLBACK_CONCEPTS.get(name, [])
+            if codes:
+                merged[name] = codes
+    return merged, sina_concepts, akshare_concepts, tushare_concepts
+
+
 def sync():
+    # 先完成表存在性和极短的本地读取，不能在数据库事务中等待远端网络。
+    Base.metadata.create_all(bind=engine, tables=[ConceptSector.__table__])
     with get_db_session() as db:
-        # 确保表存在
-        Base.metadata.create_all(bind=engine, tables=[ConceptSector.__table__])
+        existing_count = db.query(func.count(ConceptSector.id)).scalar() or 0
 
-        # 1. 新浪：列表 + 成分股（主数据源）
-        sina_concepts = fetch_from_sina()
+    merged, sina_concepts, akshare_concepts, tushare_concepts = _fetch_merged_concepts()
 
-        # 2. AkShare：列表 + 成分股
-        akshare_concepts = fetch_from_akshare()
-
-        # 3. Tushare THS：列表 + 成分股（需权限）
-        tushare_concepts = fetch_from_tushare_ths()
-
-        # 4. 东方财富：仅名称补充
-        em_names = fetch_from_eastmoney()
-
-        # 5. 合并：优先成分股最多的来源
-        merged = merge_concepts(sina_concepts, akshare_concepts, tushare_concepts, FALLBACK_CONCEPTS)
-
-        # 东财名称补充：如果某概念只有名称没有成分股，尝试从其他源找
-        for name in em_names:
-            if name not in merged:
-                merged[name] = akshare_concepts.get(name) or tushare_concepts.get(name) or FALLBACK_CONCEPTS.get(name, [])
-
+    # 网络采集完成后再打开写事务，避免慢源或超时长期占用数据库连接。
+    with get_db_session() as db:
         now = datetime.now()
         synced = 0
         for name, codes in merged.items():
@@ -679,17 +701,26 @@ def sync():
         db.commit()
         print(f'[sync_concept_sectors] synced {synced} concept sectors')
 
-        # 清理 merged 中已不存在的旧概念板块及其资金流向数据
+        # 清理 merged 中已不存在的旧概念板块及其资金流向数据。
+        # 必须有足够大的远端快照才允许清理；仅有内置 fallback 时保留旧库。
         valid_names = set(merged.keys())
-        stale = db.query(ConceptSector).filter(~ConceptSector.name.in_(valid_names)).all()
-        if stale:
-            from db.models import ConceptSectorFlow, RealtimeConceptSectorFlow
-            for s in stale:
-                db.query(ConceptSectorFlow).filter_by(concept_sector_id=s.id).delete()
-                db.query(RealtimeConceptSectorFlow).filter_by(concept_sector_id=s.id).delete()
-                db.delete(s)
-            db.commit()
-            print(f'[sync_concept_sectors] cleaned {len(stale)} stale concept sectors')
+        remote_names = set(sina_concepts) | set(akshare_concepts) | set(tushare_concepts)
+        if _can_prune_stale(existing_count, len(remote_names)):
+            stale = db.query(ConceptSector).filter(~ConceptSector.name.in_(valid_names)).all()
+            if stale:
+                from db.models import ConceptSectorFlow, RealtimeConceptSectorFlow
+                for s in stale:
+                    db.query(ConceptSectorFlow).filter_by(concept_sector_id=s.id).delete()
+                    db.query(RealtimeConceptSectorFlow).filter_by(concept_sector_id=s.id).delete()
+                    db.delete(s)
+                db.commit()
+                print(f'[sync_concept_sectors] cleaned {len(stale)} stale concept sectors')
+        elif existing_count:
+            logger.warning(
+                '[sync_concept_sectors] remote snapshot incomplete (%s remote / %s existing); '
+                'preserving existing concept rows',
+                len(remote_names), existing_count,
+            )
 
         # 打印来源分布
         dist = db.query(ConceptSector.source, func.count(ConceptSector.id)).group_by(ConceptSector.source).all()

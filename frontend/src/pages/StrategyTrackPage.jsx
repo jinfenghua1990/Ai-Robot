@@ -27,6 +27,8 @@ import { apiFetch } from '../utils/request';
 import { UP_COLOR, DOWN_COLOR, UP_DARK, DOWN_DARK } from '../utils/colors';
 import SinaLink from '../components/SinaLink';
 import { stripCode } from '../utils/format';
+import { useViewMode } from '../hooks/useViewMode';
+import StockListContainer from '../components/StockListContainer';
 
 const fmtPct = (v) => {
   if (v == null) return '-';
@@ -95,6 +97,7 @@ export default function StrategyTrackPage() {
   const [loading, setLoading] = useState(false);
   const [acting, setActing] = useState(false);
   const [error, setError] = useState('');
+  const [viewMode, setViewMode] = useViewMode('strategy-track', 'card');
 
   const loadActive = useCallback(async () => {
     setLoading(true);
@@ -276,11 +279,12 @@ export default function StrategyTrackPage() {
       </div>
 
       {/* ============ Tabs ============ */}
-      <div className="flex items-center gap-1">
-        {[
-          { key: 'active', label: '跟踪中', count: summary.active ?? 0 },
-          { key: 'history', label: '历史', count: exitedCount },
-        ].map((t) => {
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-1">
+          {[
+            { key: 'active', label: '跟踪中', count: summary.active ?? 0 },
+            { key: 'history', label: '历史', count: exitedCount },
+          ].map((t) => {
           const isActive = tab === t.key;
           return (
             <button
@@ -297,27 +301,28 @@ export default function StrategyTrackPage() {
             </button>
           );
         })}
+        </div>
       </div>
 
       {/* ============ 跟踪中: 股票卡片 ============ */}
       {tab === 'active' && (
-        <div>
-          {loading && !activeData && (
-            <div className="text-xs p-4 text-center" style={{ color: 'var(--text-muted)' }}>加载中...</div>
-          )}
-          {!loading && activeRows.length === 0 && (
-            <div className="text-xs p-4 text-center rounded border" style={{ color: 'var(--text-muted)', borderColor: 'var(--border-color)' }}>
-              暂无跟踪中的股票，点击"入池(今日)"开始
-            </div>
-          )}
-          {activeRows.length > 0 && (
+        <StockListContainer
+          viewModeKey="strategy-track"
+          viewMode={viewMode}
+          onViewModeChange={setViewMode}
+          loading={loading && !activeData}
+          items={activeRows}
+          tableRenderer={() => <TrackerTable rows={activeRows} onExit={handleManualExit} acting={acting} />}
+          cardRenderer={() => (
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2.5">
               {activeRows.map((r) => (
                 <TrackerCard key={r.id} row={r} onExit={handleManualExit} acting={acting} />
               ))}
             </div>
           )}
-        </div>
+          emptyText='暂无跟踪中的股票，点击"入池(今日)"开始'
+          loadingText="加载中..."
+        />
       )}
 
       {/* ============ 历史: 表格 ============ */}
@@ -400,6 +405,63 @@ function Chip({ label, value, color }) {
 }
 
 // 跟踪中股票卡片
+function TrackerTable({ rows, onExit, acting }) {
+  return (
+    <div className="overflow-x-auto rounded-lg border" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
+      <table className="w-full border-collapse text-[11px]">
+        <thead>
+          <tr className="text-[10px] font-medium" style={{ background: 'var(--bg-surface)', borderBottom: '2px solid var(--border-color)', color: 'var(--text-muted)' }}>
+            <th className="px-2 py-2 text-left whitespace-nowrap">股票</th>
+            <th className="px-2 py-2 text-center whitespace-nowrap">入池日</th>
+            <th className="px-2 py-2 text-right whitespace-nowrap">入池价</th>
+            <th className="px-2 py-2 text-right whitespace-nowrap">最新价</th>
+            <th className="px-2 py-2 text-right whitespace-nowrap">累计%</th>
+            <th className="px-2 py-2 text-right whitespace-nowrap">当日%</th>
+            <th className="px-2 py-2 text-center whitespace-nowrap">天数</th>
+            <th className="px-2 py-2 text-center whitespace-nowrap">BS信号</th>
+            <th className="px-2 py-2 text-center whitespace-nowrap">操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => {
+            const bs = bsBadgeStyle(r.latest_bs_signal);
+            return (
+              <tr key={r.id} className="border-t" style={{ borderColor: 'var(--border-color)' }}>
+                <td className="px-2 py-1.5 whitespace-nowrap">
+                  <div className="flex items-center gap-1">
+                    <span className="font-bold" style={{ color: 'var(--text-primary)' }}>{r.name}</span>
+                    <SinaLink tsCode={r.ts_code} />
+                  </div>
+                  <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{stripCode(r.ts_code)}</div>
+                </td>
+                <td className="px-2 py-1.5 text-center" style={{ color: 'var(--text-secondary)' }}>{r.pool_date || '-'}</td>
+                <td className="px-2 py-1.5 text-right font-mono" style={{ color: 'var(--text-secondary)' }}>{r.pool_close != null ? Number(r.pool_close).toFixed(2) : '-'}</td>
+                <td className="px-2 py-1.5 text-right font-mono font-bold" style={{ color: pctColor(r.latest_daily_chg) }}>{r.latest_close != null ? Number(r.latest_close).toFixed(2) : '-'}</td>
+                <td className="px-2 py-1.5 text-right font-mono font-bold" style={{ color: pctColor(r.latest_pct) }}>{fmtPct(r.latest_pct)}</td>
+                <td className="px-2 py-1.5 text-right font-mono font-bold" style={{ color: pctColor(r.latest_daily_chg) }}>{fmtPct(r.latest_daily_chg)}</td>
+                <td className="px-2 py-1.5 text-center font-bold" style={{ color: 'var(--text-primary)' }}>{r.latest_day ?? 0}/20</td>
+                <td className="px-2 py-1.5 text-center">
+                  <span className="px-1.5 py-0.5 rounded text-[10px] font-bold whitespace-nowrap" style={{ background: bs.bg, color: bs.color, border: `1px solid ${bs.border}` }} title={r.latest_bs_reason || bs.label}>{bs.label}</span>
+                </td>
+                <td className="px-2 py-1.5 text-center">
+                  <button
+                    onClick={() => onExit(r.id, r.name)}
+                    disabled={acting}
+                    className="px-2 py-1 text-xs rounded border disabled:opacity-50 font-medium"
+                    style={{ borderColor: '#3b82f6', color: '#3b82f6' }}
+                  >
+                    🚪 撤离
+                  </button>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function TrackerCard({ row, onExit, acting }) {
   const r = row;
   const bs = bsBadgeStyle(r.latest_bs_signal);

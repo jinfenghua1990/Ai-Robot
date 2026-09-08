@@ -23,6 +23,15 @@ START_TIME = time.time()
 _DAILY_ETL_FOCUS = {
     "research_collection",   # 19:30 妙想资讯+数据+AI基线 → stock_news_search/stock_data_query/ai_analysis_cache
     "daily_report",          # 20:00 综合日报 HTML 生成
+    "us_quant_collect",      # 美股收盘后日K采集
+    "us_quant_scan_5_7",     # 美股盘后扫描（幂等重试）
+    "us_quant_scan_8",       # 美股盘后最后一次补偿扫描
+    "hk_market_scan_16_30",  # 港股盘后首次快照
+    "hk_market_scan_18",     # 港股盘后补偿快照
+    "market_quant_us_pipeline",  # 美股股票池/历史/七维因子快照
+    "market_quant_hk_pipeline",  # 港股股票池/历史/七维因子快照
+    "market_quant_us_research",  # 美股市场感知妙想研究
+    "market_quant_hk_research",  # 港股市场感知妙想研究
     "archive",               # 15:05 收盘归档 → sector_flow/stock_flow
     "analyze",               # 15:30 盘后分析
     "dragon_tiger_evening",  # 18:05 龙虎榜（Tushare 18:00 发布数据，18:05 首次采，18:30 兜底）
@@ -88,6 +97,7 @@ def data_freshness():
         ("watchlist_signal_daily", "trade_date"),
         ("trading_signal_daily", "trade_date"),
         ("stock_daily_kline", "trade_date"),
+        ("stock_money_flow_detail", "trade_date"),
         ("stock_news_search", "created_at"),
         ("stock_data_query", "query_time"),
         ("ai_analysis_cache", "created_at"),

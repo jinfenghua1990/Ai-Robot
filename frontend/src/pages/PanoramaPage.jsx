@@ -16,7 +16,8 @@ import SharedTrendPanel from '../components/sections/SharedTrendPanel';
 import StockCompareSection from '../components/sections/StockCompareSection';
 import AfterConceptSectorFlowSection from '../components/sections/AfterConceptSectorFlowSection';
 import RealtimeConceptSectorSection from '../components/sections/RealtimeConceptSectorSection';
-import ConceptSectorFilter, { loadSelectedConcepts, saveSelectedConcepts, ALL_CONCEPTS } from '../components/sections/ConceptSectorFilter';
+import ConceptSectorFilter from '../components/sections/ConceptSectorFilter';
+import { loadSelectedConcepts, saveSelectedConcepts, ALL_CONCEPTS } from '../utils/conceptFilterStorage';
 import MarketStageBar from '../components/MarketStageBar';
 import { POLL_INTERVAL } from '../utils/constants';
 

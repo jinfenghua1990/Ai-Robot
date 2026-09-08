@@ -10,7 +10,7 @@ import { useState, useRef, useEffect } from 'react';
  */
 export default function BatchBar({
   batchMode, selectedIds, allStocks, groups, activeGroup, onToggleBatch, onSelectAll, onInvert, onClearSel,
-  onBatchDelete, onBatchMove, onExport, addLog,
+  onBatchDelete, onBatchMove, onExport,
 }) {
   const [open, setOpen] = useState(false);
   const [moveOpen, setMoveOpen] = useState(false);

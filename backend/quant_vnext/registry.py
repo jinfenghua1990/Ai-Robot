@@ -53,6 +53,7 @@ def default_registry() -> FactorRegistry:
         FactorDefinition("sector_relative_20d", "momentum", "sector_context", "stock_return_20d-sector_return_20d", ("close", "sector"), 20, 1, production=True),
         FactorDefinition("rank_in_sector", "momentum", "sector_context", "行业内20日收益排名", ("close", "sector"), 20, 1, production=True),
         FactorDefinition("strength_persistence", "momentum", "daily_bar", "过去20日上涨日比例", ("close",), 20, 1, production=True),
+        FactorDefinition("rsi_slope_5d", "momentum", "daily_bar", "RSI14[t]-RSI14[t-5]，动量延续性", ("close",), 19, 1, production=True),
 
         # 4. 趋势结构：MA 只在 alignment 中统一表达，不重复叠加单条均线分数。
         FactorDefinition("ma_alignment", "trend", "daily_bar", "MA5>MA10>MA20", ("close",), 20, 1, production=True),
@@ -67,6 +68,7 @@ def default_registry() -> FactorRegistry:
         FactorDefinition("price_volume_corr", "volume_price", "daily_bar", "Corr(return,volume,20)", ("close", "volume"), 20, 1, production=True),
         FactorDefinition("up_volume_ratio", "volume_price", "daily_bar", "上涨日成交量/总成交量", ("close", "volume"), 20, 1, production=True),
         FactorDefinition("pullback_volume_shrink", "volume_price", "daily_bar", "回调日均量/前20日均量", ("close", "volume"), 20, -1, production=True),
+        FactorDefinition("vwap_bias_20d", "volume_price", "daily_bar", "close/20日VWAP-1，价格相对成交均价的偏离", ("close", "volume"), 20, 1, production=True),
 
         # 6. 交易位置。
         FactorDefinition("distance_high_20d", "position", "daily_bar", "close/max(high,20)-1", ("high", "close"), 20, 1, production=True),
@@ -77,9 +79,11 @@ def default_registry() -> FactorRegistry:
 
         # 7. 风险质量：高分表示风险质量好，综合评分会扣除风险惩罚。
         FactorDefinition("volatility_20d", "risk", "daily_bar", "Std(daily_return,20)", ("close",), 20, -1, production=True),
+        FactorDefinition("parkinson_vol_20d", "risk", "daily_bar", "Parkinson高低价波动率20日，比收盘价波动更稳", ("high", "low"), 20, -1, production=True),
         FactorDefinition("atr_pct_14d", "risk", "daily_bar", "ATR14/close", ("high", "low", "close"), 14, -1, production=True),
         FactorDefinition("drawdown_60d", "risk", "daily_bar", "close/max(close,60)-1", ("close",), 60, 1, production=True),
         FactorDefinition("overextension_5d", "risk", "daily_bar", "return_5d", ("close",), 5, -1, production=True),
         FactorDefinition("liquidity_amount_20d", "risk", "daily_bar", "mean(amount,20)", ("amount",), 20, 1, production=True),
+        FactorDefinition("amihud_illiq_20d", "risk", "daily_bar", "mean(|ret|/(close*volume),20)，非流动性", ("close", "volume"), 20, -1, production=True),
     ]
     return FactorRegistry(definitions)

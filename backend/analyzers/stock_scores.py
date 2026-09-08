@@ -24,7 +24,7 @@ def _clamp(v, lo=0, hi=100):
 def _norm(raw, lo, hi):
     """归一化到 0-100"""
     if raw is None:
-        return 50
+        return None
     return _clamp((raw - lo) / (hi - lo) * 100)
 
 
@@ -53,13 +53,15 @@ SECTOR_STAGES = ['冷门', '跟随', '联动', '协同', '共振', '领涨', '�
 def calc_sentiment(quote: Optional[dict], sector_trend: Optional[dict],
                    features: Optional[dict]) -> Optional[dict]:
     """情绪温度：综合涨跌、板块热度、资金方向、量比"""
-    if not quote and not sector_trend:
+    if not quote or not sector_trend or not sector_trend.get('available') or not features:
         return None
 
-    change_pct = quote.get('changePct', 0) if quote else 0
-    heat = sector_trend.get('latest_heat', 50) if sector_trend and sector_trend.get('available') else 50
-    flow_dir = sector_trend.get('flow_direction', '') if sector_trend else ''
-    vol_ratio = features.get('volume_ratio', 1.0) if features else 1.0
+    change_pct = quote.get('changePct')
+    heat = sector_trend.get('latest_heat')
+    flow_dir = sector_trend.get('flow_direction')
+    vol_ratio = features.get('volume_ratio')
+    if any(value is None for value in (change_pct, heat, flow_dir, vol_ratio)):
+        return None
 
     score = (
         _norm(change_pct, -10, 10) * 0.3 +
@@ -73,20 +75,21 @@ def calc_sentiment(quote: Optional[dict], sector_trend: Optional[dict],
 def calc_risk(features: Optional[dict], buy_power: Optional[dict],
               position: Optional[dict]) -> Optional[dict]:
     """风险等级：噪声比、ATR、仓位集中度、持仓比例（反向指标：低分=安全）"""
-    if not features and not buy_power and not position:
+    if not features or position is None:
         return None
 
-    noise = features.get('noise_ratio', 1.0) if features else 1.0
-    atr_pct = features.get('atr_pct', 0.03) if features else 0.03
-    pos_score = (buy_power.get('dimensions', {}).get('position', 50)
-                 if buy_power and buy_power.get('dimensions') else 50)
-    pos_pct = position.get('posPct', 0) if position else 0
+    noise = features.get('noise_ratio')
+    atr = features.get('atr_14')
+    close = features.get('close')
+    pos_pct = position.get('posPct')
+    if any(value is None for value in (noise, atr, close, pos_pct)) or close <= 0:
+        return None
+    atr_pct = atr / close
 
-    # 风险分 = 高噪声 + 高波动 + 低形态 + 高仓位 → 分数越高越危险
+    # 风险分 = 高噪声 + 高波动 + 高仓位 → 分数越高越危险
     score = (
-        _norm(noise, 0, 3) * 0.3 +
-        _norm(atr_pct, 0, 0.1) * 0.3 +
-        (100 - pos_score) * 0.2 +
+        _norm(noise, 0, 3) * 0.4 +
+        _norm(atr_pct, 0, 0.1) * 0.4 +
         _norm(pos_pct, 0, 100) * 0.2
     )
     return _score_to_stage(round(_clamp(score)), RISK_STAGES)
@@ -95,13 +98,15 @@ def calc_risk(features: Optional[dict], buy_power: Optional[dict],
 def calc_momentum(sector_trend: Optional[dict],
                   features: Optional[dict]) -> Optional[dict]:
     """资金动能（板块资金面）：板块净流入、资金方向、3日主力流入、资金连续性"""
-    if not sector_trend and not features:
+    if not sector_trend or not sector_trend.get('available') or not features:
         return None
 
-    net_flow = sector_trend.get('total_net_flow', 0) if sector_trend and sector_trend.get('available') else 0
-    flow_dir = sector_trend.get('flow_direction', '') if sector_trend else ''
-    inflow_3d = features.get('main_net_inflow_3d', 0) if features else 0
-    continuity = features.get('flow_continuity', 0) if features else 0
+    net_flow = sector_trend.get('total_net_flow')
+    flow_dir = sector_trend.get('flow_direction')
+    inflow_3d = features.get('main_net_inflow_3d')
+    continuity = features.get('flow_continuity')
+    if any(value is None for value in (net_flow, flow_dir, inflow_3d, continuity)):
+        return None
 
     score = (
         _norm(net_flow / 10000, -50, 50) * 0.3 +
@@ -122,13 +127,15 @@ def calc_main_force(quote: Optional[dict], features: Optional[dict],
     - 量比放大（大单交易活跃度代理指标）
     - 涨跌配合度（量价齐升=主力建仓，量增价跌=主力减仓）
     """
-    if not features and not quote:
+    if not features or not quote:
         return None
 
-    inflow_3d = features.get('main_net_inflow_3d', 0) if features else 0
-    continuity = features.get('flow_continuity', 0) if features else 0
-    vol_ratio = features.get('volume_ratio', 1.0) if features else 1.0
-    change_pct = quote.get('changePct', 0) if quote else 0
+    inflow_3d = features.get('main_net_inflow_3d')
+    continuity = features.get('flow_continuity')
+    vol_ratio = features.get('volume_ratio')
+    change_pct = quote.get('changePct')
+    if any(value is None for value in (inflow_3d, continuity, vol_ratio, change_pct)):
+        return None
 
     # 量价配合度：量增+价涨=建仓(高)；量增+价跌=减仓(低)
     if vol_ratio > 1.5 and change_pct > 0:
@@ -168,16 +175,16 @@ def _technical_score_to_stage(score: int, features: Optional[dict]) -> dict:
     if not features:
         return _score_to_stage(score, TECHNICAL_STAGES[:5])
 
-    rsi = features.get('rsi_14', 50) or 50
-    vol_ratio = features.get('volume_ratio', 1.0) or 1.0
-    close_vs_ma20 = features.get('close_vs_ma20', 0) or 0
-    higher_high = features.get('higher_high_flag', 0)
+    rsi = features.get('rsi_14')
+    vol_ratio = features.get('volume_ratio')
+    close_vs_ma20 = features.get('close_vs_ma20')
+    higher_high = features.get('higher_high_flag')
 
     # 顶部：RSI>=70 且量价背离（量大但 close_vs_ma20 收窄）
-    if rsi >= 70 and vol_ratio > 1.5 and close_vs_ma20 < 0.05:
+    if None not in (rsi, vol_ratio, close_vs_ma20) and rsi >= 70 and vol_ratio > 1.5 and close_vs_ma20 < 0.05:
         return {'stage': '顶部', 'score': score}
     # 突破：多头（score>=75）且新高突破且量能放大
-    if score >= 75 and higher_high == 1 and vol_ratio > 1.2:
+    if score >= 75 and higher_high == 1 and vol_ratio is not None and vol_ratio > 1.2:
         return {'stage': '突破', 'score': score}
     # 否则按 5 段映射（取前 5 段）
     return _score_to_stage(score, TECHNICAL_STAGES[:5])
@@ -188,18 +195,27 @@ def calc_technical(features: Optional[dict]) -> Optional[dict]:
     if not features:
         return None
 
-    hh = 1 if features.get('higher_high_flag') else 0
-    hl = 1 if features.get('higher_low_flag') else 0
-    consistency = features.get('trend_consistency_score', 50)
-    close_vs_ma20 = features.get('close_vs_ma20', 0)
-    ma20_slope = features.get('ma20_slope', 0)
+    required = (
+        features.get('higher_high_flag'), features.get('higher_low_flag'),
+        features.get('trend_consistency_score'), features.get('close_vs_ma20'),
+        features.get('ma20_slope'),
+    )
+    if any(value is None for value in required):
+        return None
+    hh = 1 if required[0] else 0
+    hl = 1 if required[1] else 0
+    consistency = required[2]
+    close_vs_ma20 = required[3]
+    ma20_slope = required[4]
 
     score = (
         hh * 20 +
         hl * 20 +
-        _norm(consistency, 0, 100) * 0.3 +
+        _norm(consistency, 0, 1) * 0.3 +
         _norm(close_vs_ma20, -0.1, 0.1) * 0.15 +
-        _norm(ma20_slope, -2, 2) * 0.15
+        # stock_features_daily.ma20_slope 是小数变化率（0.02 表示 +2%），
+        # 必须按同一单位归一化，不能把它当作已乘 100 的百分数。
+        _norm(ma20_slope, -0.02, 0.02) * 0.15
     )
     return _technical_score_to_stage(round(_clamp(score)), features)
 
@@ -210,15 +226,17 @@ def calc_sector_resonance(sector_trend: Optional[dict],
     if not sector_trend or not sector_trend.get('available'):
         return None
 
-    heat = sector_trend.get('latest_heat', 50)
-    heat_trend = sector_trend.get('heat_trend', 'stable')
-    rise_ratio = sector_trend.get('rise_ratio', 0)
-    sector_strength = features.get('sector_strength', 50) if features else 50
+    heat = sector_trend.get('latest_heat')
+    heat_trend = sector_trend.get('heat_trend')
+    rise_ratio = sector_trend.get('rise_ratio')
+    sector_strength = sector_trend.get('latest_avg_chg')
+    if any(value is None for value in (heat, heat_trend, rise_ratio, sector_strength)):
+        return None
 
     score = (
         _norm(heat, 0, 100) * 0.3 +
         (80 if heat_trend == 'up' else 20 if heat_trend == 'down' else 50) * 0.25 +
-        _norm(rise_ratio, -5, 5) * 0.2 +
-        _norm(sector_strength, 0, 100) * 0.25
+        _norm(rise_ratio, 0, 100) * 0.2 +
+        _norm(sector_strength, -5, 5) * 0.25
     )
     return _score_to_stage(round(_clamp(score)), SECTOR_STAGES)

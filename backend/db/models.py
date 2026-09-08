@@ -496,6 +496,27 @@ class StockFeaturesDaily(Base):
     )
 
 
+class IndexDaily(Base):
+    """指数每日行情日表（从 stock_flow 成分股聚合，纯 DB，无外部采集）
+
+    供 dashboard 强弱对比、指数资金流向等页面做“常规”读取，避免每次现场聚合。
+    close 为成分股均价（代理点位），pct_change 为成分股平均涨跌幅（%）。
+    """
+    __tablename__ = "index_daily"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    ts_code = Column(String(20), nullable=False)        # 指数代码，如 000300.SH
+    name = Column(String(20), nullable=False)           # 指数名称，如 沪深300
+    trade_date = Column(Date, nullable=False)           # 交易日
+    close = Column(Float)                               # 成分股均价（代理点位）
+    pct_change = Column(Float)                          # 涨跌幅 %
+    member_count = Column(Integer)                      # 参与聚合成分数
+    created_at = Column(DateTime, server_default=func.now())
+
+    __table_args__ = (
+        Index('ix_index_daily_code_date', 'ts_code', 'trade_date', unique=True),
+    )
+
+
 class StockDailyKline(Base):
     """个股日 K 线（Tushare daily 同步到本地,供 7 天生命周期等中转层使用）"""
     __tablename__ = "stock_daily_kline"
@@ -781,7 +802,30 @@ class AutoTradeConfig(Base):
     buy_quantity = Column(Integer, default=100)               # 每次买入股数（100的整数倍）
     sell_quantity = Column(Integer, default=100)              # 每次卖出股数（100的整数倍）
     account_source = Column(String(20), default='displayed')  # displayed=持仓页账户, dedicated=专用交易账户
+    run_environment = Column(String(20), default='paper')     # paper/live
+    paused = Column(Boolean, default=False)
+    pause_reason = Column(String(200), default='')
+    paused_at = Column(DateTime)
+    control_migrated_at = Column(DateTime)
     updated_at = Column(DateTime, server_default=func.now())
+
+
+class AutoTradeStockConfig(Base):
+    """个股级自动交易授权与风控配置。"""
+    __tablename__ = "auto_trade_stock_config"
+    code = Column(String(20), primary_key=True)
+    config_json = Column(Text, nullable=False, default='{}')
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class AutoTradeControlAudit(Base):
+    """自动交易控制面操作审计。"""
+    __tablename__ = "auto_trade_control_audit"
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    code = Column(String(20), index=True, default='')
+    event_time = Column(DateTime, nullable=False, index=True, server_default=func.now())
+    event_json = Column(Text, nullable=False)
 
 
 class AutoTradeLog(Base):
@@ -824,6 +868,7 @@ class SimAccount(Base):
     total_pos_pct = Column(Numeric(5, 2), default=0)
     nav = Column(Numeric(10, 4), default=1)
     opr_days = Column(Integer, default=0)
+    source = Column(String(20), default='miaoxiang')
     updated_at = Column(DateTime, server_default=func.now())
 
 
@@ -844,6 +889,7 @@ class SimPosition(Base):
     profit = Column(Numeric(18, 2))
     profit_pct = Column(Numeric(6, 2))
     pos_pct = Column(Numeric(5, 2))
+    source = Column(String(20), default='miaoxiang')
     updated_at = Column(DateTime, server_default=func.now())
 
 
@@ -851,6 +897,7 @@ class SimOrder(Base):
     """原模拟盘虚拟委托记录"""
     __tablename__ = "sim_order"
     id = Column(Integer, primary_key=True, autoincrement=True)
+    external_order_id = Column(String(100), index=True)
     sec_code = Column(String(20), index=True)
     sec_name = Column(String(50))
     sec_mkt = Column(Integer, default=0)
@@ -860,6 +907,7 @@ class SimOrder(Base):
     trade_count = Column(Integer, default=0)
     trade_price = Column(Numeric(10, 3))
     status = Column(Integer, default=4)   # 4=已成（模拟盘即时成交）
+    source = Column(String(20), default='miaoxiang')
     time = Column(DateTime, server_default=func.now())
     created_at = Column(DateTime, server_default=func.now())
 
@@ -983,6 +1031,83 @@ class LeaderTrack(Base):
 # ============================================================
 # 游资龙虎榜系统（Day1 盘后清洗 -> 量化共振 -> Day2 观察池）
 # ============================================================
+
+class HorizontalSignal(Base):
+    """横盘蓄势策略：每日扫描结果
+
+    大盘过滤 → 板块过滤 → 箱体识别 → 量价健康 → 信号分类 → 100 分评分
+    每只股票每个交易日一条；次日人工交易参考（不自动下单）。
+    """
+    __tablename__ = "horizontal_signal"
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    ts_code = Column(String(20), nullable=False, index=True)
+    trade_date = Column(Date, nullable=False, index=True)
+    name = Column(String(30), default="")
+    sector = Column(String(50), default="")          # 所属最强概念板块
+
+    # 状态与信号
+    state = Column(String(20), default="横盘观察")     # 横盘观察/接近突破/突破启动/回踩确认/突破失败
+    signal_code = Column(String(4))                    # A/B/C/D/None
+    signal_detail = Column(Text, default="")
+    grade = Column(String(10), default="")            # 核心候选/重点观察/普通观察/不显示
+    score = Column(Float)
+    score_detail = Column(Text)                        # JSON {模块: 得分}
+    tradable = Column(Boolean, default=False)          # 大盘+板块+信号均满足 → 可交易
+
+    # 箱体
+    box_high = Column(Float)
+    box_low = Column(Float)
+    box_days = Column(Integer)
+    amplitude = Column(Float)                          # 箱体振幅 %
+    dist_to_break = Column(Float)                      # 距上沿 %
+    close_pos_in_box = Column(Float)                   # 收盘在箱体位置 %
+    ma20_drift = Column(Float)                         # MA20 变化 %
+    atr_ratio = Column(Float)                          # ATR14/收盘 %
+
+    # 量价
+    up_dn_vol_ratio = Column(Float)                    # 阳线均量/阴线均量
+    vol_ratio_5_20 = Column(Float)                     # 5日均量/20日均量
+    price_gravity = Column(Float)                      # 价格重心 %
+    risk_reward = Column(Float)                        # 盈亏比
+
+    # 过滤与行情
+    market_ok = Column(Boolean, default=False)
+    sector_ok = Column(Boolean, default=False)
+    sector_rank_pct = Column(Float)                    # 板块 20 日涨幅排名百分位
+    close = Column(Float)
+    pct_chg = Column(Float)
+    amount_20 = Column(Float)                          # 20 日均成交额(元)
+
+    created_at = Column(DateTime, server_default=func.now())
+    __table_args__ = (
+        UniqueConstraint("ts_code", "trade_date", name="uq_horizontal_code_date"),
+        Index("ix_horizontal_date_score", "trade_date", "score"),
+    )
+
+
+class HorizontalTrack(Base):
+    """横盘蓄势：信号后走势跟踪（用于评估策略胜率/盈亏比）
+
+    针对每个可交易/已发信号的 ts_code+trade_date，按持有 5/10/20 个交易日
+    统计后续实际收益、最大涨幅与最大回撤。回填时从 stock_daily_kline 纯 DB 计算。
+    """
+    __tablename__ = "horizontal_track"
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    ts_code = Column(String(20), nullable=False, index=True)
+    trade_date = Column(Date, nullable=False, index=True)      # 信号日
+    signal_code = Column(String(4))                            # A/B/C/D/None
+    entry_px = Column(Float)                                   # 信号日收盘（入场）
+    hold = Column(Integer, nullable=False)                     # 5 / 10 / 20
+    exit_px = Column(Float)                                    # 持有期末收盘
+    ret_pct = Column(Float)                                    # 持有期收益率 %
+    max_gain = Column(Float)                                   # 持有期最大涨幅 %
+    max_drawdown = Column(Float)                               # 持有期最大回撤 %
+    out = Column(String(10))                                   # 胜/平/负
+    created_at = Column(DateTime, server_default=func.now())
+    __table_args__ = (
+        UniqueConstraint("ts_code", "trade_date", "hold", name="uq_ht_code_date_hold"),
+    )
+
 
 class YuziDict(Base):
     """顶级游资席位字典（可手动增删改）
@@ -1225,19 +1350,18 @@ class StockF10(Base):
 
 
 class StockUniverse(Base):
-    """全市场股票基础信息（来自 Tushare stock_basic，盘后增量刷新）
+    """A 股基础信息兼容视图（底层为 instruments）。
 
-    作为量化选股/覆盖池的基础表：名称、申万/证监会行业、上市板块。
-    F10 财务/机构数据按 ts_code 关联 stock_f10。
+    仅供旧筛选/F10 路径读取；采集器应写入 instruments，再由视图读取。
     """
     __tablename__ = "stock_universe"
-    ts_code = Column(String(20), primary_key=True)
+    ts_code = Column('code', String(20), primary_key=True)
     name = Column(String(50), default='')
     industry = Column(String(50), default='')          # Tushare industry 字段（申万一级/证监会）
-    market = Column(String(20), default='')            # 主板/创业板/科创板/北交所
-    list_status = Column(String(5), default='L')       # L 上市 / D 退市 / P 暂停
+    list_status = Column('listing_status', String(20), default='L')
     is_active = Column(Boolean, default=True, index=True)
-    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+    is_tradeable = Column(Boolean, default=True)
+    market = Column(String(20), default='')            # 主板/创业板/科创板/北交所
 
 
 class SimPositionCost(Base):
@@ -1360,4 +1484,270 @@ class StrategyTrackDaily(Base):
     __table_args__ = (
         Index("ix_strategy_track_daily_tracker_date", "tracker_id", "trade_date", unique=True),
         Index("ix_strategy_track_daily_date", "trade_date"),
+    )
+
+
+# ============================================================
+# 平安证券技能数据表（自动采集存档）
+# ============================================================
+
+class PingAnStockQuote(Base):
+    """平安证券：个股/股指/ETF 实时行情快照
+    数据源：pa-market-query skill quote 接口
+    """
+    __tablename__ = "pingan_stock_quote"
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    trade_date = Column(Date, nullable=False, index=True)
+    code = Column(String(20), nullable=False, index=True)          # SH600519
+    name = Column(String(50))
+    price = Column(Numeric(12, 4))                                 # 最新价
+    change = Column(Numeric(12, 4))                                # 涨跌额
+    change_pct = Column(Numeric(8, 4))                             # 涨跌幅%
+    open = Column(Numeric(12, 4))
+    high = Column(Numeric(12, 4))
+    low = Column(Numeric(12, 4))
+    prev_close = Column(Numeric(12, 4))
+    volume = Column(BigInteger)                                    # 成交量(股)
+    amount = Column(Numeric(20, 4))                                # 成交额(元)
+    turnover_pct = Column(Numeric(8, 4))                           # 换手率%
+    pe_ttm = Column(Numeric(12, 4))
+    pb = Column(Numeric(12, 4))
+    market_cap = Column(Numeric(20, 4))                            # 总市值
+    circ_market_cap = Column(Numeric(20, 4))                       # 流通市值
+    snapshot_time = Column(DateTime, nullable=False, index=True)
+    source = Column(String(20), default='pingan')
+    created_at = Column(DateTime, server_default=func.now())
+    __table_args__ = (
+        Index("ix_pingan_stock_quote_lookup", "trade_date", "code", "snapshot_time"),
+    )
+
+
+class PingAnSectorQuote(Base):
+    """平安证券：板块实时行情快照
+    数据源：pa-market-query skill sector 接口
+    """
+    __tablename__ = "pingan_sector_quote"
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    trade_date = Column(Date, nullable=False, index=True)
+    sector_code = Column(String(20), nullable=False, index=True)   # PA90501002
+    sector_name = Column(String(50))
+    change_pct = Column(Numeric(8, 4))                             # 板块涨跌幅%
+    leading_stock_code = Column(String(20))
+    leading_stock_name = Column(String(50))
+    leading_stock_change_pct = Column(Numeric(8, 4))
+    amount = Column(Numeric(20, 4))                                # 总成交额
+    stock_count = Column(Integer)
+    up_count = Column(Integer)
+    down_count = Column(Integer)
+    flat_count = Column(Integer)
+    snapshot_time = Column(DateTime, nullable=False, index=True)
+    source = Column(String(20), default='pingan')
+    created_at = Column(DateTime, server_default=func.now())
+    __table_args__ = (
+        Index("ix_pingan_sector_quote_lookup", "trade_date", "sector_code", "snapshot_time"),
+    )
+
+
+class PingAnSectorStocks(Base):
+    """平安证券：板块成分股实时变动
+    数据源：pa-market-query skill sector_stocks 接口
+    """
+    __tablename__ = "pingan_sector_stocks"
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    trade_date = Column(Date, nullable=False, index=True)
+    sector_code = Column(String(20), nullable=False, index=True)
+    sector_name = Column(String(50))
+    code = Column(String(20), nullable=False, index=True)
+    name = Column(String(50))
+    price = Column(Numeric(12, 4))
+    change_pct = Column(Numeric(8, 4))
+    amount = Column(Numeric(20, 4))
+    snapshot_time = Column(DateTime, nullable=False, index=True)
+    source = Column(String(20), default='pingan')
+    created_at = Column(DateTime, server_default=func.now())
+    __table_args__ = (
+        Index("ix_pingan_sector_stocks_lookup", "trade_date", "sector_code", "code", "snapshot_time"),
+    )
+
+
+class PingAnFundFlow(Base):
+    """平安证券：主力资金流向数据
+    数据源：pa-market-query skill fundflow 接口
+    """
+    __tablename__ = "pingan_fund_flow"
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    trade_date = Column(Date, nullable=False, index=True)
+    code = Column(String(20), nullable=False, index=True)
+    name = Column(String(50))
+    main_net_inflow = Column(Numeric(20, 4))                       # 主力净流入(元)
+    main_net_inflow_pct = Column(Numeric(8, 4))                    # 主力净流入占比%
+    super_large_net_inflow = Column(Numeric(20, 4))                # 超大单净流入
+    large_net_inflow = Column(Numeric(20, 4))                      # 大单净流入
+    amount = Column(Numeric(20, 4))                                # 总成交额
+    snapshot_time = Column(DateTime, nullable=False, index=True)
+    source = Column(String(20), default='pingan')
+    created_at = Column(DateTime, server_default=func.now())
+    __table_args__ = (
+        Index("ix_pingan_fund_flow_lookup", "trade_date", "code", "snapshot_time"),
+    )
+
+
+class PingAnKline(Base):
+    """平安证券：历史K线数据
+    数据源：pa-market-query skill kline 接口
+    """
+    __tablename__ = "pingan_kline"
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    code = Column(String(20), nullable=False, index=True)
+    name = Column(String(50))
+    trade_date = Column(Date, nullable=False, index=True)
+    open = Column(Numeric(12, 4))
+    high = Column(Numeric(12, 4))
+    low = Column(Numeric(12, 4))
+    close = Column(Numeric(12, 4))
+    change_pct = Column(Numeric(8, 4))
+    volume = Column(BigInteger)
+    amount = Column(Numeric(20, 4))
+    period = Column(String(10), default='day')
+    adjust = Column(String(10), default='forward')
+    source = Column(String(20), default='pingan')
+    created_at = Column(DateTime, server_default=func.now())
+    __table_args__ = (
+        UniqueConstraint("code", "trade_date", name="uq_pingan_kline_code_date"),
+        Index("ix_pingan_kline_date", "trade_date"),
+    )
+
+
+class PingAnResearchReport(Base):
+    """平安证券：研报检索结果缓存
+    数据源：pa-research-report skill
+    """
+    __tablename__ = "pingan_research_report"
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    query_keyword = Column(String(200), nullable=False, index=True)
+    query_time = Column(DateTime, nullable=False, index=True)
+    title = Column(String(500))
+    content = Column(Text)
+    score = Column(Numeric(8, 4))
+    doc_name = Column(String(500))
+    metadata_json = Column(Text)
+    source = Column(String(20), default='pingan')
+    created_at = Column(DateTime, server_default=func.now())
+    __table_args__ = (
+        Index("ix_pingan_research_report_query", "query_keyword", "query_time"),
+    )
+
+
+class PingAnNews(Base):
+    """平安证券：资讯检索结果缓存
+    数据源：pa-news-search skill
+    """
+    __tablename__ = "pingan_news"
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    query_keyword = Column(String(200), nullable=False, index=True)
+    query_time = Column(DateTime, nullable=False, index=True)
+    news_title = Column(String(500))
+    news_summary = Column(Text)
+    news_source = Column(String(200))
+    news_date = Column(String(20))
+    news_media = Column(String(200))
+    score = Column(Numeric(8, 4))
+    content_raw = Column(Text)
+    source = Column(String(20), default='pingan')
+    created_at = Column(DateTime, server_default=func.now())
+    __table_args__ = (
+        Index("ix_pingan_news_query", "query_keyword", "query_time"),
+    )
+
+
+class PingAnGuYouQuan(Base):
+    """平安证券：股友圈社区查询结果缓存
+    数据源：pa-guyouquan-query skill
+    """
+    __tablename__ = "pingan_guyouquan"
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    query_keyword = Column(String(200), nullable=False, index=True)
+    query_time = Column(DateTime, nullable=False, index=True)
+    circle_name = Column(String(200))
+    circle_desc = Column(Text)
+    hot_stocks = Column(Text)
+    content_raw = Column(Text)
+    source = Column(String(20), default='pingan')
+    created_at = Column(DateTime, server_default=func.now())
+    __table_args__ = (
+        Index("ix_pingan_guyouquan_query", "query_keyword", "query_time"),
+    )
+
+
+class PingAnEtfScreen(Base):
+    """平安证券：场内ETF筛选结果缓存
+    数据源：pa-etf-filter skill
+    """
+    __tablename__ = "pingan_etf_screen"
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    trade_date = Column(Date, nullable=False, index=True)
+    etf_code = Column(String(20), nullable=False, index=True)
+    etf_name = Column(String(100))
+    etf_type = Column(String(50))
+    fund_size = Column(Numeric(20, 4))
+    pe = Column(Numeric(12, 4))
+    pb = Column(Numeric(12, 4))
+    change_pct = Column(Numeric(8, 4))
+    amount = Column(Numeric(20, 4))
+    turnover_pct = Column(Numeric(8, 4))
+    premium_rate = Column(Numeric(8, 4))
+    tracking_index = Column(String(50))
+    return_20d_pct = Column(Numeric(10, 4))
+    return_1y_pct = Column(Numeric(10, 4))
+    amount_20d = Column(Numeric(20, 4))
+    source = Column(String(20), default='pingan')
+    created_at = Column(DateTime, server_default=func.now())
+    __table_args__ = (
+        UniqueConstraint("trade_date", "etf_code", name="uq_pingan_etf_date_code"),
+    )
+
+
+class SectorRotationSnapshot(Base):
+    """盘后行业轮动池完整快照，避免服务重启后重新扫描全市场。"""
+    __tablename__ = "sector_rotation_snapshot"
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    trade_date = Column(Date, nullable=False, unique=True, index=True)
+    snapshot_json = Column(Text, nullable=False)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class WaveAnalysisSnapshot(Base):
+    """四大指数波浪分析的已入库结果；JSON 文件只是采集脚本中间产物。"""
+    __tablename__ = "wave_analysis_snapshots"
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    generated_at = Column(DateTime, nullable=False, index=True)
+    source = Column(String(32), nullable=False, default="wave_script")
+    snapshot_json = Column(Text, nullable=False)
+    created_at = Column(DateTime, server_default=func.now())
+
+
+class PingAnFundRank(Base):
+    """平安证券：场外基金榜单数据缓存
+    数据源：pa-mutual-fund-filter skill
+    """
+    __tablename__ = "pingan_fund_rank"
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    query_date = Column(Date, nullable=False, index=True)
+    rank_type = Column(String(50), nullable=False, index=True)     # 收益榜/热销榜/人气榜
+    fund_code = Column(String(20), nullable=False, index=True)
+    fund_name = Column(String(100))
+    fund_type = Column(String(50))
+    nav = Column(Numeric(12, 4))
+    nav_date = Column(String(20))
+    return_1m = Column(Numeric(8, 4))
+    return_3m = Column(Numeric(8, 4))
+    return_6m = Column(Numeric(8, 4))
+    return_1y = Column(Numeric(8, 4))
+    risk_level = Column(String(20))
+    fund_size = Column(Numeric(20, 4))
+    source = Column(String(20), default='pingan')
+    created_at = Column(DateTime, server_default=func.now())
+    __table_args__ = (
+        UniqueConstraint("query_date", "rank_type", "fund_code", name="uq_pingan_fund_date_type_code"),
     )

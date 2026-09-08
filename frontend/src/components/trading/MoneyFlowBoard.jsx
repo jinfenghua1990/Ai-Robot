@@ -1,4 +1,5 @@
-import ReactECharts from 'echarts-for-react';
+import ReactECharts from 'echarts-for-react/esm/core';
+import echarts from '../../lib/echarts';
 
 const fmtWan = (v) => {
   const x = v || 0;
@@ -29,7 +30,7 @@ export default function MoneyFlowBoard({ moneyFlow, sectorTrend, sector, dash })
   }
 
   // 饼图：优先用 dash 5 档净流入绝对值分布；fallback 用旧 moneyFlow 买入/卖出
-  let pieData = [];
+  let pieData;
   if (useDash) {
     const abs = (v) => Math.abs(v || 0);
     pieData = [
@@ -121,7 +122,7 @@ export default function MoneyFlowBoard({ moneyFlow, sectorTrend, sector, dash })
       <div className="grid grid-cols-5 gap-2">
         <div className="col-span-2">
           {pieData.length > 0 ? (
-            <ReactECharts option={pieOption} style={{ height: 108 }} opts={{ renderer: 'svg' }} />
+            <ReactECharts echarts={echarts} option={pieOption} style={{ height: 108 }} opts={{ renderer: 'svg' }} />
           ) : (
             <div className="h-[108px] flex items-center justify-center text-[10px]" style={{ color: 'var(--text-muted)' }}>暂无分布数据</div>
           )}

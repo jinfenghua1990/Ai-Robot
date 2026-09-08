@@ -3,12 +3,17 @@
 import json
 from datetime import date, datetime
 from typing import Optional
-from fastapi import APIRouter, Query, Depends
+from fastapi import APIRouter, Depends, HTTPException, Query
 from api.auth import verify_api_key
 from pydantic import BaseModel
 from db.connection import get_db
 from db.session import get_db_session
-from db.models import AutoTradeConfig, AutoTradeLog
+from db.models import (
+    AutoTradeConfig,
+    AutoTradeControlAudit,
+    AutoTradeLog,
+    AutoTradeStockConfig,
+)
 from services.auto_trade_engine import aggregate_signals, execute_auto_trade
 
 router = APIRouter()
@@ -36,7 +41,8 @@ def get_config():
             return {'enabled': False, 'single_position_pct': 10, 'max_positions': 10,
                     'max_buy_count': 20,
                     'stop_loss_pct': -5, 'take_profit_pct': 15, 'min_vote_score': 2,
-                    'use_market_price': True, 'buy_quantity': 100, 'sell_quantity': 100}
+                    'use_market_price': True, 'buy_quantity': 100, 'sell_quantity': 100,
+                    'run_environment': 'paper', 'paused': False, 'pause_reason': ''}
         return {
             'enabled': row.enabled,
             'single_position_pct': float(row.single_position_pct),
@@ -48,11 +54,14 @@ def get_config():
             'use_market_price': row.use_market_price,
             'buy_quantity': row.buy_quantity or 100,
             'sell_quantity': row.sell_quantity or 100,
+            'run_environment': row.run_environment or 'paper',
+            'paused': bool(row.paused),
+            'pause_reason': row.pause_reason or '',
             'updated_at': row.updated_at.strftime('%Y-%m-%d %H:%M:%S') if row.updated_at else '',
         }
 
 
-@router.post("/api/auto-trade/config")
+@router.post("/api/auto-trade/config", dependencies=[Depends(verify_api_key)])
 def update_config(req: ConfigUpdate):
     """更新风控配置"""
     with get_db_session() as db:
@@ -61,6 +70,9 @@ def update_config(req: ConfigUpdate):
             row = AutoTradeConfig(id=1)
             db.add(row)
         data = req.dict(exclude_none=True)
+        for field in ('buy_quantity', 'sell_quantity'):
+            if field in data and (data[field] <= 0 or data[field] % 100 != 0):
+                raise HTTPException(status_code=400, detail=f'{field} 必须是正数且为100的整数倍')
         for k, v in data.items():
             setattr(row, k, v)
         row.updated_at = datetime.now()
@@ -133,39 +145,27 @@ async def run_once(dry_run: bool = Query(True, description="true=仅预览不下
 
 
 # ─────────────────────────────────────────────────────────────
-# 个股级自动交易配置（V1.0 设计规范：两级权限 / 三模式 / 环境 / 快照 / 审计）
-# 存储：项目根 JSON（与 portfolio.json 一致，避免动 DB schema）
-# 约定：个股自动交易默认关闭；总开关控制全账户下单；风险指令优先
+# 个股级自动交易配置（两级权限 / 三模式 / 环境 / 快照 / 审计）
+# 配置与审计统一存数据库；总开关与实际调度器共用 AutoTradeConfig。
 # ─────────────────────────────────────────────────────────────
-import os as _os
-
-_AUTO_ROOT = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
-GLOBAL_AUTO_TRADE_PATH = _os.path.join(_AUTO_ROOT, "auto_trade_global.json")
-STOCK_AUTO_TRADE_PATH = _os.path.join(_AUTO_ROOT, "auto_trade_stocks.json")
-AUDIT_AUTO_TRADE_PATH = _os.path.join(_AUTO_ROOT, "auto_trade_audit.json")
 AUDIT_LIMIT = 200
 VALID_MODES = ("off", "risk_only", "full_auto")
 VALID_ENVS = ("paper", "live")
 
 
-def _read_json_file(path, default):
-    if not _os.path.exists(path):
-        return default
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return default
-
-
-def _write_json_file(path, data):
-    _os.makedirs(_os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-
-
 def _now_str():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _parse_datetime(value):
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return value
+    try:
+        return datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
 
 
 def _default_global():
@@ -217,17 +217,48 @@ def _default_stock(code="", name=""):
 
 
 def get_global_config():
-    g = _read_json_file(GLOBAL_AUTO_TRADE_PATH, _default_global())
-    return g if isinstance(g, dict) else _default_global()
+    with get_db_session() as db:
+        row = db.get(AutoTradeConfig, 1)
+        if row is None:
+            return _default_global()
+        return {
+            **_default_global(),
+            "enabled": bool(row.enabled),
+            "run_environment": row.run_environment or "paper",
+            "paused": bool(row.paused),
+            "pause_reason": row.pause_reason or "",
+            "paused_at": row.paused_at.strftime("%Y-%m-%d %H:%M:%S") if row.paused_at else None,
+            "updated_at": row.updated_at.strftime("%Y-%m-%d %H:%M:%S") if row.updated_at else "",
+        }
 
 
 def _save_global_config(g):
-    _write_json_file(GLOBAL_AUTO_TRADE_PATH, g)
+    with get_db_session() as db:
+        row = db.get(AutoTradeConfig, 1)
+        if row is None:
+            row = AutoTradeConfig(id=1)
+            db.add(row)
+        row.enabled = bool(g.get("enabled", False))
+        row.run_environment = g.get("run_environment") if g.get("run_environment") in VALID_ENVS else "paper"
+        row.paused = bool(g.get("paused", False))
+        row.pause_reason = str(g.get("pause_reason") or "")[:200]
+        row.paused_at = _parse_datetime(g.get("paused_at"))
+        row.updated_at = datetime.now()
+        db.commit()
 
 
 def get_stock_configs():
-    d = _read_json_file(STOCK_AUTO_TRADE_PATH, {})
-    return d if isinstance(d, dict) else {}
+    with get_db_session() as db:
+        rows = db.query(AutoTradeStockConfig).order_by(AutoTradeStockConfig.code).all()
+    result = {}
+    for row in rows:
+        try:
+            payload = json.loads(row.config_json or "{}")
+        except (TypeError, ValueError):
+            payload = {}
+        if isinstance(payload, dict):
+            result[row.code] = payload
+    return result
 
 
 def get_stock_config(code):
@@ -235,14 +266,25 @@ def get_stock_config(code):
 
 
 def _save_stock_configs(d):
-    _write_json_file(STOCK_AUTO_TRADE_PATH, d)
+    with get_db_session() as db:
+        for code, payload in d.items():
+            row = db.get(AutoTradeStockConfig, code)
+            if row is None:
+                row = AutoTradeStockConfig(code=code)
+                db.add(row)
+            row.config_json = json.dumps(payload, ensure_ascii=False)
+            row.updated_at = datetime.now()
+        db.commit()
 
 
 def _append_audit(event):
-    logs = _read_json_file(AUDIT_AUTO_TRADE_PATH, [])
-    logs = logs if isinstance(logs, list) else []
-    logs.append(event)
-    _write_json_file(AUDIT_AUTO_TRADE_PATH, logs[-AUDIT_LIMIT:])
+    with get_db_session() as db:
+        db.add(AutoTradeControlAudit(
+            code=str(event.get("code") or ""),
+            event_time=_parse_datetime(event.get("event_time")) or datetime.now(),
+            event_json=json.dumps(event, ensure_ascii=False),
+        ))
+        db.commit()
 
 
 def _audit(code, event_type, operator="user", reason="", before=None, after=None):
@@ -295,7 +337,7 @@ def api_get_global():
     return g
 
 
-@router.post("/api/auto-trade/global")
+@router.post("/api/auto-trade/global", dependencies=[Depends(verify_api_key)])
 def api_update_global(req: GlobalUpdate):
     g = get_global_config()
     before = dict(g)
@@ -309,7 +351,7 @@ def api_update_global(req: GlobalUpdate):
     return g
 
 
-@router.post("/api/auto-trade/global/pause")
+@router.post("/api/auto-trade/global/pause", dependencies=[Depends(verify_api_key)])
 def api_pause_global(req: PauseRequest):
     g = get_global_config()
     before = dict(g)
@@ -322,7 +364,7 @@ def api_pause_global(req: PauseRequest):
     return g
 
 
-@router.post("/api/auto-trade/global/resume")
+@router.post("/api/auto-trade/global/resume", dependencies=[Depends(verify_api_key)])
 def api_resume_global():
     g = get_global_config()
     before = dict(g)
@@ -346,7 +388,7 @@ def api_get_stock(code: str):
     return cfg or _default_stock(code=code)
 
 
-@router.put("/api/auto-trade/stocks/{code}/config")
+@router.put("/api/auto-trade/stocks/{code}/config", dependencies=[Depends(verify_api_key)])
 def api_update_stock(code: str, req: StockConfigUpdate):
     d = get_stock_configs()
     cfg = d.get(code) or _default_stock(code=code)
@@ -376,7 +418,7 @@ def api_update_stock(code: str, req: StockConfigUpdate):
     return cfg
 
 
-@router.post("/api/auto-trade/stocks/{code}/enable")
+@router.post("/api/auto-trade/stocks/{code}/enable", dependencies=[Depends(verify_api_key)])
 def api_enable_stock(code: str, req: StockEnableRequest = None):
     """开启个股自动交易：开启前检查(硬止损/最大仓位/最大亏损/滑点/模式) + 策略快照"""
     d = get_stock_configs()
@@ -417,7 +459,7 @@ def api_enable_stock(code: str, req: StockEnableRequest = None):
     return {"ok": True, "config": cfg}
 
 
-@router.post("/api/auto-trade/stocks/{code}/disable")
+@router.post("/api/auto-trade/stocks/{code}/disable", dependencies=[Depends(verify_api_key)])
 def api_disable_stock(code: str):
     d = get_stock_configs()
     cfg = d.get(code) or _default_stock(code=code)
@@ -435,7 +477,7 @@ def api_disable_stock(code: str):
     return {"ok": True, "config": cfg}
 
 
-@router.post("/api/auto-trade/stocks/{code}/pause")
+@router.post("/api/auto-trade/stocks/{code}/pause", dependencies=[Depends(verify_api_key)])
 def api_pause_stock(code: str, req: PauseRequest):
     d = get_stock_configs()
     cfg = d.get(code) or _default_stock(code=code)
@@ -451,7 +493,7 @@ def api_pause_stock(code: str, req: PauseRequest):
     return {"ok": True, "config": cfg}
 
 
-@router.post("/api/auto-trade/stocks/{code}/resume")
+@router.post("/api/auto-trade/stocks/{code}/resume", dependencies=[Depends(verify_api_key)])
 def api_resume_stock(code: str):
     d = get_stock_configs()
     cfg = d.get(code) or _default_stock(code=code)
@@ -469,8 +511,24 @@ def api_resume_stock(code: str):
 
 @router.get("/api/auto-trade/audit")
 def api_audit(code: str = None, limit: int = Query(50, le=200)):
-    logs = _read_json_file(AUDIT_AUTO_TRADE_PATH, [])
-    logs = logs if isinstance(logs, list) else []
-    if code:
-        logs = [l for l in logs if l.get("code") == code]
-    return {"items": logs[-limit:][::-1], "count": min(len(logs), limit)}
+    with get_db_session() as db:
+        query = db.query(AutoTradeControlAudit)
+        if code:
+            query = query.filter(AutoTradeControlAudit.code == code)
+        rows = query.order_by(
+            AutoTradeControlAudit.event_time.desc(),
+            AutoTradeControlAudit.id.desc(),
+        ).limit(limit).all()
+    items = []
+    for row in rows:
+        try:
+            event = json.loads(row.event_json or "{}")
+        except (TypeError, ValueError):
+            event = {}
+        if not isinstance(event, dict):
+            event = {}
+        event["id"] = row.id
+        event.setdefault("code", row.code or "")
+        event.setdefault("event_time", row.event_time.strftime("%Y-%m-%d %H:%M:%S") if row.event_time else "")
+        items.append(event)
+    return {"items": items, "count": len(items), "source": "database"}

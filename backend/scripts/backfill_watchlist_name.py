@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils.http_constants import clear_proxy_env
 clear_proxy_env()
 
-from db import get_db  # noqa: E402
+from db.session import get_db_session  # noqa: E402
 from db.models import Watchlist  # noqa: E402
 
 

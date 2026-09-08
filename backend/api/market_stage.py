@@ -18,7 +18,7 @@ from fastapi import APIRouter
 from sqlalchemy import func
 
 from db.session import get_db_session
-from db.models import StockFlow, ConceptSectorFlow
+from db.models import StockFlow, StockDailyKline, ConceptSectorFlow
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/market-stage", tags=["market-stage"])
@@ -67,11 +67,55 @@ def _clamp(v: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, v))
 
 
+def _limit_pct(ts_code: str) -> float:
+    code = ts_code.split('.')[0]
+    if code.startswith(('688', '300', '301')):
+        return 0.20
+    if code.startswith(('8', '4')):
+        return 0.30
+    return 0.10
+
+
+def _is_broken_board(ts_code: str, previous_close, high, close) -> bool:
+    """盘中触及涨停、收盘未封板才计为炸板；输入都来自本地日线。"""
+    if previous_close is None or high is None or close is None:
+        return False
+    previous_close = float(previous_close)
+    if previous_close <= 0:
+        return False
+    limit_price = previous_close * (1 + _limit_pct(ts_code))
+    touched_limit = float(high) >= limit_price * 0.995
+    closed_limit = float(close) >= limit_price * 0.995
+    return touched_limit and not closed_limit
+
+
+def _broken_board_count_from_kline(db, target_date) -> Optional[int]:
+    previous_date = db.query(func.max(StockDailyKline.trade_date)).filter(
+        StockDailyKline.trade_date < target_date
+    ).scalar()
+    if not previous_date:
+        return None
+    previous_closes = dict(db.query(
+        StockDailyKline.ts_code, StockDailyKline.close
+    ).filter(StockDailyKline.trade_date == previous_date).all())
+    if not previous_closes:
+        return None
+    today_rows = db.query(
+        StockDailyKline.ts_code, StockDailyKline.high, StockDailyKline.close
+    ).filter(StockDailyKline.trade_date == target_date).all()
+    if not today_rows:
+        return None
+    return sum(
+        _is_broken_board(code, previous_closes.get(code), high, close)
+        for code, high, close in today_rows
+    )
+
+
 # ─── 6 阶段核心算法 (移植自 hermes market_stage_engine) ────────────────────────
 
 def build_market_stage(
     limit_up: int,
-    broken: int,
+    broken: Optional[int],
     limit_down: int,
     up: int,
     down: int,
@@ -83,7 +127,7 @@ def build_market_stage(
 
     参数:
         limit_up: 涨停家数
-        broken: 炸板家数 (涨停后开板)
+        broken: 炸板家数 (涨停后开板)，数据库无实值时为 None
         limit_down: 跌停家数
         up: 上涨家数
         down: 下跌家数
@@ -93,7 +137,9 @@ def build_market_stage(
 
     返回: {stage, score, description, position, signals, drivers, color}
     """
-    broken_rate = (broken / limit_up) if limit_up > 0 else (1.0 if broken else 0.0)
+    broken_rate = None
+    if broken is not None:
+        broken_rate = (broken / limit_up) if limit_up > 0 else (1.0 if broken else 0.0)
     breadth_net = up - down
     breadth_total = up + down
 
@@ -192,7 +238,10 @@ def build_market_stage(
         push_driver("主线强度", round(theme_strength, 2), 3, "主线尚在孕育")
 
     # 炸板率评分
-    if broken_rate >= 0.35:
+    if broken_rate is None:
+        signals.append("炸板数据不足")
+        push_driver("炸板率", None, 0, "数据库没有炸板实值，本项不参与评分")
+    elif broken_rate >= 0.35:
         score -= 18
         signals.append("炸板率偏高")
         push_driver("炸板率", round(broken_rate, 4), -18, "炸板率偏高，短线兑现压力加大")
@@ -220,7 +269,7 @@ def build_market_stage(
         push_driver("跌停数", limit_down, -5, "跌停仍需关注")
 
     # 主线覆盖加分
-    if mainline_count >= 3 and limit_up >= 30 and broken_rate <= 0.15:
+    if broken_rate is not None and mainline_count >= 3 and limit_up >= 30 and broken_rate <= 0.15:
         score += 5
         signals.append("主线覆盖面较好")
         push_driver("主线覆盖", mainline_count, 5, "主线覆盖面较好，资金并未只集中单点")
@@ -235,9 +284,9 @@ def build_market_stage(
     # 6 阶段判定
     if limit_down >= 20 or (heat_value < 20 and limit_up <= 10 and breadth_net < 0):
         stage = "退潮"
-    elif broken_rate >= 0.35 and limit_up >= 30:
+    elif broken_rate is not None and broken_rate >= 0.35 and limit_up >= 30:
         stage = "分歧"
-    elif limit_up >= 50 and broken_rate <= 0.18 and heat_value >= 60 and breadth_net > 0 and theme_strength >= 55:
+    elif broken_rate is not None and limit_up >= 50 and broken_rate <= 0.18 and heat_value >= 60 and breadth_net > 0 and theme_strength >= 55:
         stage = "高潮"
     elif limit_up >= 30 and breadth_net > 0 and theme_strength >= 45 and heat_value >= 40:
         stage = "发酵"
@@ -274,7 +323,7 @@ def build_market_stage(
             "up": up,
             "down": down,
             "heat_value": round(heat_value, 2),
-            "broken_rate": round(broken_rate, 4),
+            "broken_rate": round(broken_rate, 4) if broken_rate is not None else None,
             "breadth_net": breadth_net,
             "theme_strength": round(theme_strength, 2),
             "mainline_count": mainline_count,
@@ -295,6 +344,32 @@ def _compute_heat(limit_up: int, up: int, down: int, total: int) -> float:
     breadth_score = up_ratio * 100
     heat = limit_up_score * 0.5 + breadth_score * 0.5
     return round(_clamp(heat, 0, 100), 2)
+
+
+def _unavailable_market_stage(
+    *,
+    status: str,
+    message: str,
+    trade_date: Optional[str] = None,
+    metrics: Optional[dict] = None,
+) -> dict:
+    """返回不可用于阶段判断的数据库状态，不伪装成六阶段之一。"""
+    return {
+        "stage": None,
+        "score": None,
+        "description": message,
+        "position": None,
+        "color": "#6b7280",
+        "signals": [message],
+        "drivers": [],
+        "metrics": metrics or {},
+        "trade_date": trade_date,
+        "data_as_of": trade_date,
+        "source": "database",
+        "upstream_source": "stock_flow",
+        "status": status,
+        "error": message,
+    }
 
 
 @router.get("")
@@ -322,43 +397,30 @@ def _compute_market_stage(date: Optional[str] = None) -> dict:
         if not target_date:
             latest = db.query(func.max(StockFlow.trade_date)).scalar()
             if not latest:
-                return {
-                    "stage": "冰点",
-                    "score": 0,
-                    "description": _stage_description("冰点"),
-                    "position": POSITION_GUIDANCE["冰点"],
-                    "color": STAGE_COLORS["冰点"],
-                    "signals": ["无数据"],
-                    "drivers": [],
-                    "metrics": {},
-                    "trade_date": None,
-                    "error": "StockFlow 表无数据",
-                }
+                return _unavailable_market_stage(
+                    status="MISSING",
+                    message="StockFlow 表无数据",
+                )
             target_date = latest
 
         # 统计涨跌停 + 涨跌家数
         rows = db.query(StockFlow.price_chg).filter(StockFlow.trade_date == target_date).all()
         if not rows:
-            return {
-                "stage": "冰点",
-                "score": 0,
-                "description": _stage_description("冰点"),
-                "position": POSITION_GUIDANCE["冰点"],
-                "color": STAGE_COLORS["冰点"],
-                "signals": [f"{target_date} 无数据"],
-                "drivers": [],
-                "metrics": {},
-                "trade_date": str(target_date),
-                "error": f"{target_date} 当日无 StockFlow 数据",
-            }
+            return _unavailable_market_stage(
+                status="MISSING",
+                message=f"{target_date} 当日无 StockFlow 数据",
+                trade_date=str(target_date),
+            )
 
         limit_up = 0
         limit_down = 0
         up = 0
         down = 0
         flat = 0
+        missing = 0
         for (chg,) in rows:
             if chg is None:
+                missing += 1
                 continue
             chg_f = float(chg)
             if chg_f >= 9.8:
@@ -373,14 +435,39 @@ def _compute_market_stage(date: Optional[str] = None) -> dict:
                 flat += 1
 
         total = up + down + flat
-        # 炸板数估算 (无盘中数据，用 limit_up * 0.15 估算)
-        broken = int(limit_up * 0.15)
+        base_metrics = {
+            "limit_up": limit_up,
+            "limit_down": limit_down,
+            "up": up,
+            "down": down,
+            "flat": flat,
+            "total": total,
+            "missing_price_chg": missing,
+        }
+        if total == 0:
+            return _unavailable_market_stage(
+                status="INSUFFICIENT",
+                message=f"{target_date} 的 StockFlow.price_chg 没有有效值，不能判断市场阶段",
+                trade_date=str(target_date),
+                metrics=base_metrics,
+            )
+        if up + down == 0:
+            return _unavailable_market_stage(
+                status="INSUFFICIENT",
+                message=f"{target_date} 的 {total} 条 StockFlow.price_chg 全部为 0，不能据此判断市场阶段",
+                trade_date=str(target_date),
+                metrics=base_metrics,
+            )
+
+        # 炸板从本地日线计算：盘中 high 触及涨停、close 未封板。
+        broken = _broken_board_count_from_kline(db, target_date)
         # 热度计算
         heat = _compute_heat(limit_up, up, down, total)
 
         # 主线强度: 从 ConceptSectorFlow 取热度 top 板块的平均强度
         theme_strength = 0.0
         mainline_count = 0
+        sector_rows = []
         try:
             sector_rows = db.query(ConceptSectorFlow).filter(
                 ConceptSectorFlow.trade_date == target_date,
@@ -405,8 +492,18 @@ def _compute_market_stage(date: Optional[str] = None) -> dict:
             mainline_count=mainline_count,
         )
         result["trade_date"] = str(target_date)
+        result["data_as_of"] = str(target_date)
+        result["source"] = "database"
+        result["upstream_source"] = "stock_flow+stock_daily_kline+concept_sector_flow"
+        result["missing_components"] = []
+        if broken is None:
+            result["missing_components"].append("broken_count")
+        if not sector_rows:
+            result["missing_components"].append("concept_sector_flow")
+        result["status"] = "PARTIAL" if result["missing_components"] else "READY"
         result["metrics"]["flat"] = flat
         result["metrics"]["total"] = total
+        result["metrics"]["missing_price_chg"] = missing
         return result
 
 

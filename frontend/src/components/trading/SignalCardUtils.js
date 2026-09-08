@@ -2,7 +2,9 @@
 export const UP_COLOR = '#ef4444';
 export const DOWN_COLOR = '#22c55e';
 export const fmtWanYi = (v, fromYuan = false) => {
-  const wan = fromYuan ? (v || 0) / 10000 : (v || 0);
+  const n = Number(v);
+  if (!Number.isFinite(n)) return '—';
+  const wan = fromYuan ? n / 10000 : n;
   if (Math.abs(wan) >= 10000) return `${(wan / 10000).toFixed(2)}亿`;
   return `${wan.toFixed(fromYuan ? 2 : 0)}万`;
 };

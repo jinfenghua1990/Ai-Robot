@@ -19,19 +19,10 @@ import logging
 import concurrent.futures
 import numpy as np
 
+from ._shared import calc_rsi
+from .data_feed import get_kline_from_tdx
+
 logger = logging.getLogger(__name__)
-
-
-def calc_rsi(closes, period=14):
-    deltas = np.diff(closes)
-    gains = np.where(deltas > 0, deltas, 0)
-    losses = np.where(deltas < 0, -deltas, 0)
-    avg_gain = np.mean(gains[-period:])
-    avg_loss = np.mean(losses[-period:])
-    if avg_loss == 0:
-        return 100
-    rs = avg_gain / avg_loss
-    return 100 - (100 / (1 + rs))
 
 
 def liangjia_report_strategy(kline, day_index=-1, main_force_history=None):
@@ -311,17 +302,7 @@ def _gen_trade_plan(pattern, tier, close, ma5, ma10, ma20, dist_high, dev_ma20):
     }
 
 
-# ============================================================
-# pytdx 数据源（复用 baihu_v30）
-# ============================================================
-def _parse_ts_code(ts_code):
-    from strategies.baihu_v30 import _parse_ts_code as _parse
-    return _parse(ts_code)
-
-
-def get_kline_from_tdx(code, days=90):
-    from strategies.baihu_v30 import get_kline_from_tdx as _get
-    return _get(code, days)
+# get_kline_from_tdx / _parse_ts_code 已统一收敛到 strategies/data_feed.py，本文件不再内联
 
 
 def run_liangjia_report_screen(stock_list, trade_date=None, max_workers=20, db=None):

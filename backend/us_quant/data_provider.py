@@ -1,26 +1,14 @@
-"""US Quant 数据源 provider — 自动识别系统代理 + 多源实时行情。
+"""US Quant 数据源 provider。
 
-此前采集不到的真正根因：后端 uvicorn 进程既没读 macOS 系统代理设置，
-也没有 HTTP_PROXY 环境变量，是裸连出网的；而 Yahoo 等免费源在大陆网络被
-墙 / 限流，于是请求失败 → 一路降级到离线模拟。
-
-现在的架构（数据源优先级，全部经本机代理出网）：
-  1. 自动识别出网代理：环境变量 HTTP(S)_PROXY，否则在 macOS 上读系统代理
-     (scutil --proxy)。让后端像浏览器一样走代理。
-  2. 主数据源 Nasdaq 官方 API（免费、无需 key、真实数据）。
-     股票用 assetclass=stocks，ETF 必须用 assetclass=etf（否则 Symbol not exists）。
-  3. VIX 波动率：CBOE 官方 CSV（Nasdaq 不带 VIX）。
-  4. 兜底：Yahoo Finance（经代理），仍可能被限流(429)。
-  5. 最后兜底：确定性离线模拟——仅在以上全部不可达时使用，避免页面空白。
-
-所有外部请求带 60s TTL 缓存与失败重试（429/5xx 退避）。
+Nasdaq、CBOE 和 Yahoo 请求函数仅供定时采集器使用。采集失败时
+保持缺失，不生成合成行情。页面、策略和回测的公共读取函数只访问
+``USStockDaily``，保证数据口径一致。
 """
 
 from __future__ import annotations
 
 import logging
 import os
-import random
 import subprocess
 import sys
 import time
@@ -40,7 +28,8 @@ _KNOWN_ETFS = {
 }
 
 _RANGE_DAYS = {
-    "1d": 1, "5d": 5, "1mo": 22, "2mo": 44, "3mo": 66, "6mo": 126, "1y": 252,
+    "1d": 1, "5d": 5, "1mo": 22, "2mo": 44, "3mo": 66, "6mo": 126,
+    "1y": 252, "2y": 504, "3y": 756, "5y": 1260,
 }
 
 
@@ -256,7 +245,8 @@ def _cboe_vix_klines(days: int) -> Optional[list[dict]]:
             })
         except Exception:
             continue
-    items.reverse()  # CSV 日期降序 → 升序
+    # CBOE 当前 CSV 为升序；显式排序兼容上游未来调整顺序，确保截取的是最新 N 日。
+    items.sort(key=lambda item: item["date"])
     if len(items) > days:
         items = items[-days:]
     return items if items else None
@@ -275,6 +265,10 @@ def _fetch_yahoo_live(symbol: str, range_str: str) -> Optional[list[dict]]:
         ts = result.get("timestamp", [])
         q = result.get("indicators", {}).get("quote", [{}])[0]
         o, h, l, c, v = (q.get(k, []) for k in ("open", "high", "low", "close", "volume"))
+        # Yahoo adjclose（复权收盘价）
+        adj = result.get("indicators", {}).get("adjclose", [{}])[0] if "adjclose" in result.get("indicators", {}) else {}
+        adjclose = adj.get("adjclose", []) if adj else []
+
         items = []
         for i in range(len(ts)):
             close = c[i] if i < len(c) and c[i] is not None else None
@@ -287,6 +281,7 @@ def _fetch_yahoo_live(symbol: str, range_str: str) -> Optional[list[dict]]:
                 "low": round(l[i], 4) if i < len(l) and l[i] else None,
                 "close": round(close, 4),
                 "volume": int(v[i]) if i < len(v) and v[i] else 0,
+                "adj_close": round(adjclose[i], 4) if i < len(adjclose) and adjclose[i] else None,
             })
         return items if items else None
     except Exception as exc:
@@ -294,137 +289,28 @@ def _fetch_yahoo_live(symbol: str, range_str: str) -> Optional[list[dict]]:
         return None
 
 
-# ─── 离线确定性模拟（仅最后兜底）──────────────────────────────────────────
-_BASE_PRICE = {
-    "SPY": 560.0, "QQQ": 480.0, "IWM": 220.0, "RSP": 180.0, "^VIX": 15.0,
-    "AAPL": 195.0, "MSFT": 420.0, "GOOGL": 175.0, "AMZN": 185.0,
-    "NVDA": 125.0, "TSLA": 250.0, "META": 510.0, "TSM": 175.0,
-    "XLK": 230.0, "SMH": 255.0, "SOXX": 240.0, "XLC": 95.0, "XLY": 230.0,
-    "XLF": 48.0, "XLI": 130.0, "XLV": 145.0, "XLE": 95.0, "XLB": 95.0,
-    "XLP": 80.0, "XLU": 78.0, "XLRE": 42.0,
-}
-
-
-def _symbol_seed(symbol: str) -> int:
-    h = 0
-    for ch in symbol:
-        h = (h * 31 + ord(ch)) & 0xFFFFFFFF
-    return h
-
-
-def _synthetic_klines(symbol: str, days: int) -> list[dict]:
-    rng = random.Random(_symbol_seed(symbol))
-    base = _BASE_PRICE.get(symbol, 50.0 + (_symbol_seed(symbol) % 400))
-    drift = (rng.random() - 0.42) * 0.0018
-    vol = 0.010 + rng.random() * 0.022
-    price = base * (0.82 + rng.random() * 0.12)
-    today = date.today()
-    d = today
-    items: list[dict] = []
-    count = 0
-    while count < days:
-        if d.weekday() < 5:
-            ret = drift + rng.gauss(0, vol)
-            open_p = price
-            close_p = max(0.5, open_p * (1 + ret))
-            amp = abs(rng.gauss(0, vol / 2))
-            high_p = max(open_p, close_p) * (1 + amp)
-            low_p = min(open_p, close_p) * (1 - amp)
-            volume = int((1_000_000 + rng.random() * 9_000_000) * (1 + abs(ret) * 18))
-            items.append({
-                "date": d.strftime("%Y-%m-%d"),
-                "open": round(open_p, 4), "high": round(high_p, 4),
-                "low": round(low_p, 4), "close": round(close_p, 4),
-                "volume": volume,
-            })
-            price = close_p
-            count += 1
-        d -= timedelta(days=1)
-    items.reverse()
-    return items
-
-
-# ─── 公共接口 ─────────────────────────────────────────────────────────────
-_KLINE_CACHE: dict = {}
-_KLINE_TTL = 300.0
-
-
+# ─── 公共只读接口 ─────────────────────────────────────────────────────────
 def get_klines(symbol: str, range_str: str = "1mo") -> Optional[list[dict]]:
-    """获取 K 线：数据库优先 → 多源采集 → 离线模拟。
+    """只从 ``USStockDaily`` 读取 K 线，不采集、不回退、不返回合成行情。
 
-    数据流：
-      1. 先读 USStockDaily 表（已有数据直接返回）
-      2. 表里没有 → 触发采集（gstock → akshare → Nasdaq → Yahoo → 合成）→ 入库
-      3. 再次从库读取返回
+    外部数据源只允许由 ``us_quant.collector`` 的定时采集链路调用并先落库；
+    页面、策略和回测统一通过本函数读取数据库快照。
     """
     days = max(_range_to_days(range_str), 2)
-    key = (symbol, range_str)
-    now = time.time()
-    cached = _KLINE_CACHE.get(key)
-    if cached and (now - cached[0]) < _KLINE_TTL:
-        return cached[1]
-
-    # 1. 优先从数据库读（已有数据则直接返回）
     try:
         from us_quant.collector import get_db_klines
-        db_result = get_db_klines(symbol)
-        if db_result and len(db_result) >= days * 0.5:
-            if len(db_result) > days:
-                db_result = db_result[-days:]
-            _KLINE_CACHE[key] = (now, db_result)
-            return db_result
+        rows = get_db_klines(symbol)
     except Exception as exc:
-        logger.debug(f"[us_quant] get_klines db read failed {symbol}: {exc}")
-
-    # 2. 数据库数据不足，从外部源采集（采集器会自动入库）
-    result: Optional[list[dict]] = None
-    try:
-        if symbol == "^VIX":
-            result = _cboe_vix_klines(days) or _fetch_yahoo_live(symbol, range_str)
-        else:
-            # 优先通过采集器入库
-            try:
-                from us_quant.collector import collect_symbol
-                collect_symbol(symbol)
-                from us_quant.collector import get_db_klines as get_db
-                db_result = get_db(symbol)
-                if db_result and len(db_result) >= 2:
-                    result = db_result
-            except Exception:
-                pass
-
-            if not result:
-                ac = _assetclass(symbol)
-                result = _nasdaq_historical(symbol, ac, days)
-                if not result and ac == "stocks":
-                    result = _nasdaq_historical(symbol, "etf", days)
-            if not result:
-                result = _fetch_yahoo_live(symbol, range_str)
-        if result and len(result) < days * 0.5:
-            logger.info(f'[us_quant] {symbol}: 真实数据仅 {len(result)} 条 (需求 {days})，切换到合成数据')
-            result = _synthetic_klines(symbol, days)
-        if not result:
-            result = _synthetic_klines(symbol, days)
-    except Exception as exc:
-        logger.warning(f"[us_quant] get_klines fallback for {symbol}: {exc}")
-        try:
-            result = _synthetic_klines(symbol, days)
-        except Exception:
-            result = None
-
-    if result and len(result) > days:
-        result = result[-days:]
-
-    _KLINE_CACHE[key] = (now, result)
-    return result
+        logger.exception("[us_quant] database K-line read failed for %s", symbol)
+        raise
+    if not rows:
+        return None
+    return rows[-days:]
 
 
 def get_klines_batch(symbols: list[str], range_str: str = "1mo",
                       max_workers: int = 4) -> dict[str, Optional[list[dict]]]:
-    """并行批量拉取多个标的的 K 线，把串行耗时压成「取最大」而非「累加」。
-
-    个别标的失败（限流/超时）不影响其余，失败项返回 None，由调用方决定降级。
-    """
+    """并行批量读取数据库 K 线；个别读库失败不影响其余标的。"""
     syms = list(dict.fromkeys(symbols))  # 去重保序
     results: dict[str, Optional[list[dict]]] = {}
     if not syms:
@@ -438,46 +324,21 @@ def get_klines_batch(symbols: list[str], range_str: str = "1mo",
             except Exception as exc:
                 logger.debug(f"[us_quant] batch klines failed {s}: {exc}")
                 results[s] = None
-    # 失败项串行重试（缓解 Nasdaq 偶发 429 限流导致的丢数据）
-    for _attempt in range(2):
-        _failed = [s for s in syms if results.get(s) is None]
-        if not _failed:
-            break
-        time.sleep(1.2)
-        for s in _failed:
-            try:
-                results[s] = get_klines(s, range_str)
-            except Exception as exc:
-                logger.debug(f"[us_quant] batch retry failed {s}: {exc}")
-                results[s] = None
     for s in syms:
         results.setdefault(s, None)
     return results
 
 
 def get_quote(symbol: str) -> Optional[dict]:
-    """获取单只最新行情：优先 Nasdaq 实时报价，否则用 K 线末两根推算。"""
-    if symbol == "^VIX":
-        k = get_klines(symbol, "5d")
-        if not k or len(k) < 1:
-            return None
-        last = k[-1]["close"]
-        prev = k[-2]["close"] if len(k) >= 2 else last
-        return {"price": last, "prev_close": prev, "close": last,
-                "currency": "USD", "exchange": "CBOE", "is_real_time": False}
-    ac = _assetclass(symbol)
-    info = _nasdaq_info(symbol, ac)
-    if not info and ac == "stocks":
-        info = _nasdaq_info(symbol, "etf")
-    if info:
-        return info
+    """从数据库最新两根日 K 生成收盘行情，不在读取路径访问外部报价源。"""
     k = get_klines(symbol, "5d")
     if not k or len(k) < 1:
         return None
     last = k[-1]["close"]
     prev = k[-2]["close"] if len(k) >= 2 else last
     return {"price": last, "prev_close": prev, "close": last,
-            "currency": "USD", "exchange": "", "is_real_time": False}
+            "currency": "USD", "exchange": "CBOE" if symbol == "^VIX" else "",
+            "is_real_time": False, "source": "database", "as_of": k[-1].get("date")}
 
 
 # ─── 实时源可用性（带 TTL 缓存）──────────────────────────────────────────
@@ -485,11 +346,26 @@ _LIVE_CACHE: dict = {"ok": None, "ts": 0.0}
 _LIVE_TTL = 300.0
 
 
+def cached_live_availability() -> Optional[bool]:
+    """Return a fresh probe result without making a network request.
+
+    ``None`` deliberately means that no recent probe result exists.  Read-only
+    dashboard endpoints can use this to avoid turning a page load into an
+    external availability check; the explicit system-status endpoint remains
+    responsible for refreshing the probe when needed.
+    """
+    cached = _LIVE_CACHE.get("ok")
+    if cached is None or (time.time() - _LIVE_CACHE.get("ts", 0.0)) >= _LIVE_TTL:
+        return None
+    return bool(cached)
+
+
 def is_live_available() -> bool:
     """探活：Nasdaq 实时源是否可达（带 TTL 缓存）。"""
+    cached = cached_live_availability()
+    if cached is not None:
+        return cached
     now = time.time()
-    if _LIVE_CACHE["ok"] is not None and (now - _LIVE_CACHE["ts"]) < _LIVE_TTL:
-        return _LIVE_CACHE["ok"]
     ok = _nasdaq_info("AAPL", "stocks") is not None
     _LIVE_CACHE.update(ok=ok, ts=now)
     return ok

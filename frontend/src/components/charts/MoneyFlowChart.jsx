@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import ReactECharts from 'echarts-for-react/lib/core';
+import ReactECharts from 'echarts-for-react/esm/core';
 import echarts from '../../lib/echarts';
 import { tooltipStyle } from '../../utils/chartConfig';
 import { getSectorColorHex } from '../../utils/sectorColors';
@@ -29,7 +29,7 @@ export default function MoneyFlowChart({ series, timeline, height = '100%', unit
     const echartsSeries = sortedSeries.map((s) => {
       const color = getSectorColorHex(s.name);
       const lastVal = s.data[s.data.length - 1] || 0;
-      const isUp = lastVal >= 0;
+
 
       return {
         name: s.name,
@@ -123,7 +123,7 @@ export default function MoneyFlowChart({ series, timeline, height = '100%', unit
       },
       series: echartsSeries,
     };
-  }, [sortedSeries, timeline, unit]);
+  }, [sortedSeries, timeline, unit, yAxisName]);
 
   if (!option) {
     return (

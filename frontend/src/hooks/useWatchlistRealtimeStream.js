@@ -17,9 +17,17 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 
 import { stripCode } from '../utils/format';
-const STREAM_URL = '/api/watchlist/realtime/stream';
-const POLL_FALLBACK_URL = '/api/watchlist/realtime/snapshot';
+const API_KEY = (typeof window !== 'undefined' && window.__AIROBOT_API_KEY) || '';
+const STREAM_URL = '/api/watchlist/realtime/stream' + (API_KEY ? `?api_key=${encodeURIComponent(API_KEY)}` : '');
+const POLL_FALLBACK_URL = '/api/watchlist/realtime/snapshot' + (API_KEY ? `?api_key=${encodeURIComponent(API_KEY)}` : '');
 const FALLBACK_POLL_INTERVAL = 15000;  // 15s 兜底轮询（非交易时段或 SSE 失败时）
+
+function parseSnapshotTime(value) {
+  if (!value) return NaN;
+  // 兼容 "YYYY-MM-DD HH:MM:SS"（Safari 无法直接解析）与 ISO "T" 格式
+  if (typeof value === 'string' && value.includes(' ')) value = value.replace(' ', 'T');
+  return new Date(value).getTime();
+}
 
 function mapRealtimePayload(payload) {
   if (!payload?.data) return { serverTime: payload?.server_time, byCode: {} };
@@ -47,7 +55,7 @@ function mapRealtimePayload(payload) {
       bid_vol_1: item.bid_vol_1,
       ask_price_1: item.ask_price_1,
       ask_vol_1: item.ask_vol_1,
-      is_stale: item.snapshot_time ? (Date.now() - new Date(item.snapshot_time).getTime() > 300000) : true,
+      is_stale: item.snapshot_time ? (Date.now() - parseSnapshotTime(item.snapshot_time) > 300000) : true,
     };
   }
   return { serverTime: payload.server_time, byCode };

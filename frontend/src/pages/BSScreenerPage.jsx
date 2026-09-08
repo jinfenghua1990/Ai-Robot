@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import SignalCard from '../components/trading/SignalCardV4';
 import StrategyOverview from '../components/bs-screener/StrategyOverview';
 import { DEFAULT_BS_PARAMS, SIGNAL_TYPES } from '../components/bs-screener/constants';
@@ -6,6 +6,12 @@ import echarts from '../lib/echarts';
 import { apiFetch } from '../utils/request';
 import { TOAST_DURATION } from '../utils/constants';
 import { useWatchlistRealtimeStream } from '../hooks/useWatchlistRealtimeStream';
+import { useViewMode } from '../hooks/useViewMode';
+import StockListContainer from '../components/StockListContainer';
+import { B_SIGNAL_COLOR, S_SIGNAL_COLOR } from '../utils/colors';
+
+const INITIAL_BACKTEST_END = new Date().toISOString().slice(0, 10);
+const INITIAL_BACKTEST_START = new Date(Date.now() - 180 * 86400000).toISOString().slice(0, 10);
 
 export default function BSScreenerPage() {
   const [params, setParams] = useState(DEFAULT_BS_PARAMS);
@@ -14,12 +20,13 @@ export default function BSScreenerPage() {
   const [error, setError] = useState(null);
   const [toast, setToast] = useState(null);
   const [showConfig, setShowConfig] = useState(true);
+  const [viewMode, setViewMode] = useViewMode('bs-screener', 'card');
 
   // 自选股信号合并（丰富每只信号卡片的显示维度：hitTags / moneyFlow / realtimeFlow）
   const [wlSignals, setWlSignals] = useState({});
   const [strategyPicks, setStrategyPicks] = useState({});
   const [coverCount, setCoverCount] = useState(0);
-  const { realtimeMap, streamStatus } = useWatchlistRealtimeStream();
+  const { realtimeMap } = useWatchlistRealtimeStream();
 
 /** 合并 BS 信号与自选股信号，用自选股的丰富字段覆盖 BS 的简约信号 */
 function mergeSignal(bsSig, wlSig) {
@@ -37,6 +44,8 @@ function mergeSignal(bsSig, wlSig) {
   };
 }
 
+const mergedSignals = useMemo(() => (signals?.signals || []).map(sig => mergeSignal(sig, wlSignals[sig.secCode])), [signals, wlSignals]);
+
   // 策略保存/加载
   const [strategies, setStrategies] = useState([]);
   const [strategyName, setStrategyName] = useState('');
@@ -45,8 +54,8 @@ function mergeSignal(bsSig, wlSig) {
   // 回测
   const [showBacktest, setShowBacktest] = useState(false);
   const [backtestParams, setBacktestParams] = useState({
-    start_date: new Date(Date.now() - 180 * 86400000).toISOString().slice(0, 10),
-    end_date: new Date().toISOString().slice(0, 10),
+    start_date: INITIAL_BACKTEST_START,
+    end_date: INITIAL_BACKTEST_END,
     initial_capital: 100000,
   });
   const [backtestResult, setBacktestResult] = useState(null);
@@ -74,7 +83,7 @@ function mergeSignal(bsSig, wlSig) {
     try {
       const { ok, data } = await apiFetch('/api/bs-screener/strategies');
       if (ok) setStrategies(data?.strategies || []);
-    } catch (e) {
+    } catch {
       /* silent */
     }
   }, []);
@@ -112,7 +121,7 @@ function mergeSignal(bsSig, wlSig) {
       try {
         const [wlRes, picksRes] = await Promise.allSettled([
           apiFetch('/api/watchlist'),
-          apiFetch('/api/bs-screener/strategy-picks'),
+          apiFetch('/api/bs-screener/strategy-picks?light=1'),
         ]);
         const wlMap = {};
         if (wlRes.status === 'fulfilled' && wlRes.value.ok && wlRes.value.data?.signals) {
@@ -130,7 +139,7 @@ function mergeSignal(bsSig, wlSig) {
           if (wlMap[sig.secCode]) cover++;
         }
         setCoverCount(cover);
-      } catch (e) { /* 合并失败不影响扫描结果 */ }
+      } catch { /* 合并失败不影响扫描结果 */ }
     } catch (e) {
       setError(e.message || '扫描失败');
       setToast({ success: false, message: e.message || '扫描失败' });
@@ -213,7 +222,7 @@ function mergeSignal(bsSig, wlSig) {
         setToast({ success: true, message: `策略「${name}」已删除` });
         loadStrategies();
       }
-    } catch (e) {
+    } catch {
       setToast({ success: false, message: '删除失败' });
     }
   };
@@ -260,7 +269,7 @@ function mergeSignal(bsSig, wlSig) {
         setBacktestHistory(data.history || []);
         return data.history || [];
       }
-    } catch (e) { /* ignore */ }
+    } catch { /* ignore */ }
     return [];
   }, []);
 
@@ -298,7 +307,7 @@ function mergeSignal(bsSig, wlSig) {
       await apiFetch(`/api/bs-screener/backtest/history/${id}`, { method: 'DELETE' });
       loadHistory();
       setToast({ success: true, message: '已删除回测记录' });
-    } catch (e) {
+    } catch {
       setToast({ success: false, message: '删除失败' });
     }
   };
@@ -390,7 +399,7 @@ function mergeSignal(bsSig, wlSig) {
           }),
         });
         loadHistory(); // 刷新历史列表
-      } catch (e) { /* 保存失败不影响回测结果 */ }
+      } catch { /* 保存失败不影响回测结果 */ }
     } catch (e) {
       setToast({ success: false, message: e.message || '回测失败' });
     } finally {
@@ -830,14 +839,31 @@ function mergeSignal(bsSig, wlSig) {
             ))}
           </>
         ) : signals ? (
-          signals.signals.length > 0 ? (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-              {signals.signals.map(sig => {
-                const mergedSig = mergeSignal(sig, wlSignals[sig.secCode]);
-                return (
+          <StockListContainer
+            viewModeKey="bs-screener"
+            viewMode={viewMode}
+            onViewModeChange={setViewMode}
+            loading={false}
+            items={mergedSignals}
+            groupBy="sector"
+            tableProps={{
+              selectedCode: null,
+              onSelect: () => {},
+              onRemove: () => {},
+              onSell: null,
+              onRefresh: () => {},
+              onAnalyze: () => {},
+              batchMode: false,
+              selectedIds: [],
+              onToggleCheck: () => {},
+              strategyPicks,
+            }}
+            cardRenderer={() => (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                {mergedSignals.map(sig => (
                   <SignalCard
                     key={sig.secCode}
-                    signal={mergedSig}
+                    signal={sig}
                     orders={[]}
                     showWatchBtn={false}
                     mode="watchlist"
@@ -846,14 +872,15 @@ function mergeSignal(bsSig, wlSig) {
                     realtimeFlow={realtimeMap?.[sig.secCode] || null}
                     showRealtimeDetail
                   />
-                );
-              })}
-            </div>
-          ) : (
-            <div className="text-center py-12 text-sm" style={{ color: 'var(--text-muted)' }}>
-              未扫描到符合条件的股票，请调整参数后重试
-            </div>
-          )
+                ))}
+              </div>
+            )}
+            emptyText="未扫描到符合条件的股票，请调整参数后重试"
+            loadingText="扫描中..."
+            headerExtra={(
+              <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>共 {mergedSignals.length} 只信号</span>
+            )}
+          />
         ) : (
           <div className="text-center py-12">
             <div className="text-sm mb-3" style={{ color: 'var(--text-muted)' }}>

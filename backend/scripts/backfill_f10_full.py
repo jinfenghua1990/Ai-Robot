@@ -36,7 +36,7 @@ sys.path.insert(0, "/Users/gino/Projects/AIROBOT/backend")
 from dotenv import load_dotenv
 load_dotenv("/Users/gino/Projects/AIROBOT/.env")
 
-from sqlalchemy import select, func
+from sqlalchemy import select, func, text
 from db.connection import SessionLocal, engine, Base
 from db.models import StockUniverse, StockF10
 
@@ -46,15 +46,11 @@ from services.f10_provider import (
     CACHE_TTL_HOURS, _cache_set,
 )
 from collectors.tdx_collector import call_tushare_mcp
+from industry_stage.registry import load_membership_map
 
 
 def load_universe(force_refresh: bool = False) -> int:
-    """拉全市场上市股票基础信息写入 stock_universe。返回写入/更新行数。"""
-    existing = {}
-    with SessionLocal() as db:
-        for row in db.execute(select(StockUniverse)).scalars().all():
-            existing[row.ts_code] = row
-
+    """拉全市场上市股票基础信息写入 instruments。返回写入/更新行数。"""
     rows = call_tushare_mcp(
         "stock_basic",
         params={"list_status": "L", "exchange": ""},
@@ -64,23 +60,70 @@ def load_universe(force_refresh: bool = False) -> int:
         logger.warning("stock_basic 返回空，跳过 universe 更新")
         return 0
 
+    # 行业归属只认已同步的申万 2021 有效当前成分；stock_basic.industry
+    # 仅保留为映射缺失时的显式兼容值，避免再次把旧分类写回 instruments。
+    with SessionLocal() as mapping_db:
+        sw_members = load_membership_map(mapping_db)
+
     count = 0
+    payload = []
+    for r in rows:
+        tc = str(r.get("ts_code") or "").strip().upper()
+        if not tc:
+            continue
+        suffix = tc.rsplit('.', 1)[-1]
+        exchange = {'SH': 'SSE', 'SZ': 'SZSE', 'BJ': 'BSE'}.get(suffix, '')
+        legacy_industry = str(r.get("industry") or "").strip()
+        membership = sw_members.get(tc) or {}
+        sw_l1 = str(membership.get("l1_name") or "").strip()
+        sw_l2 = str(membership.get("l2_name") or "").strip()
+        sector = sw_l2 or legacy_industry
+        industry = sw_l1 or legacy_industry
+        status = str(r.get("list_status") or "L").strip()
+        payload.append({
+            'market': str(r.get("market") or "主板").strip(),
+            'symbol': tc,
+            'canonical_symbol': tc,
+            'name': str(r.get("name") or "").strip(),
+            'exchange': exchange,
+            'sector': sector,
+            'industry': industry,
+            'listing_status': status,
+            'is_active': status == 'L',
+            'source': 'tushare_stock_basic',
+        })
+
+    if not payload:
+        logger.warning("stock_basic 没有有效 ts_code，跳过 universe 更新")
+        return 0
+
     with SessionLocal() as db:
-        for r in rows:
-            tc = r.get("ts_code")
-            if not tc:
-                continue
-            obj = existing.get(tc) or StockUniverse(ts_code=tc)
-            obj.name = r.get("name") or ""
-            obj.industry = r.get("industry") or ""
-            obj.market = r.get("market") or ""
-            obj.list_status = r.get("list_status") or "L"
-            obj.is_active = (r.get("list_status") == "L")
-            db.merge(obj)
-            existing[tc] = obj
-            count += 1
+        db.execute(text("""
+            INSERT INTO instruments (
+                market, symbol, canonical_symbol, name, exchange, currency,
+                asset_type, sector, industry, listing_status, is_active,
+                is_tradeable, source, source_updated_at
+            ) VALUES (
+                :market, :symbol, :canonical_symbol, :name, :exchange, 'CNY',
+                'COMMON_STOCK', :sector, :industry, :listing_status, :is_active,
+                TRUE, :source, now()
+            )
+            ON CONFLICT (market, symbol) DO UPDATE SET
+                canonical_symbol = EXCLUDED.canonical_symbol,
+                name = EXCLUDED.name,
+                exchange = EXCLUDED.exchange,
+                sector = EXCLUDED.sector,
+                industry = EXCLUDED.industry,
+                listing_status = EXCLUDED.listing_status,
+                is_active = EXCLUDED.is_active,
+                is_tradeable = TRUE,
+                source = EXCLUDED.source,
+                source_updated_at = EXCLUDED.source_updated_at,
+                updated_at = now()
+        """), payload)
+        count = len(payload)
         db.commit()
-    logger.info("stock_universe 写入/更新 %s 只", count)
+    logger.info("instruments 写入/更新 %s 只", count)
     return count
 
 

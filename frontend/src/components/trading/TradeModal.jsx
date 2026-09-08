@@ -1,7 +1,7 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import SinaLink from '../SinaLink';
-import { useTrading } from '../../context/TradingContext';
+import { useTrading } from '../../context/tradingContextCore';
 import { apiFetch } from '../../utils/request';
 
 /**
@@ -37,8 +37,8 @@ export default function TradeModal({ stockCode, stockName, type, positionCount =
         if (!active) return;
         if (!ok) { setQuoteLoading(false); return; }
         setQuote(data);
-        if (data.price && !price) {
-          setPrice(data.price.toFixed(2));
+        if (data.price != null && Number.isFinite(Number(data.price))) {
+          setPrice(current => current || Number(data.price).toFixed(2));
         }
         setQuoteLoading(false);
       } catch {
@@ -54,12 +54,17 @@ export default function TradeModal({ stockCode, stockName, type, positionCount =
   const qChangePct = quote?.changePct ?? null;
   const qYesterdayClose = quote?.yesterdayClose ?? null;
   const qOpen = quote?.open ?? null;
+  const qPriceNumber = Number(qPrice);
+  const formatPrice = (value) => {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? numeric.toFixed(2) : '--';
+  };
 
   // 涨跌停价格计算（A股±10%，ST股±5%）
-  const priceLimit = qYesterdayClose ? {
+  const priceLimit = useMemo(() => qYesterdayClose ? {
     upper: qYesterdayClose * 1.1,
     lower: qYesterdayClose * 0.9,
-  } : null;
+  } : null, [qYesterdayClose]);
 
   const handleSubmit = useCallback(async () => {
     setError(null);
@@ -131,7 +136,7 @@ export default function TradeModal({ stockCode, stockName, type, positionCount =
       ].filter(b => b.value >= 100)
     : isBuy
     ? [
-        { label: '全仓', value: maxBuyQty },
+        { label: '全部', value: maxBuyQty },
         { label: '半仓', value: Math.floor(maxBuyQty / 2 / 100) * 100 },
         { label: '1/4仓', value: Math.floor(maxBuyQty / 4 / 100) * 100 },
         { label: '200股', value: 200 },
@@ -158,13 +163,18 @@ export default function TradeModal({ stockCode, stockName, type, positionCount =
       >
         {/* 标题 */}
         <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <span className="text-lg font-bold" style={{ color: isBuy ? '#ef4444' : '#22c55e' }}>
               {isBuy ? '买入' : '卖出'}
             </span>
             <span className="text-base font-medium" style={{ color: 'var(--text-primary)' }}>{stockName}</span>
             <span className="text-xs" style={{ color: 'var(--text-muted)' }}>{stockCode}</span>
             <SinaLink tsCode={stockCode} />
+            {balance?.accName && (
+              <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: 'rgba(59,130,246,0.1)', color: '#3b82f6', border: '1px solid rgba(59,130,246,0.3)' }}>
+                账户: {balance.accName}
+              </span>
+            )}
           </div>
           <button onClick={onClose} className="text-lg" style={{ color: 'var(--text-muted)' }}>✕</button>
         </div>
@@ -179,15 +189,15 @@ export default function TradeModal({ stockCode, stockName, type, positionCount =
                 <div>
                   <div className="text-xs" style={{ color: 'var(--text-muted)' }}>当前价</div>
                   <div className="text-xl font-bold" style={{ color: (qChange ?? 0) >= 0 ? '#ef4444' : '#22c55e' }}>
-                    {qPrice != null ? qPrice.toFixed(2) : '--'}
+                    {formatPrice(qPrice)}
                   </div>
                 </div>
                 <div className="text-right space-y-0.5">
                   <div className="text-xs" style={{ color: (qChange ?? 0) >= 0 ? '#ef4444' : '#22c55e' }}>
-                    {qChange != null ? `${qChange >= 0 ? '+' : ''}${qChange.toFixed(2)}` : '--'} ({qChangePct != null ? qChangePct.toFixed(2) : '--'}%)
+                    {qChange != null && Number.isFinite(Number(qChange)) ? `${Number(qChange) >= 0 ? '+' : ''}${formatPrice(qChange)}` : '--'} ({qChangePct != null && Number.isFinite(Number(qChangePct)) ? formatPrice(qChangePct) : '--'}%)
                   </div>
                   <div className="text-xs" style={{ color: 'var(--text-muted)' }}>
-                    昨收 {qYesterdayClose != null ? qYesterdayClose.toFixed(2) : '--'} · 开 {qOpen != null ? qOpen.toFixed(2) : '--'}
+                    昨收 {formatPrice(qYesterdayClose)} · 开 {formatPrice(qOpen)}
                   </div>
                   <div className="text-xs" style={{ color: 'var(--text-muted)' }}>
                     涨停 <span style={{ color: '#ef4444' }}>{qYesterdayClose ? (qYesterdayClose * 1.1).toFixed(2) : '--'}</span> · 跌停 <span style={{ color: '#22c55e' }}>{qYesterdayClose ? (qYesterdayClose * 0.9).toFixed(2) : '--'}</span>
@@ -266,13 +276,13 @@ export default function TradeModal({ stockCode, stockName, type, positionCount =
               className="w-full px-3 py-2 rounded-lg border text-sm"
               style={{ borderColor: 'var(--border-color)', background: 'var(--bg-surface)', color: 'var(--text-primary)' }}
             />
-            {quote && (
+            {Number.isFinite(qPriceNumber) && (
               <button
-                onClick={() => setPrice(quote.price.toFixed(2))}
+                onClick={() => setPrice(qPriceNumber.toFixed(2))}
                 className="mt-1 text-xs"
                 style={{ color: 'var(--accent-color, #3b82f6)' }}
               >
-                ↻ 使用最新价 {quote.price.toFixed(2)}
+                ↻ 使用最新价 {qPriceNumber.toFixed(2)}
               </button>
             )}
           </div>

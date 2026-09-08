@@ -17,7 +17,7 @@
   ※ 通达信(TCP)和新浪(无限制)可多用
 """
 # 重新导出，保持原有 from collectors.realtime_collector import ... 的兼容性
-from collectors.realtime_sector_collector import collect_realtime_sector_flow
+from collectors.realtime_sector_collector import collect_realtime_sector_flow, _now_truncated
 from collectors.realtime_stock_collector import collect_realtime_stock_flow, _build_fallback_stock_flows
 from collectors.realtime_concept_collector import (
     collect_realtime_concept_sector_flow,
@@ -31,10 +31,12 @@ from collectors.realtime_archiver import (
 
 
 def collect_realtime_snapshot(trade_date):
-    """采集一次完整的实时快照（板块+个股+概念板块）"""
+    """采集一次完整的实时快照（SW2021 行业+个股+概念板块）。"""
     print(f'[realtime] === Snapshot for {trade_date} ===')
-    sector_count = collect_realtime_sector_flow(trade_date)
-    stock_count = collect_realtime_stock_flow(trade_date)
+    # 先写个股，再按同一时间点聚合行业；否则行业快照会与个股错位。
+    snapshot_time = _now_truncated()
+    stock_count = collect_realtime_stock_flow(trade_date, snapshot_time=snapshot_time)
+    sector_count = collect_realtime_sector_flow(trade_date, snapshot_time=snapshot_time)
     # 概念板块放在个股之后，便于用成分股计算补充新浪没有的热门概念
     concept_count = collect_realtime_concept_sector_flow(trade_date)
     print(f'[realtime] Snapshot done: {sector_count} sectors, {concept_count} concepts, {stock_count} stocks')

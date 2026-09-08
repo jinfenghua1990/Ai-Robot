@@ -1,11 +1,14 @@
-"""本地自选股 JSON 文件读写（唯一真相源）
-watchlist.json 格式: {"stocks": [{"code","name","note","group"}], "version": 1, "updated_at": "..."}
+"""自选股数据库写入与兼容 JSON 导出。
+
+数据库是唯一真相源；watchlist.json 只供旧脚本兼容，不参与查询决策。
 """
 import json
 import os
 import logging
 from datetime import datetime
 from threading import Lock
+
+from ._shared import normalize_stock_code
 
 logger = logging.getLogger(__name__)
 
@@ -41,99 +44,116 @@ def write_local(data: dict):
 
 
 def add_stock(code: str, name: str = "", note: str = "", group: str = "默认"):
-    """本地新增一只自选股"""
-    data = read_local()
-    stocks = data["stocks"]
-    # 去重
-    for s in stocks:
-        if s["code"] == code:
-            s["name"] = name or s.get("name", "")
-            s["note"] = note or s.get("note", "")
-            s["group"] = group or s.get("group", "默认")
-            write_local(data)
-            return
-    stocks.append({"code": code, "name": name, "note": note, "group": group})
-    write_local(data)
+    """数据库新增/更新一只自选股，然后导出兼容 JSON。"""
+    from db.session import get_db_session
+    from db.models import Watchlist
+    code = normalize_stock_code(code)
+    if not code:
+        return
+    with get_db_session() as db:
+        item = db.query(Watchlist).filter_by(stock_code=code).first()
+        if item is None:
+            item = Watchlist(stock_code=code)
+            db.add(item)
+        if name:
+            item.stock_name = name
+        if note:
+            item.note = note
+        if group:
+            item.group_name = group
+        db.commit()
+    export_db_to_local()
 
 
 def remove_stock(code: str):
-    """本地删除一只自选股"""
-    data = read_local()
-    data["stocks"] = [s for s in data["stocks"] if s["code"] != code]
-    write_local(data)
+    """从数据库删除一只自选股，然后导出兼容 JSON。"""
+    from db.session import get_db_session
+    from db.models import Watchlist
+    code = normalize_stock_code(code)
+    if not code:
+        return
+    with get_db_session() as db:
+        db.query(Watchlist).filter_by(stock_code=code).delete()
+        db.commit()
+    export_db_to_local()
 
 
 def update_stock(code: str, **kwargs):
-    """本地更新一只自选股字段"""
-    data = read_local()
-    for s in data["stocks"]:
-        if s["code"] == code:
-            for k, v in kwargs.items():
-                if v is not None:
-                    s[k] = v
-            break
-    write_local(data)
+    """更新数据库字段，然后导出兼容 JSON。"""
+    from db.session import get_db_session
+    from db.models import Watchlist
+    field_map = {"name": "stock_name", "note": "note", "group": "group_name"}
+    code = normalize_stock_code(code)
+    if not code:
+        return
+    with get_db_session() as db:
+        item = db.query(Watchlist).filter_by(stock_code=code).first()
+        if item is None:
+            return
+        for key, value in kwargs.items():
+            if value is not None and key in field_map:
+                setattr(item, field_map[key], value)
+        db.commit()
+    export_db_to_local()
 
 
 def get_stock_codes() -> list:
-    """获取所有自选股代码列表"""
-    data = read_local()
-    return [s["code"] for s in data["stocks"]]
+    """从数据库获取所有自选股代码。"""
+    from db.session import get_db_session
+    from db.models import Watchlist
+    with get_db_session() as db:
+        return [normalize_stock_code(row[0]) for row in db.query(Watchlist.stock_code).order_by(
+            Watchlist.sort_order, Watchlist.created_at
+        ).all()]
+
+
+def export_db_to_local() -> dict:
+    """将数据库当前状态导出到 JSON；仅作兼容备份。"""
+    from db.session import get_db_session
+    from db.models import Watchlist
+    with get_db_session() as db:
+        rows = db.query(Watchlist).order_by(
+            Watchlist.sort_order, Watchlist.created_at
+        ).all()
+        data = {
+            "stocks": [{
+                "code": row.stock_code,
+                "name": row.stock_name or "",
+                "note": row.note or "",
+                "group": row.group_name or "默认",
+            } for row in rows],
+            "version": 1,
+        }
+    write_local(data)
+    return data
 
 
 def sync_to_db():
-    """将本地 JSON 同步到 PostgreSQL Watchlist 表（启动时调用）"""
+    """仅用于空数据库的首次导入；已有数据库绝不被 JSON 覆盖或删除。"""
     from db.session import get_db_session
     from db.models import Watchlist
 
-    data = read_local()
-    stocks = data.get("stocks", [])
-    if not stocks:
-        logger.info("[watchlist_local] JSON 为空，跳过 DB 同步")
-        return
-
     with get_db_session() as db:
-        existing_map = {}
-        for item in db.query(Watchlist).all():
-            existing_map[item.stock_code] = item
-
-        added, updated = 0, 0
+        if db.query(Watchlist).count() > 0:
+            logger.info("[watchlist_local] DB 已有数据，跳过 JSON 导入")
+            return export_db_to_local()
+        data = read_local()
+        stocks = data.get("stocks", [])
+        if not stocks:
+            logger.info("[watchlist_local] JSON 为空，跳过首次导入")
+            return
+        seen_codes = set()
         for s in stocks:
-            code = s["code"]
-            name = s.get("name", "")
-            note = s.get("note", "")
-            group = s.get("group", "默认")
-
-            if code in existing_map:
-                item = existing_map[code]
-                changed = False
-                if name and item.stock_name != name:
-                    item.stock_name = name
-                    changed = True
-                if note and item.note != note:
-                    item.note = note
-                    changed = True
-                if group and item.group_name != group:
-                    item.group_name = group
-                    changed = True
-                if changed:
-                    updated += 1
-            else:
-                db.add(Watchlist(
-                    stock_code=code,
-                    stock_name=name,
-                    note=note,
-                    group_name=group,
-                ))
-                added += 1
-
-        # 删除 DB 中有但 JSON 中没有的股票
-        json_codes = {s["code"] for s in stocks}
-        removed = 0
-        for code, item in existing_map.items():
-            if code not in json_codes:
-                db.delete(item)
-                removed += 1
-
+            code = normalize_stock_code(s.get("code"))
+            if not code or code in seen_codes:
+                continue
+            seen_codes.add(code)
+            db.add(Watchlist(
+                stock_code=code,
+                stock_name=s.get("name", ""),
+                note=s.get("note", ""),
+                group_name=s.get("group", "默认"),
+            ))
         db.commit()
-        logger.info(f"[watchlist_local] JSON→DB 同步完成: +{added} ~{updated} -{removed}")
+        logger.info("[watchlist_local] 首次 JSON→DB 导入完成: %d", len(stocks))
+    export_db_to_local()

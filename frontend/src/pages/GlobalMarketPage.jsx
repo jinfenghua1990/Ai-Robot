@@ -6,8 +6,9 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { apiFetch } from '../utils/request';
 import { UP_COLOR, DOWN_COLOR, UP_DARK, DOWN_DARK } from '../utils/colors';
-import { f2, stripCode } from '../utils/format';
+
 import TrackButton from '../components/trading/TrackButton';
+import SinaLink from '../components/SinaLink';
 
 const fmtPct = (v, withSign = true) => {
   if (v == null) return '—';
@@ -101,7 +102,14 @@ function useDebounce(value, delay = 300) {
   return debounced;
 }
 
-export default function GlobalMarketPage({ market: marketProp }) {
+export default function GlobalMarketPage({
+  market: marketProp,
+  snapshotMode = false,
+  snapshotData = null,
+  snapshotLoading = false,
+  snapshotError = '',
+  onRefresh,
+}) {
   const navigate = useNavigate();
   const isControlled = marketProp != null;
   const market = isControlled ? marketProp : 'HK';
@@ -138,11 +146,26 @@ export default function GlobalMarketPage({ market: marketProp }) {
     setLoadingWatchlist(false);
   }, []);
 
-  useEffect(() => { load(market); }, [market, load]);
+  useEffect(() => {
+    if (snapshotMode) {
+      setOverview(snapshotData || null);
+      setWatchlist(snapshotData ? { items: snapshotData.items || [] } : null);
+      setUpdated(snapshotData?.updated_at || '');
+      setError(snapshotError || '');
+      return;
+    }
+    load(market);
+  }, [market, load, snapshotData, snapshotError, snapshotMode]);
 
-  const indices = overview?.indices || [];
-  const stats = overview?.stats || {};
-  const items = watchlist?.items || [];
+  const viewLoading = snapshotMode ? snapshotLoading : (loading || loadingWatchlist);
+  const viewError = snapshotMode ? snapshotError : error;
+  const refresh = snapshotMode && onRefresh ? onRefresh : () => load(market);
+  const indices = snapshotMode ? (snapshotData?.indices || []) : (overview?.indices || []);
+  const stats = snapshotMode ? (snapshotData?.stats || {}) : (overview?.stats || {});
+  const items = useMemo(
+    () => snapshotMode ? (snapshotData?.items || []) : (watchlist?.items || []),
+    [snapshotMode, snapshotData, watchlist],
+  );
 
   // 港股技术信号概览（基于全量 items，供 HK 视图展示）
   const signalSummary = useMemo(() => {
@@ -212,27 +235,30 @@ export default function GlobalMarketPage({ market: marketProp }) {
       <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
         <div>
           <h1 className="text-lg font-bold">{marketIcon} {marketLabel}智能行情</h1>
-          <p className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>Yahoo Finance · 指数 + 技术筛选 + 一键跟踪</p>
+          <p className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
+            {snapshotMode ? '港股盘后快照 · 指数 + 技术筛选 + 一键跟踪' : 'Yahoo Finance · 指数 + 技术筛选 + 一键跟踪'}
+            {snapshotMode && snapshotData?.data_trade_date && ` · 数据日 ${snapshotData.data_trade_date}`}
+          </p>
         </div>
         <div className="flex items-center gap-2">
           {updated && <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>🕐 {updated}</span>}
-          <button onClick={() => load(market)} className="px-3 py-1.5 rounded text-xs transition-all hover:opacity-80"
+          <button onClick={refresh} disabled={viewLoading} className="px-3 py-1.5 rounded text-xs transition-all hover:opacity-80"
             style={{ background: 'var(--bg-card)', color: 'var(--text-secondary)', border: '1px solid var(--border-color)' }}>
-            🔄 刷新
+            {viewLoading ? '⏳ 读取中…' : snapshotMode ? '🔄 刷新快照' : '🔄 刷新'}
           </button>
         </div>
       </div>
-      {error && (
+      {viewError && (
         <div className="flex items-center justify-between p-2 mb-3 rounded text-xs" style={{ background: 'rgba(239,68,68,0.1)', color: DOWN_DARK }}>
-          <span>⚠️ {error}</span>
-          <button onClick={() => load(market)} className="ml-2 px-2 py-1 rounded text-[10px] font-medium"
+          <span>⚠️ {viewError}</span>
+          <button onClick={refresh} className="ml-2 px-2 py-1 rounded text-[10px] font-medium"
             style={{ background: 'rgba(239,68,68,0.15)', color: DOWN_DARK }}>点此重试</button>
         </div>
       )}
 
       {/* 指数卡片 */}
       <div className="grid grid-cols-3 gap-2 mb-3">
-        {loading ? [1,2,3].map(i => <div key={i} className="p-3 rounded animate-pulse" style={{ background: 'var(--bg-card)', height: 70 }} />)
+        {viewLoading ? [1,2,3].map(i => <div key={i} className="p-3 rounded animate-pulse" style={{ background: 'var(--bg-card)', height: 70 }} />)
           : indices.map(idx => (
           <div key={idx.code} className="p-3 rounded" style={{ background: 'var(--bg-card)', border: '1px solid var(--border-color)' }}>
             <div className="flex items-center justify-between mb-1"><span className="text-xs font-bold">{idx.name}</span><span className="text-[9px]" style={{ color: 'var(--text-muted)' }}>{idx.code}</span></div>
@@ -321,11 +347,11 @@ export default function GlobalMarketPage({ market: marketProp }) {
             </tr>
           </thead>
           <tbody>
-            {loading && items.length === 0 ? (
+            {viewLoading && items.length === 0 ? (
               <>{Array.from({ length: 6 }).map((_, i) => <SkeletonRow key={i} />)}</>
             ) : filtered.length === 0 ? (
               <tr><td colSpan={COLUMNS.length} className="text-center py-8" style={{ color: 'var(--text-muted)' }}>
-                {debouncedSearch ? '未找到匹配的股票' : '暂无数据，请点击刷新'}
+                {debouncedSearch ? '未找到匹配的股票' : snapshotMode && !snapshotData?.available ? '等待首次港股盘后快照' : '暂无数据，请点击刷新'}
               </td></tr>
             ) : filtered.map(it => (
               <tr key={it.code} className="hover:opacity-80 cursor-pointer transition-colors"
@@ -349,7 +375,10 @@ export default function GlobalMarketPage({ market: marketProp }) {
                 <td className="px-1.5 py-1.5 text-right" style={{ color: 'var(--text-secondary)' }}>{fmtVol(it.volume)}</td>
                 <td className="px-1.5 py-1.5"><SignalBadge item={it} /></td>
                 <td className="px-1.5 py-1.5 text-center" onClick={e => e.stopPropagation()}>
-                  <TrackButton stockCode={it.code} stockName={it.name} />
+                  <span className="inline-flex items-center gap-1">
+                    <SinaLink market={market} code={it.code} size="xs" />
+                    <TrackButton stockCode={it.code} stockName={it.name} />
+                  </span>
                 </td>
               </tr>
             ))}
@@ -358,7 +387,7 @@ export default function GlobalMarketPage({ market: marketProp }) {
       </div>
 
       <div className="mt-3 text-[10px]" style={{ color: 'var(--text-muted)' }}>
-        💡 数据: Yahoo Finance · 点击列头排序 · 点击行跳转详情 · "回踩MA20"筛选 = 股价在MA20±2%区间内
+        💡 数据: {snapshotMode ? '港股盘后快照（Yahoo / 新浪回退）' : 'Yahoo Finance'} · 点击列头排序 · 点击行跳转详情 · "回踩MA20"筛选 = 股价在MA20±2%区间内
       </div>
     </div>
   );

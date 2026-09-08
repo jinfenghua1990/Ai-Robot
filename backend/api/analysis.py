@@ -22,9 +22,25 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-# 信号缓存（30秒）
+# 信号缓存（30秒，stale-while-revalidate）
+# 过期后不阻塞请求：先返回旧数据，后台异步重算，避免用户等 0.9s
 _signal_cache = {"data": None, "ts": 0}
 _SIGNAL_CACHE_TTL = 30
+_signal_refreshing = False
+
+
+async def _refresh_signal_bg():
+    """后台重算信号缓存（SWR 的 revalidate 环节，单飞防惊群）"""
+    global _signal_refreshing
+    if _signal_refreshing:
+        return
+    _signal_refreshing = True
+    try:
+        await get_signals(force=True)
+    except Exception as e:
+        logger.warning(f'[cache] signal bg refresh error: {e}')
+    finally:
+        _signal_refreshing = False
 
 
 def _today() -> date:
@@ -43,22 +59,8 @@ def _parse_date(d: Optional[str]) -> Optional[date]:
         return None
 
 
-async def _fetch_mx_positions_raw() -> tuple:
-    """从东财妙想模拟盘（mx-trading）拉取持仓，返回 (positions, total_assets)"""
-    from api.mx_trading import get_positions as _get_mx_positions
-    try:
-        data = await _get_mx_positions(force=1)
-        return data.get('positions', []), data.get('totalAssets', 0)
-    except Exception as e:
-        logger.warning(f'fetch mx positions failed: {e}')
-        return [], 0
-
-
 async def _fetch_positions_raw():
-    """优先取东财模拟盘持仓；为空时回退原模拟盘"""
-    mx_positions, mx_assets = await _fetch_mx_positions_raw()
-    if mx_positions:
-        return mx_positions, mx_assets, 'mx'
+    """只读取数据库中的妙想当前持仓快照。"""
     local_data = await _get_local_positions()
     local_positions = local_data.get('positions', []) if isinstance(local_data, dict) else (local_data or [])
     local_assets = local_data.get('totalAssets', 0) if isinstance(local_data, dict) else 0
@@ -79,7 +81,7 @@ async def _fetch_positions_raw():
             'profitPct': p.get('profitPct', 0),
             'posPct': p.get('posPct', 0),
         } for p in local_positions]
-        return normalized, local_assets, 'local'
+        return normalized, local_assets, 'database'
     return [], 0, 'empty'
 
 
@@ -226,14 +228,21 @@ def _build_signals_from_positions(positions: list, total_assets: float, source: 
 
 
 @router.get("/api/trading/signals")
-async def get_signals(date: str = Query(None, description="历史日期 YYYY-MM-DD，默认今天实时")):
+async def get_signals(
+    date: str = Query(None, description="历史日期 YYYY-MM-DD，默认今天实时"),
+    force: bool = Query(False, description="跳过缓存强制重算"),
+):
     """获取持仓分析信号（东财/原模拟盘双源 + 历史快照）"""
     target_date = _parse_date(date)
 
-    # 只有查询今天实时数据时才使用内存缓存
-    if not target_date or target_date == _today():
-        now = time.time()
-        if _signal_cache["data"] and now - _signal_cache["ts"] < _SIGNAL_CACHE_TTL:
+    # 只有查询今天实时数据时才使用内存缓存（stale-while-revalidate）
+    if not force and (not target_date or target_date == _today()):
+        if _signal_cache["data"]:
+            age = time.time() - _signal_cache["ts"]
+            if age < _SIGNAL_CACHE_TTL:
+                return _signal_cache["data"]
+            # 已过期：先回旧数据，后台异步重算，不让用户等
+            asyncio.create_task(_refresh_signal_bg())
             return _signal_cache["data"]
 
     try:
@@ -332,7 +341,7 @@ async def get_signals(date: str = Query(None, description="历史日期 YYYY-MM-
 
 
 @router.get("/api/trading/history")
-async def get_history_dates():
+def get_history_dates():
     """返回所有有快照的日期列表"""
     with get_db_session() as db:
         rows = db.query(SimAccountSnapshot.trade_date).order_by(SimAccountSnapshot.trade_date.desc()).all()
@@ -340,7 +349,7 @@ async def get_history_dates():
 
 
 @router.get("/api/trading/history/{date_str}")
-async def get_history_by_date(date_str: str):
+def get_history_by_date(date_str: str):
     """返回某一天的账户 + 持仓快照"""
     d = _parse_date(date_str)
     if not d:
@@ -368,7 +377,7 @@ async def get_history_by_date(date_str: str):
 
 
 @router.get("/api/trading/strategy-config")
-async def get_strategy_config():
+def get_strategy_config():
     """获取当前策略参数"""
     return get_config()
 
@@ -384,7 +393,7 @@ class StrategyConfigUpdate(BaseModel):
 
 
 @router.post("/api/trading/strategy-config")
-async def set_strategy_config(req: StrategyConfigUpdate):
+def set_strategy_config(req: StrategyConfigUpdate):
     """更新策略参数"""
     update_config(req.dict(exclude_none=True))
     # 清除信号缓存，使下次请求重新计算
@@ -393,10 +402,13 @@ async def set_strategy_config(req: StrategyConfigUpdate):
 
 
 async def refresh_signal_cache():
-    """强制刷新信号缓存（基于原模拟盘持仓）"""
-    _signal_cache["data"] = None
+    """强制刷新信号缓存（基于原模拟盘持仓）
+
+    不预先清空缓存：force=True 已跳过读缓存，保留旧值可让刷新期间的
+    并发请求继续拿到 stale 数据，而不是看到空列表。
+    """
     try:
-        await get_signals()
+        await get_signals(force=True)
         print('[cache] signal cache refreshed')
     except Exception as e:
         logger.warning(f'[cache] signal refresh error: {e}', exc_info=True)

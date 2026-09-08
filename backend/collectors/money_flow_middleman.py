@@ -1,7 +1,7 @@
 """
 资金流向数据中转层（Money Flow Middleman）
 - 盘中每分钟/每 5 分钟抓取外部概念/行业板块资金流
-- 三道防错：网络容错 → 前向填充(FFill) → 累计平滑
+- 上游缺失时不补造数值，只保留数据库中最后一条真实快照
 - 写入 realtime_money_flow_snapshot 表，并维护内存缓存供 FastAPI 直接读取
 """
 import sys, os
@@ -26,7 +26,6 @@ logger = logging.getLogger(__name__)
 # 结构: {dimension: {block_name: {"09:30": 1.2, "09:31": 1.5, ...}}}
 # =====================================================================
 DATA_CACHE: Dict[str, Dict[str, Dict[str, float]]] = {"concept": {}, "industry": {}}
-LAST_VALID_SNAPSHOT: Dict[str, Dict[str, float]] = {"concept": {}, "industry": {}}
 _CACHE_LOCK = threading.RLock()
 
 # SINA_HEADERS imported from utils.http_constants
@@ -55,15 +54,6 @@ def _is_market_open(minute: str) -> bool:
 
 def _now_truncated():
     return datetime.now().replace(second=0, microsecond=0)
-
-
-def _should_ffill(name: str, val: Optional[float], last: float) -> bool:
-    """判断是否需要前向填充：None，或非首分钟突变为 0"""
-    if val is None:
-        return True
-    if val == 0.0 and last != 0.0:
-        return True
-    return False
 
 
 def fetch_raw_data_from_sina_concept() -> List[dict]:
@@ -147,7 +137,6 @@ def _restore_cache_from_db(dimension: str):
                 if r.block_name not in DATA_CACHE[dimension]:
                     DATA_CACHE[dimension][r.block_name] = {}
                 DATA_CACHE[dimension][r.block_name][r.minute] = float(r.net_inflow_yi)
-                LAST_VALID_SNAPSHOT[dimension][r.block_name] = float(r.net_inflow_yi)
         if rows:
             logger.info(
                 f'[middleman] [{dimension}] restored {len(rows)} snapshots from DB, '
@@ -191,7 +180,7 @@ def _bulk_upsert_snapshots(records: List[RealtimeMoneyFlowSnapshot]):
 
 def collect_realtime_money_flow_snapshot(dimension: str = 'concept', trade_date: Optional[date] = None, force: bool = False):
     """
-    核心中转调度器：抓取、清洗、FFill、累计、持久化。
+    核心中转调度器：抓取、清洗、持久化。
     返回保存的记录数。
     force=True 时可在非交易时段强制采集（用于测试/补数据）。
     """
@@ -199,7 +188,7 @@ def collect_realtime_money_flow_snapshot(dimension: str = 'concept', trade_date:
         trade_date = date.today()
 
     # 首次调用时恢复缓存
-    if not DATA_CACHE[dimension] and not LAST_VALID_SNAPSHOT[dimension]:
+    if not DATA_CACHE[dimension]:
         _restore_cache_from_db(dimension)
 
     now = datetime.now()
@@ -211,50 +200,31 @@ def collect_realtime_money_flow_snapshot(dimension: str = 'concept', trade_date:
 
     logger.info(f'[middleman] [{dimension}] {current_hm} 开始抓取与清洗...')
 
-    # 1. 网络容错
+    # 1. 网络容错：失败时不把上一分钟真实值写成当前分钟数据。
     try:
         raw_data = fetch_raw_data(dimension)
     except Exception as e:
-        logger.error(f'[middleman] [{dimension}] 外部接口失败: {e}，降级使用前一分钟数据')
+        logger.error(f'[middleman] [{dimension}] 外部接口失败: {e}，本分钟不写入数据')
         raw_data = []
 
-    # 收集所有应存在的板块
-    all_block_names = set(DATA_CACHE[dimension].keys())
-    for item in raw_data:
-        name = item.get('block_name')
-        if name:
-            all_block_names.add(name)
+    if not raw_data:
+        logger.warning(f'[middleman] [{dimension}] {current_hm} 无有效上游数据，本分钟不写入数据')
+        return 0
 
     records_to_save = []
-    saved_count = 0
+    raw_by_name = {
+        item.get('block_name'): item.get('net_amount')
+        for item in raw_data
+        if item.get('block_name') and item.get('net_amount') is not None
+    }
 
     with _CACHE_LOCK:
-        for name in all_block_names:
-            raw_item = next((x for x in raw_data if x.get('block_name') == name), None)
-            raw_val = raw_item.get('net_amount') if raw_item else None
-            val_in_yi = (raw_val / 1e8) if raw_val is not None else None
-            last_val = LAST_VALID_SNAPSHOT[dimension].get(name, 0.0)
-
-            # 2. 数据清洗 + FFill
-            if _should_ffill(name, val_in_yi, last_val):
-                clean_val = last_val
-                source = 'ffill'
-                logger.warning(
-                    f'[middleman] [{dimension}] [{name}] 数据异常({raw_val})，'
-                    f'FFill填充为 {clean_val:.2f} 亿'
-                )
-            else:
-                clean_val = round(val_in_yi, 2)
-                source = 'api'
-
-            # 3. 累计值（新浪返回的 netamount 已经是当日累计净流入，直接保存）
-            cumulative_val = clean_val
-
-            LAST_VALID_SNAPSHOT[dimension][name] = cumulative_val
+        for name, raw_val in raw_by_name.items():
+            # 新浪返回的 netamount 已经是当日累计净流入，直接保存。0 是有效值。
+            cumulative_val = round(float(raw_val) / 1e8, 2)
             if name not in DATA_CACHE[dimension]:
                 DATA_CACHE[dimension][name] = {}
             DATA_CACHE[dimension][name][current_hm] = cumulative_val
-            saved_count += 1
 
             records_to_save.append(RealtimeMoneyFlowSnapshot(
                 trade_date=trade_date,
@@ -262,13 +232,13 @@ def collect_realtime_money_flow_snapshot(dimension: str = 'concept', trade_date:
                 block_name=name,
                 minute=current_hm,
                 net_inflow_yi=cumulative_val,
-                source=source,
+                source='api',
             ))
 
     # 4. 持久化
     _bulk_upsert_snapshots(records_to_save)
-    logger.info(f'[middleman] [{dimension}] {current_hm} 保存 {saved_count} 条记录')
-    return saved_count
+    logger.info(f'[middleman] [{dimension}] {current_hm} 保存 {len(records_to_save)} 条真实上游记录')
+    return len(records_to_save)
 
 
 def get_money_flow_response(dimension: str = 'concept', top_n: int = 10, bottom_n: int = 5):
@@ -285,9 +255,12 @@ def get_money_flow_response(dimension: str = 'concept', top_n: int = 10, bottom_
 
     if not cache:
         return {
-            'status': 'success',
+            'status': 'INSUFFICIENT',
+            'source': 'database',
             'dimension': dimension,
             'trade_date': date.today().isoformat(),
+            'data_as_of': None,
+            'message': '数据库中没有可用的实时资金流快照',
             'timeline': MARKET_TIMELINE,
             'series': [],
         }
@@ -314,17 +287,26 @@ def get_money_flow_response(dimension: str = 'concept', top_n: int = 10, bottom_
     bottom_blocks = [x[0] for x in latest_rank[-bottom_n:]] if len(latest_rank) > top_n else []
     target_blocks = list(dict.fromkeys(top_blocks + bottom_blocks))
 
+    now = datetime.now()
+    minutes_ago = (now.hour * 60 + now.minute) - (
+        int(latest_snapshot_minute[:2]) * 60 + int(latest_snapshot_minute[3:])
+    )
+    is_stale = _is_market_open(now.strftime('%H:%M')) and minutes_ago > 10
+    status = 'STALE' if is_stale else 'READY'
+    message = f'最近真实快照为 {latest_snapshot_minute}' if not is_stale else f'实时资金流已 {minutes_ago} 分钟未更新'
+
     echarts_series = []
     for block_name in target_blocks:
         data_points = []
-        running_val = 0.0
         for t in MARKET_TIMELINE:
             if t in cache.get(block_name, {}):
-                running_val = cache[block_name][t]
+                point = cache[block_name][t]
+            else:
+                point = None
             # 非交易时段：把最新快照值放到 15:00
             if use_close_mapping and t == '15:00' and block_name in cache:
-                running_val = cache[block_name].get(latest_snapshot_minute, running_val)
-            data_points.append(round(running_val, 2))
+                point = cache[block_name].get(latest_snapshot_minute, point)
+            data_points.append(round(point, 2) if point is not None else None)
 
         echarts_series.append({
             'name': block_name,
@@ -334,9 +316,13 @@ def get_money_flow_response(dimension: str = 'concept', top_n: int = 10, bottom_
         })
 
     return {
-        'status': 'success',
+        'status': status,
+        'source': 'database',
         'dimension': dimension,
         'trade_date': date.today().isoformat(),
+        'data_as_of': f'{date.today().isoformat()} {latest_snapshot_minute}',
+        'message': message,
+        'coverage': {'blocks': len(cache), 'latest_snapshot_minute': latest_snapshot_minute},
         'timeline': MARKET_TIMELINE,
         'series': echarts_series,
     }

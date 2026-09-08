@@ -19,20 +19,13 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
 
+from ._shared import calc_rsi
+from .data_feed import get_kline_from_tdx
+
 
 logger = logging.getLogger(__name__)
 
-def calc_rsi(closes, period=14):
-    """计算RSI指标"""
-    deltas = np.diff(closes)
-    gains = np.where(deltas > 0, deltas, 0)
-    losses = np.where(deltas < 0, -deltas, 0)
-    avg_gain = np.mean(gains[-period:])
-    avg_loss = np.mean(losses[-period:])
-    if avg_loss == 0:
-        return 100
-    rs = avg_gain / avg_loss
-    return 100 - (100 / (1 + rs))
+# calc_rsi 已统一收敛到 strategies/_shared.py（SMA 语义版，勿与 services/indicators 混用）
 
 
 def baihu_strategy_v30(kline, day_index=-1):
@@ -252,83 +245,10 @@ def baihu_strategy_v30(kline, day_index=-1):
 # pytdx 数据源（复用V2.6）
 # ============================================================
 
-def _parse_ts_code(ts_code):
-    code = str(ts_code).strip().lower()
-    if '.' in code:
-        pure_code, exchange = code.split('.')
-        if exchange.startswith('sz'):
-            return 0, pure_code
-        elif exchange.startswith('sh'):
-            return 1, pure_code
-        return None, None
-    if code.startswith('sz') or code.startswith('sh'):
-        prefix = code[:2]
-        pure_code = code[2:]
-        market = 0 if prefix == 'sz' else 1
-        return market, pure_code
-    if code.isdigit():
-        return (1, code) if code.startswith('6') else (0, code)
-    return None, None
-
-
-def get_kline_from_tdx(code, days=90):
-    from collectors.tdx_collector import connect_with_retry
-    api, server = connect_with_retry()
-    if not api:
-        return None
-    try:
-        market, pure_code = _parse_ts_code(code)
-        if market is None:
-            return None
-        bars = api.get_security_bars(4, market, pure_code, 0, days)
-        if not bars or len(bars) < 30:
-            return None
-        # pytdx 实测返回 oldest-first（bars[0] 最早），无需 reversed，直接使用
-        kline = []
-        closes_history = []
-        ma20_sum = 0.0
-        ma10_sum = 0.0
-        ma5_sum = 0.0
-        for b in bars:
-            close = float(b['close'])
-            open_p = float(b['open'])
-            high = float(b['high'])
-            low = float(b['low'])
-            volume = float(b.get('vol', b.get('volume', 0)))
-            day = b.get('datetime', '')
-            if not day and b.get('year'):
-                day = f"{b['year']:04d}-{b['month']:02d}-{b['day']:02d}"
-            closes_history.append(close)
-            ma20_sum += close
-            ma10_sum += close
-            ma5_sum += close
-            if len(closes_history) > 20:
-                ma20_sum -= closes_history[-21]
-            if len(closes_history) > 10:
-                ma10_sum -= closes_history[-11]
-            if len(closes_history) > 5:
-                ma5_sum -= closes_history[-6]
-            ma20 = ma20_sum / 20.0 if len(closes_history) >= 20 else 0.0
-            ma10 = ma10_sum / 10.0 if len(closes_history) >= 10 else 0.0
-            ma5 = ma5_sum / 5.0 if len(closes_history) >= 5 else 0.0
-            kline.append({
-                'close': close, 'open': open_p, 'high': high, 'low': low,
-                'volume': volume,
-                'ma_price20': ma20 if ma20 > 0 else None,
-                'ma_price10': ma10 if ma10 > 0 else None,
-                'ma_price5': ma5 if ma5 > 0 else None,
-                'day': day,
-            })
-        return kline
-    except Exception:
-        logger.debug(f"function failed", exc_info=True)
-        return None
-    finally:
-        if api:
-            try:
-                api.disconnect()
-            except Exception as e:
-                logger.debug(f'[baihu_v30] pytdx disconnect 失败: {e}')
+# ============================================================
+# pytdx 数据源已统一收敛到 strategies/data_feed.py
+# （get_kline_from_tdx / _parse_ts_code 均迁移至此，本文件不再内联）
+# ============================================================
 
 
 def run_baihu_v30_screen(stock_list, trade_date=None, max_workers=20):

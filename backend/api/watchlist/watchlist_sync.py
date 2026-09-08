@@ -16,6 +16,7 @@ from fastapi import APIRouter, Query
 
 from db.session import get_db_session
 from db.models import Watchlist
+from ._shared import normalize_stock_code
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +39,7 @@ def _run_collection_job():
     from collectors.emdatah5_collector import batch_save_realtime
     try:
         with get_db_session() as db:
-            codes = [r.stock_code for r in db.query(Watchlist).all() if r.stock_code]
+            codes = [normalize_stock_code(r.stock_code) for r in db.query(Watchlist).all() if normalize_stock_code(r.stock_code)]
         _COLLECT_STATE["total"] = len(codes)
         _COLLECT_STATE["done"] = 0
 
@@ -55,7 +56,7 @@ def _run_collection_job():
 
 
 @router.post("/api/watchlist/realtime-flow/trigger")
-async def trigger_realtime_collection():
+def trigger_realtime_collection():
     """立即触发一次全量自选股实时资金流采集（后台异步，约 60-90s）。"""
     if _COLLECT_STATE["running"]:
         return {
@@ -81,7 +82,7 @@ async def trigger_realtime_collection():
 
 
 @router.get("/api/watchlist/realtime-flow/trigger/status")
-async def trigger_collection_status():
+def trigger_collection_status():
     """查询手动采集进度。"""
     return {
         "running": _COLLECT_STATE["running"],
@@ -94,12 +95,46 @@ async def trigger_collection_status():
 
 
 @router.get("/api/watchlist/market-capital-ranking")
-async def market_capital_ranking(
+def market_capital_ranking(
     rtype: str = Query("inflow", description="inflow=主力净流入前N, outflow=主力净流出前N"),
     top: int = Query(100, description="返回条数(10-200)"),
 ):
-    """全市场资金流排行（东财批量排行榜接口，1 次请求，轻量）。"""
-    from collectors.emdatah5_collector import fetch_market_capital_ranking
+    """读取自动采集器已落库的最新全市场资金流排行。"""
+    from sqlalchemy import func
+    from db.models import RealtimeStockFlow
     rank_type = "outflow" if str(rtype).lower() == "outflow" else "inflow"
     top_n = max(10, min(200, int(top)))
-    return fetch_market_capital_ranking(rank_type=rank_type, top_n=top_n)
+    with get_db_session() as db:
+        latest = db.query(func.max(RealtimeStockFlow.snapshot_time)).scalar()
+        if latest is None:
+            return {
+                "updated_at": None, "type": rank_type, "total_market": 0,
+                "items": [], "source": "database", "status": "MISSING",
+            }
+        base = db.query(RealtimeStockFlow).filter(
+            RealtimeStockFlow.snapshot_time == latest,
+            RealtimeStockFlow.main_force_inflow.isnot(None),
+        )
+        total_market = base.count()
+        ordering = (
+            RealtimeStockFlow.main_force_inflow.asc()
+            if rank_type == "outflow"
+            else RealtimeStockFlow.main_force_inflow.desc()
+        )
+        rows = base.order_by(ordering).limit(top_n).all()
+        items = [{
+            "code": str(row.ts_code or "").split(".")[0],
+            "name": row.name or "",
+            "price": float(row.price) if row.price is not None else None,
+            "pct": float(row.price_chg) if row.price_chg is not None else None,
+            "main_net": float(row.main_force_inflow or 0) * 10000,
+            "main_net_pct": None,
+        } for row in rows]
+    return {
+        "updated_at": latest.isoformat(),
+        "type": rank_type,
+        "total_market": total_market,
+        "items": items,
+        "source": "database",
+        "status": "READY",
+    }

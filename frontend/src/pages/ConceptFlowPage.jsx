@@ -8,7 +8,8 @@ import ModuleGroup from '../components/sections/ModuleGroup';
 import AfterConceptSectorFlowSection from '../components/sections/AfterConceptSectorFlowSection';
 import RealtimeConceptSectorSection from '../components/sections/RealtimeConceptSectorSection';
 import ConceptRealtimeTrendChart from '../components/charts/ConceptRealtimeTrendChart';
-import ConceptSectorFilter, { loadSelectedConcepts, saveSelectedConcepts, ALL_CONCEPTS } from '../components/sections/ConceptSectorFilter';
+import ConceptSectorFilter from '../components/sections/ConceptSectorFilter';
+import { loadSelectedConcepts, saveSelectedConcepts, ALL_CONCEPTS } from '../utils/conceptFilterStorage';
 import SharedTrendPanel from '../components/sections/SharedTrendPanel';
 import { POLL_INTERVAL, SLOW_POLL_INTERVAL } from '../utils/constants';
 
@@ -16,10 +17,16 @@ import { POLL_INTERVAL, SLOW_POLL_INTERVAL } from '../utils/constants';
  * 概念板块独立页面
  * 复用 PanoramaPage 中的概念板块模块（盘后 vs 实时 + 筛选器 + 联动趋势）
  */
-export default function ConceptFlowPage() {
+export default function ConceptFlowPage({ embedded = false }) {
   const [params, setParams] = useSearchParams();
-  const view = params.get('view') === 'compare' ? 'compare' : 'flow';
-  const setView = (v) => setParams(v === 'compare' ? { view: 'compare' } : {});
+  const viewKey = embedded ? 'conceptView' : 'view';
+  const view = params.get(viewKey) === 'compare' ? 'compare' : 'flow';
+  const setView = (v) => {
+    const next = new URLSearchParams(params);
+    if (v === 'compare') next.set(viewKey, 'compare');
+    else next.delete(viewKey);
+    setParams(next, { replace: true });
+  };
 
   return (
     <div className="flex flex-col h-full">

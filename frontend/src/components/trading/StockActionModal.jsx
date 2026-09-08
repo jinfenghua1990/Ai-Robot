@@ -1,9 +1,9 @@
 import { useState, useEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { useNavigate } from 'react-router-dom';
+
 import TradeModal from './TradeModal';
 import OrderHistoryModal from './OrderHistoryModal';
-import { useTrading } from '../../context/TradingContext';
+import { useTrading } from '../../context/tradingContextCore';
 import { apiFetch } from '../../utils/request';
 
 /**
@@ -14,8 +14,8 @@ import { apiFetch } from '../../utils/request';
  * transform 会创建合成层导致 macOS Retina 屏文字/图表模糊；
  * 父级 opacity<1 会让所有子元素的子像素抗锯齿失效。
  */
-export default function StockActionModal({ signal, onClose, onRemove, onRefresh }) {
-  const navigate = useNavigate();
+export default function StockActionModal({ signal, onClose, onRemove, onRefresh, removeLabel = '移除', removeConfirmText }) {
+
   const { executeTrade, positions, refreshPositions } = useTrading();
 
   // 子弹窗状态
@@ -146,7 +146,7 @@ export default function StockActionModal({ signal, onClose, onRemove, onRefresh 
   };
 
   // 个股详情
-  const goDetail = () => { navigate(`/stock/${code}`); onClose(); };
+
 
   const actions = [
     { key: 'buy', label: '买入', icon: '💰', color: '#ef4444', onClick: () => setTradeType('buy') },
@@ -156,7 +156,7 @@ export default function StockActionModal({ signal, onClose, onRemove, onRefresh 
     { key: 'note', label: '加备注', icon: '📝', color: '#06b6d4', onClick: () => setNoteOpen(true) },
     { key: 'pin', label: pinned ? '已置顶' : '置顶', icon: '📌', color: '#f97316', onClick: doPin },
     { key: 'focus', label: focusAdded ? '✓已关注' : '重点关注', icon: '⭐', color: '#3b82f6', onClick: doFocus },
-    { key: 'remove', label: '移除', icon: '✕', color: '#6b7280', onClick: () => setConfirmRemove(true) },
+    { key: 'remove', label: removeLabel, icon: '✕', color: '#6b7280', onClick: () => setConfirmRemove(true) },
   ];
 
   // 使用 Portal 渲染到 document.body，脱离父元素 stacking context
@@ -213,7 +213,7 @@ export default function StockActionModal({ signal, onClose, onRemove, onRefresh 
         {confirmRemove && (
           <div className="px-4 pb-3">
             <div className="rounded-lg p-3 text-center" style={{ background: 'rgba(239,68,68,0.08)' }}>
-              <div className="text-sm mb-2" style={{ color: 'var(--text-primary)' }}>确认从自选股移除 {name}？</div>
+              <div className="text-sm mb-2" style={{ color: 'var(--text-primary)' }}>{removeConfirmText || `确认从自选股移除 ${name}？`}</div>
               <div className="flex gap-2 justify-center">
                 <button onClick={confirmRemoveAction} className="px-3 py-1 rounded text-xs font-bold" style={{ background: '#ef4444', color: '#fff' }}>确认移除</button>
                 <button onClick={() => setConfirmRemove(false)} className="px-3 py-1 rounded text-xs" style={{ background: 'var(--bg-surface)', color: 'var(--text-secondary)' }}>取消</button>
