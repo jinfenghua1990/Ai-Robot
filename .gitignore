@@ -21,6 +21,15 @@ dist.new/
 .trash/
 backups/
 
+# 本地运行时/用户状态（持仓、自选、重点关注、交易控制、备注）
+# 这些文件不是源码；部分旧基线仍在跟踪，后续需在本机备份后再安全取消跟踪。
+/portfolio.json
+/watchlist.json
+/focus.json
+/stock_notes.json
+/auto_trade_*.json
+/backend.log
+
 # 构建/缓存垃圾（迁移收尾清理）
 backend/backend/
 backend/api/backend/
