@@ -4,6 +4,11 @@ project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 env_path = os.path.join(project_root, '.env')
 load_dotenv(env_path)
 
+# AIROBOT 现在是单进程/单入口 9000。backend.main 中仍保留一段迁移期代理代码，
+# 但运行时明确禁用任何独立 V2 后端地址；若内嵌 v2_app 加载失败，应直接暴露
+# 为 503/门禁失败，而不是偷偷回退到历史 9001 服务。
+os.environ["V2_BACKEND_URL"] = ""
+
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+psycopg2://airobot@localhost:5432/airobot")
 READ_ONLY_DB_URL = os.getenv("READ_ONLY_DB_URL", DATABASE_URL)
 TUSHARE_TOKEN = os.getenv("TUSHARE_TOKEN", "")
