@@ -20,8 +20,23 @@
 import argparse
 import json
 import logging
+import os
 import sys
 from datetime import datetime, timedelta
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+BACKEND_ROOT = os.path.dirname(SCRIPT_DIR)
+PROJECT_ROOT = os.path.dirname(BACKEND_ROOT)
+VENV_PYTHON = os.path.join(BACKEND_ROOT, ".venv", "bin", "python")
+
+# scheduler 历史上用 /usr/bin/python3 拉起本脚本。第三方依赖导入前主动切到
+# 项目 venv，保证 F10 子任务与主服务/pytest 使用完全相同的 Python 环境。
+if (
+    os.path.isfile(VENV_PYTHON)
+    and os.access(VENV_PYTHON, os.X_OK)
+    and os.path.realpath(sys.executable) != os.path.realpath(VENV_PYTHON)
+):
+    os.execv(VENV_PYTHON, [VENV_PYTHON, os.path.abspath(__file__), *sys.argv[1:]])
 
 logging.basicConfig(
     level=logging.INFO,
@@ -30,11 +45,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger("backfill_f10")
 
-# 让脚本能 import 项目模块（backend/ 为根）
-sys.path.insert(0, "/Users/gino/Projects/AIROBOT/backend")
+# 让脚本能 import 项目模块（backend/ 为根），不依赖固定用户名或仓库位置。
+if BACKEND_ROOT not in sys.path:
+    sys.path.insert(0, BACKEND_ROOT)
 
 from dotenv import load_dotenv
-load_dotenv("/Users/gino/Projects/AIROBOT/.env")
+load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
 
 from sqlalchemy import select, func, text
 from db.connection import SessionLocal, engine, Base
