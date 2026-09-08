@@ -1,0 +1,135 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  /* ============================================================
+     Vibe-Research · AIROBOT 统一配色
+     默认与 AIROBOT 一致走亮色；暗色通过 .dark 切换。
+     变量采用 HSL 以兼容 Tailwind 的 hsl(var(--xxx)) 用法。
+     ============================================================ */
+  :root {
+    /* ---- AIROBOT 亮色 ---- */
+    --background: 0 0% 100%;           /* #ffffff */
+    --foreground: 222 47% 11%;         /* #0f172a */
+    --card: 0 0% 100%;                 /* #ffffff */
+    --card-foreground: 222 47% 11%;
+
+    --primary: 222 62% 44%;            /* AIROBOT accent-blue #2c56ba */
+    --primary-foreground: 0 0% 100%;
+    --accent: 222 62% 44%;             /* 同主色，保持简洁 */
+    --accent-foreground: 0 0% 100%;
+
+    --muted: 213 33% 94%;              /* AIROBOT border-color #e8eef5 */
+    --muted-foreground: 215 16% 47%;   /* AIROBOT text-muted #64748b */
+    --destructive: 0 72% 51%;          /* #dc2626 */
+    --destructive-foreground: 0 0% 100%;
+    --border: 213 33% 94%;             /* #e8eef5 */
+    --radius: 0.5rem;
+
+    /* 语义色（A股红涨绿跌） */
+    --success: 142 71% 36%;            /* #16a34a */
+    --danger: 0 72% 51%;               /* #dc2626 */
+    --warning: 38 92% 45%;             /* #d97706 */
+    --info: 222 62% 44%;               /* #2c56ba */
+
+    /* 玻璃/卡片：AIROBOT 风格为扁平白底，玻璃效果极弱 */
+    --glass-fill-top: rgba(255, 255, 255, 0.6);
+    --glass-fill-bot: rgba(255, 255, 255, 0.3);
+    --glass-stroke: rgba(15, 40, 70, 0.08);
+    --glass-hi: rgba(255, 255, 255, 0.8);
+
+    /* Chart tokens */
+    --chart-grid: 213 33% 94%;
+    --chart-text: 215 16% 47%;
+    --chart-axis: 213 33% 90%;
+  }
+
+  .dark {
+    /* ---- AIROBOT 暗色 ---- */
+    --background: 222 47% 11%;         /* #0f172a */
+    --foreground: 210 40% 96%;         /* #f1f5f9 */
+    --card: 217 33% 17%;               /* #1e293b */
+    --card-foreground: 210 40% 96%;
+
+    --primary: 217 91% 75%;            /* AIROBOT dark accent-blue #60a5fa */
+    --primary-foreground: 222 47% 11%;
+    --accent: 217 91% 75%;
+    --accent-foreground: 222 47% 11%;
+
+    --muted: 215 25% 33%;              /* #334155 */
+    --muted-foreground: 215 20% 65%;   /* #94a3b8 */
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 215 25% 33%;             /* #334155 */
+
+    --success: 142 69% 58%;
+    --danger: 0 84% 60%;
+    --warning: 38 92% 55%;
+    --info: 217 91% 75%;
+
+    --glass-fill-top: rgba(30, 41, 59, 0.6);
+    --glass-fill-bot: rgba(15, 23, 42, 0.4);
+    --glass-stroke: rgba(148, 163, 184, 0.12);
+    --glass-hi: rgba(255, 255, 255, 0.05);
+
+    --chart-grid: 215 25% 25%;
+    --chart-text: 215 20% 55%;
+    --chart-axis: 215 25% 30%;
+  }
+
+  * { @apply border-border; }
+
+  body {
+    @apply bg-background text-foreground;
+    background-color: hsl(var(--background));
+    /* 不使用 Vibe 原径向渐变，保持 AIROBOT 扁平风格 */
+  }
+
+  /* prose 表格 */
+  .prose table { border-collapse: collapse; width: 100%; }
+  .prose th, .prose td { border: 1px solid hsl(var(--border)); }
+  .prose tbody tr:nth-child(even) { background: hsl(var(--muted) / 0.3); }
+
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: hsl(var(--border)); border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: hsl(var(--muted-foreground)); }
+}
+
+@layer components {
+  /* 玻璃卡：弱化为 AIROBOT 卡片风格 */
+  .glass {
+    background-color: hsl(var(--card));
+    border: 1px solid hsl(var(--border));
+    border-radius: var(--radius);
+    box-shadow: none;
+  }
+  .dark .glass {
+    background-color: hsl(var(--card));
+    box-shadow: none;
+  }
+
+  /* 顶角光晕：移除暖橙光 */
+  .glass-glow { position: relative; overflow: hidden; }
+  .glass-glow::before {
+    content: "";
+    position: absolute; top: -40%; right: -20%;
+    width: 240px; height: 240px;
+    background: radial-gradient(circle, hsl(var(--primary) / 0.08), transparent 70%);
+    pointer-events: none;
+  }
+
+  /* 主色光文字：极弱化 */
+  .text-glow { text-shadow: none; }
+}
+
+/* 尊重「减少动态效果」系统偏好：关闭入场/过渡动画 */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
