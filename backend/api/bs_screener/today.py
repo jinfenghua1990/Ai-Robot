@@ -1,0 +1,148 @@
+"""GET /api/bs-screener/today  +  GET /api/bs-screener/strategy-picks
+读盘后定时任务落库的预计算结果
+"""
+import json
+from fastapi import APIRouter, HTTPException, Query
+from sqlalchemy import func
+
+from db.connection import get_db
+from db.session import get_db_session
+from db.models import BSDailyScan, LeaderLifecycle
+
+router = APIRouter()
+
+LEADER_STAGES = ['突破', '加速', '启动', '发酵']
+
+# strategy-picks 读的是盘后落库的 BSDailyScan 快照，对同一交易日天然不可变，
+# 因此按 trade_date 永久缓存即可（进程内），不需要 TTL。
+_picks_cache: dict = {}
+
+
+def _picks_cache_get(key):
+    return _picks_cache.get(key)
+
+
+def _picks_cache_set(key, data):
+    _picks_cache[key] = data
+    if len(_picks_cache) > 10:
+        _picks_cache.pop(next(iter(_picks_cache)), None)
+
+
+@router.get("/api/bs-screener/today")
+def bs_screener_today(backtest_id: int = Query(..., description="BSBacktestResult.id")):
+    """读取今日预扫描结果（盘后定时任务已落库 bs_daily_scan 表）"""
+    with get_db_session() as db:
+        row = db.query(BSDailyScan).filter(
+            BSDailyScan.backtest_id == backtest_id
+        ).order_by(BSDailyScan.trade_date.desc()).first()
+        if not row:
+            raise HTTPException(status_code=404, detail='今日无预扫描结果，请点击开始扫描')
+        signals = json.loads(row.signals_json or '[]')
+        summary = json.loads(row.summary_json or '{}')
+        return {
+            'signals': signals,
+            'summary': summary,
+            'scanned': row.scanned,
+            'trade_date': row.trade_date.strftime('%Y-%m-%d') if row.trade_date else '',
+            'generated_at': row.generated_at.strftime('%Y-%m-%d %H:%M:%S') if row.generated_at else '',
+            'precomputed': True,
+        }
+
+
+@router.get("/api/bs-screener/strategy-picks")
+def strategy_picks_today(
+    light: bool = Query(False, description="只返回 code_to_strategies/summary，省掉体积最大的 picks 明细数组"),
+    nocache: bool = Query(False, description="跳过缓存强制重算"),
+):
+    """返回当前 BS 策略今日命中的个股清单。
+    动态读取 BSDailyScan 最新一日的所有 strategy_name，避免硬编码策略名导致配置漂移。
+    前端用于在 Watchlist / 模拟盘 / 自动化页面上标记"策略命中"徽章。
+
+    性能说明：完整 payload 约 1.4MB，其中 `picks` 明细数组占 90%+，
+    而 Watchlist / Focus / Trading / BSScreener 四个页面实际只用 `code_to_strategies`。
+    传 light=1 可只取需要的部分，大幅减少传输与 JSON 解析开销。
+    """
+    with get_db_session() as db:
+        # 1. 动态查询 BSDailyScan 最新一日的所有策略（不再硬编码 retained_names）
+        latest_date = db.query(func.max(BSDailyScan.trade_date)).scalar()
+        if not latest_date:
+            return {
+                'date': '',
+                'picks': [],
+                'code_to_strategies': {},
+                'summary': {},
+            }
+
+        cache_key = f"{latest_date}:{'light' if light else 'full'}"
+        if not nocache:
+            hit = _picks_cache_get(cache_key)
+            if hit is not None:
+                return hit
+
+        today_rows = db.query(BSDailyScan).filter(
+            BSDailyScan.trade_date == latest_date
+        ).all()
+
+        picks = []
+        code_to_strategies = {}
+        summary = {}
+        for r in today_rows:
+            signals = json.loads(r.signals_json or '[]')
+            for s in signals:
+                raw_code = s.get('secCode') or s.get('code') or ''
+                code = raw_code.split('.')[0] if raw_code else ''
+                if not code:
+                    continue
+                item = {
+                    'code': code,
+                    'name': s.get('secName') or s.get('name', ''),
+                    'sector': s.get('sector', ''),
+                    'strategy': r.strategy_name,
+                    'dimension': r.dimension,
+                    'signal': s.get('signal', 'B'),
+                    'reasons': s.get('reasons', []) or [],
+                    'score': s.get('score'),
+                }
+                picks.append(item)
+                code_to_strategies.setdefault(code, [])
+                if r.strategy_name not in code_to_strategies[code]:
+                    code_to_strategies[code].append(r.strategy_name)
+                summary[r.strategy_name] = summary.get(r.strategy_name, 0) + 1
+
+        # 2. LeaderLifecycle 用 same latest_date 查询（与 BSDailyScan 一致）
+        # 强势阶段标记为"游资龙头"，所有阶段都返回供前端显示
+        leader_rows = db.query(LeaderLifecycle).filter(
+            LeaderLifecycle.trade_date == latest_date,
+        ).all()
+        for lr in leader_rows:
+            code = lr.ts_code.split('.')[0] if lr.ts_code else ''
+            if not code:
+                continue
+            stage = lr.stage or ''
+            is_strong = stage in LEADER_STAGES
+            # 强势阶段用"游资龙头"标签，其他阶段用"阶段:XXX"标签
+            tag = '游资龙头' if is_strong else f'游资阶段:{stage}'
+            if code not in code_to_strategies:
+                code_to_strategies[code] = []
+                picks.append({
+                    'code': code,
+                    'name': lr.name or '',
+                    'sector': lr.sector or '',
+                    'strategy': tag,
+                    'dimension': 'leader',
+                    'signal': 'L',
+                    'reasons': [f'龙头阶段:{stage}'],
+                    'score': float(lr.strength) if lr.strength else None,
+                })
+            if tag not in code_to_strategies[code]:
+                code_to_strategies[code].append(tag)
+            summary[tag] = summary.get(tag, 0) + 1
+
+        result = {
+            'date': latest_date.strftime('%Y-%m-%d') if hasattr(latest_date, 'strftime') else str(latest_date),
+            'picks': [] if light else picks,
+            'code_to_strategies': code_to_strategies,
+            'summary': summary,
+        }
+        _picks_cache_set(cache_key, result)
+        return result

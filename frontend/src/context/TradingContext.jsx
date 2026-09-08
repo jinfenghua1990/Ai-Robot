@@ -1,0 +1,143 @@
+import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
+import { apiFetch } from '../utils/request';
+import { SLOW_POLL_INTERVAL } from '../utils/constants';
+import { TradingContext } from './tradingContextCore';
+
+/**
+ * 判断是否在 A 股交易时间（9:30-11:30, 13:00-15:00）
+ * 纯函数，提到组件外避免每次 render 重建闭包
+ */
+function isTradingHours() {
+  const now = new Date();
+  const h = now.getHours();
+  const m = now.getMinutes();
+  const t = h * 60 + m;
+  const day = now.getDay();
+  // 周末不刷新
+  if (day === 0 || day === 6) return false;
+  // 9:30-11:30 或 13:00-15:00
+  return (t >= 570 && t <= 690) || (t >= 780 && t <= 900);
+}
+
+export function TradingProvider({ children }) {
+  const [balance, setBalance] = useState(null);
+  const [positions, setPositions] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [tradeResult, setTradeResult] = useState(null); // { success, message, orderId }
+  // 并发刷新 nonce：仅最新的 refreshAll 调用有权清 loading
+  const refreshNonceRef = useRef(0);
+  // 交易/撤单后 500ms 防抖刷新的 timer，卸载时清理
+  const refreshDebounceRef = useRef(null);
+
+  const refreshBalance = useCallback(async (force = false) => {
+    try {
+      const { ok, data } = await apiFetch(`/api/trading/balance${force ? '?force=1' : ''}`);
+      if (!ok) return;
+      setBalance(data);
+    } catch { /* silent */ }
+  }, []);
+
+  const refreshPositions = useCallback(async (force = false) => {
+    try {
+      const { ok, data } = await apiFetch(`/api/trading/positions${force ? '?force=1' : ''}`);
+      if (!ok) return;
+      setPositions(data);
+    } catch { /* silent */ }
+  }, []);
+
+  const refreshAll = useCallback(async (force = false) => {
+    // 用递增 nonce 区分并发调用：仅最后一次完成时才把 loading 置 false
+    const myNonce = ++refreshNonceRef.current;
+    setLoading(true);
+    try {
+      await Promise.all([refreshBalance(force), refreshPositions(force)]);
+    } finally {
+      if (myNonce === refreshNonceRef.current) setLoading(false);
+    }
+  }, [refreshBalance, refreshPositions]);
+
+  // 交易/撤单后防抖刷新：500ms 内多次触发只执行一次，避免请求叠加
+  const scheduleRefresh = useCallback(() => {
+    if (refreshDebounceRef.current) clearTimeout(refreshDebounceRef.current);
+    refreshDebounceRef.current = setTimeout(() => {
+      refreshDebounceRef.current = null;
+      refreshAll();
+    }, 500);
+  }, [refreshAll]);
+
+  const executeTrade = useCallback(async (params) => {
+    const actionMeta = { type: params?.type, stockCode: params?.stockCode, quantity: params?.quantity };
+    setTradeResult({ ...actionMeta, status: 'submitting', success: null, message: '正在提交委托' });
+    let result;
+    try {
+      result = await apiFetch('/api/trading/trade', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(params),
+      });
+    } catch {
+      const message = '网络错误';
+      setTradeResult({ ...actionMeta, status: 'error', success: false, message });
+      throw new Error(message);
+    }
+    if (!result.ok) {
+      const message = result.error || '委托失败';
+      setTradeResult({ ...actionMeta, status: 'error', success: false, message });
+      throw new Error(message);
+    }
+    setTradeResult({ ...actionMeta, status: 'success', success: true, message: '委托成功', data: result.data });
+    // 交易后防抖刷新数据
+    scheduleRefresh();
+    return result.data;
+  }, [scheduleRefresh]);
+
+  const cancelOrder = useCallback(async (params) => {
+    try {
+      const { ok, data } = await apiFetch('/api/trading/cancel', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(params),
+      });
+      if (ok) {
+        // 撤单后防抖刷新数据
+        scheduleRefresh();
+      }
+      return data;
+    } catch {
+      return null;
+    }
+  }, [scheduleRefresh]);
+
+  const clearTradeResult = useCallback(() => setTradeResult(null), []);
+
+  // 初始加载一次 + 盘中5分钟自动刷新（非交易时间不调用，节省妙想API配额）
+  useEffect(() => {
+    refreshAll();
+    const timer = setInterval(() => {
+      if (isTradingHours()) {
+        refreshAll();
+      }
+    }, SLOW_POLL_INTERVAL); // 5分钟
+    return () => {
+      clearInterval(timer);
+      // 清理交易/撤单防抖 timer，避免卸载后 setState
+      if (refreshDebounceRef.current) clearTimeout(refreshDebounceRef.current);
+    };
+  }, [refreshAll]);
+
+  // Context value 必须 useMemo：否则每次 Provider 重渲染（balance/positions 变化）都会新建对象引用，
+  // 导致所有 useTrading() consumer 全量重渲染，即使它们只读 actions 不读 state
+  const value = useMemo(() => ({
+    balance, positions, loading, tradeResult,
+    refreshAll, refreshBalance, refreshPositions,
+    executeTrade, cancelOrder, clearTradeResult,
+  }), [balance, positions, loading, tradeResult,
+       refreshAll, refreshBalance, refreshPositions,
+       executeTrade, cancelOrder, clearTradeResult]);
+
+  return (
+    <TradingContext.Provider value={value}>
+      {children}
+    </TradingContext.Provider>
+  );
+}

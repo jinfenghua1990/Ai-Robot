@@ -1,0 +1,1301 @@
+"""
+pytdx 数据采集器
+- 动态服务器寻优 + 重试
+- 板块资金流向采集
+- 个股资金流向采集
+- 涨停股识别
+"""
+import sys, os, time, threading
+from collections import defaultdict
+from datetime import datetime, timedelta
+import logging
+from concurrent.futures import ThreadPoolExecutor
+import requests
+from sqlalchemy import text
+from utils.cache import BoundedDict
+
+
+logger = logging.getLogger(__name__)
+
+# 全量日线补采和手动/定时采集可能在相近时间触发。两者都先读后写
+# concept_sector_flow，若并行执行会穿透 ORM 的“已有记录”判断并触发唯一键冲突。
+# 该锁只保护本进程的概念板块写入段，不影响行情拉取或其他表。
+_CONCEPT_FLOW_WRITE_LOCK = threading.Lock()
+# 添加项目路径
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from db.connection import get_db
+from db.session import get_db_session
+from db.models import (
+    SectorFlow, StockFlow, StockDailyKline, LeaderLifecycle,
+    ConceptSector, ConceptSectorFlow,
+)
+
+try:
+    from pytdx.hq import TdxHq_API
+    try:
+        from pytdx.util.best_ip import stock_ip
+        TDX_SERVERS = [(s['ip'], s['port']) for s in stock_ip]
+    except Exception:
+        # best_ip 模块不可用时降级使用硬编码服务器列表
+        TDX_SERVERS = [
+            ('106.120.74.86', 7711),   # 北京行情主站1
+            ('112.74.214.43', 7711),   # 深圳行情主站1
+            ('221.231.141.60', 7711),  # 南京行情主站1
+            ('101.227.73.20', 7711),   # 上海行情主站1
+            ('101.227.77.254', 7711),  # 上海行情主站2
+            ('14.17.75.71', 7711),     # 深圳行情主站2
+            ('59.173.18.140', 7711),   # 武汉行情主站1
+            ('180.153.39.51', 7711),   # 上海行情主站3
+        ]
+    PYTDX_AVAILABLE = True
+except ImportError:
+    PYTDX_AVAILABLE = False
+    TDX_SERVERS = []
+
+try:
+    import tushare as ts
+    TUSHARE_AVAILABLE = True
+except ImportError:
+    TUSHARE_AVAILABLE = False
+    ts = None
+
+# ===== Tushare API 全局令牌桶限流（避免 40203 频率超限） =====
+_tushare_rate_lock = threading.Lock()
+_tushare_rate_timestamps = []  # 当前时间窗口内的调用时间戳
+TUSHARE_RATE_MAX = 250          # 每分钟最多 250 次（Tushare 配额 300/min，留 50 缓冲）
+TUSHARE_RATE_WINDOW = 60        # 窗口长度（秒）
+_TUSHARE_DISABLED_ENDPOINTS = set()
+
+def _tushare_rate_acquire():
+    """令牌桶：确保任意 60s 窗口内不超过 TUSHARE_RATE_MAX 次调用。"""
+    now = time.time()
+    with _tushare_rate_lock:
+        # 清理过期时间戳
+        cutoff = now - TUSHARE_RATE_WINDOW
+        _tushare_rate_timestamps[:] = [t for t in _tushare_rate_timestamps if t > cutoff]
+        if len(_tushare_rate_timestamps) >= TUSHARE_RATE_MAX:
+            oldest = _tushare_rate_timestamps[0]
+            wait = TUSHARE_RATE_WINDOW - (now - oldest)
+            logger.warning(f'[tushare-api] 已用满 {TUSHARE_RATE_MAX}/{TUSHARE_RATE_WINDOW}s 配额，等待 {wait:.1f}s...')
+            time.sleep(wait + 0.5)
+            now = time.time()
+            _tushare_rate_timestamps[:] = [t for t in _tushare_rate_timestamps if t > now - TUSHARE_RATE_WINDOW]
+        _tushare_rate_timestamps.append(now)
+
+def call_tushare_mcp(api_name, params=None, fields=None):
+    """调用 Tushare HTTP API（带全局令牌桶限流）"""
+    if api_name in _TUSHARE_DISABLED_ENDPOINTS:
+        logger.info('[tushare-api] %s 已确认无权限，本进程跳过调用', api_name)
+        return None
+    _tushare_rate_acquire()  # 限流：确保不超 250 次/分钟
+    from config import TUSHARE_TOKEN
+    if not TUSHARE_TOKEN:
+        logger.info('[tushare-api] No token configured')
+        return None
+    # Token 属于凭据，必须通过 TLS 传输，不能使用明文 HTTP。
+    url = 'https://api.tushare.pro'
+    payload = {
+        'api_name': api_name,
+        'token': TUSHARE_TOKEN,
+        'params': params or {},
+        'fields': ','.join(fields) if isinstance(fields, list) else (fields or '')
+    }
+    headers = {
+        'Content-Type': 'application/json'
+    }
+    try:
+        response = requests.post(url, json=payload, headers=headers, timeout=30)
+        response.raise_for_status()
+        result = response.json()
+        if result.get('code') != 0:
+            code = result.get('code')
+            msg = result.get('msg', 'Unknown')
+            if code == 40203 and ('没有接口' in msg or '权限' in msg):
+                # 40203 同时用于频率与权限。明确无接口权限时不能退避后盲目重试；
+                # 本进程记住该端点，交给已有降级数据源。
+                _TUSHARE_DISABLED_ENDPOINTS.add(api_name)
+                logger.warning('[tushare-api] %s 无接口权限，已禁用本进程后续调用', api_name)
+            else:
+                logger.error(f'[tushare-api] API error code {code}: {msg}')
+            return None
+        if result.get('data') and result['data'].get('items'):
+            data = result['data']
+            columns = data.get('fields', [])
+            items = data.get('items', [])
+            return [dict(zip(columns, row)) for row in items]
+        else:
+            logger.info(f'[tushare-api] No data returned')
+            return None
+    except Exception as e:
+        logger.error(f'[tushare-api] Request error: {e}')
+        return None
+
+_BEST_SERVER = None
+_BEST_SERVER_TTL = 0
+_thread_local = threading.local()
+
+
+def get_thread_api():
+    """获取线程隔离的TdxHq_API实例"""
+    if not hasattr(_thread_local, 'api'):
+        _thread_local.api = TdxHq_API()
+    return _thread_local.api
+
+
+def test_server(ip, port, timeout=3):
+    """测试服务器延迟"""
+    try:
+        start = time.time()
+        api = TdxHq_API()
+        if api.connect(ip, port, time_out=timeout):
+            api.disconnect()
+            latency = (time.time() - start) * 1000
+            return ip, port, latency
+        return ip, port, float('inf')
+    except Exception:
+        logger.debug(f"test_server failed", exc_info=True)
+        return ip, port, float('inf')
+
+
+def get_best_server():
+    """动态寻找最优服务器，5分钟缓存"""
+    global _BEST_SERVER, _BEST_SERVER_TTL
+    now = time.time()
+    if _BEST_SERVER and now < _BEST_SERVER_TTL:
+        return _BEST_SERVER
+    if not TDX_SERVERS:
+        return None
+    logger.info(f'[tdx] Testing {len(TDX_SERVERS)} servers...')
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        results = list(executor.map(lambda s: test_server(s[0], s[1]), TDX_SERVERS))
+    results = [r for r in results if r[2] < float('inf')]
+    if not results:
+        logger.info('[tdx] No server available')
+        return None
+    results.sort(key=lambda x: x[2])
+    _BEST_SERVER = (results[0][0], results[0][1])
+    _BEST_SERVER_TTL = now + 300
+    logger.info(f'[tdx] Best server: {_BEST_SERVER[0]}:{_BEST_SERVER[1]} ({results[0][2]:.1f}ms)')
+    return _BEST_SERVER
+
+
+def connect_with_retry(max_retries=3, time_out=5):
+    """带重试的连接（真正调用 api.connect）"""
+    if not PYTDX_AVAILABLE:
+        return None, None
+    server = get_best_server()
+    candidates = []
+    if server:
+        candidates.append(server)
+    candidates.extend(TDX_SERVERS[:10])
+    for i, (ip, port) in enumerate(candidates[:max_retries]):
+        try:
+            api = get_thread_api()
+            if api.connect(ip, port, time_out=time_out):
+                return api, (ip, port)
+            logger.debug(f'[tdx] TDX 连接未成功 {ip}:{port}')
+        except Exception as e:
+            logger.debug(f'[tdx] TDX 连接失败 {ip}:{port} - {e}')
+        time.sleep(0.5)
+    return None, None
+
+
+def get_sector_list():
+    """获取板块列表"""
+    # 使用 pytdx 获取板块列表
+    # pytdx 的 get_security_list 或 get_block_info 可以获取板块
+    # 返回格式: [{'name': 'AI', 'code': '...'}, ...]
+    api, server = connect_with_retry()
+    if not api:
+        return []
+    try:
+        # 获取板块分类
+        # market=0 深圳, market=1 上海
+        # pytdx 板块接口
+        blocks = []
+        # 尝试获取概念板块
+        for market in [0, 1]:
+            result = api.get_security_list(market, 0)
+            if result:
+                for item in result[:50]:  # 限制数量
+                    blocks.append({
+                        'name': item.get('name', ''),
+                        'code': item.get('code', ''),
+                        'market': market
+                    })
+        api.disconnect()
+        return blocks
+    except Exception as e:
+        logger.error(f'[tdx] get_sector_list error: {e}')
+        return []
+
+
+_moneyflow_cache = BoundedDict(maxsize=30)  # {date: (df, pro)}
+
+
+def _get_stock_basic_from_tdx():
+    """从通达信获取股票基础信息"""
+    import pandas as pd
+    api, server = connect_with_retry()
+    if not api:
+        return None
+    try:
+        stocks = []
+        for market in [0, 1]:
+            data = api.get_security_list(market, 0)
+            if data:
+                for item in data:
+                    stocks.append({
+                        'ts_code': f"{item['code']}.{'SZ' if market == 0 else 'SH'}",
+                        'name': item.get('name', ''),
+                        'industry': ''
+                    })
+        api.disconnect()
+        if stocks:
+            return pd.DataFrame(stocks)
+        return None
+    except Exception as e:
+        logger.error(f'[tdx] _get_stock_basic_from_tdx error: {e}')
+        return None
+
+
+def _get_daily_from_tdx(trade_date):
+    """从通达信获取日线行情数据"""
+    import pandas as pd
+    api, server = connect_with_retry()
+    if not api:
+        return None
+    try:
+        date_str = trade_date.replace('-', '') if isinstance(trade_date, str) else trade_date.strftime('%Y%m%d')
+        daily_data = []
+        for market in [0, 1]:
+            data = api.get_security_list(market, 0)
+            if data:
+                codes = [item['code'] for item in data[:1000]]
+                for i in range(0, len(codes), 100):
+                    batch = codes[i:i+100]
+                    for code in batch:
+                        try:
+                            kline = api.get_security_bars(9, market, code, 0, 1)
+                            if kline and len(kline) > 0:
+                                bar = kline[0]
+                                pct_change = ((bar['close'] - bar['pre_close']) / bar['pre_close'] * 100) if bar['pre_close'] else 0
+                                daily_data.append({
+                                    'ts_code': f"{code}.{'SZ' if market == 0 else 'SH'}",
+                                    'close': bar['close'],
+                                    'pre_close': bar['pre_close'],
+                                    'pct_change': round(pct_change, 2),
+                                    'vol': bar['vol'],
+                                })
+                        except Exception as e:
+                            logger.debug(f'[tdx] 单股 K线拉取失败 market={market} code={code}: {e}')
+        api.disconnect()
+        if daily_data:
+            return pd.DataFrame(daily_data)
+        return None
+    except Exception as e:
+        logger.error(f'[tdx] _get_daily_from_tdx error: {e}')
+        return None
+
+
+def _get_moneyflow_data(trade_date):
+    """获取资金流向数据
+    - 资金流向：只能用 Tushare（pytdx不支持）
+    - 日线行情：优先用 pytdx（实时、免费），降级用 Tushare
+    - 股票基础信息：优先用 Tushare（有行业数据），降级用 pytdx
+    """
+    import pandas as pd
+    if trade_date in _moneyflow_cache:
+        return _moneyflow_cache[trade_date]
+    date_str = trade_date.replace('-', '') if isinstance(trade_date, str) else trade_date.strftime('%Y%m%d')
+    
+    try:
+        mf_data = call_tushare_mcp(
+            'moneyflow',
+            params={'trade_date': date_str},
+            fields=['ts_code', 'net_mf_amount', 'buy_elg_amount', 'sell_elg_amount', 
+                    'buy_sm_amount', 'sell_sm_amount', 'buy_md_amount', 'sell_md_amount']
+        )
+        if mf_data:
+            df = pd.DataFrame(mf_data)
+            logger.info(f'[tushare] Got {len(df)} moneyflow records')
+            
+            daily_df = None
+            if PYTDX_AVAILABLE:
+                daily_df = _get_daily_from_tdx(trade_date)
+                if daily_df is not None:
+                    logger.info(f'[tdx] Got {len(daily_df)} daily records')
+            
+            if daily_df is None:
+                daily_data = call_tushare_mcp(
+                    'daily',
+                    params={'trade_date': date_str},
+                    fields=['ts_code', 'pct_chg', 'close']
+                )
+                if daily_data:
+                    daily_df = pd.DataFrame(daily_data)
+                    daily_df = daily_df.rename(columns={'pct_chg': 'pct_change'})
+                    logger.info(f'[tushare] Got {len(daily_df)} daily records')
+            
+            if daily_df is not None:
+                df = df.merge(daily_df[['ts_code', 'pct_change', 'close']], on='ts_code', how='left')
+            
+            stock_df = None
+            stock_data = call_tushare_mcp(
+                'stock_basic',
+                params={'list_status': 'L'},
+                fields=['ts_code', 'name', 'industry']
+            )
+            if stock_data:
+                stock_df = pd.DataFrame(stock_data)
+                logger.info(f'[tushare] Got {len(stock_df)} stock basic records')
+            
+            if stock_df is None and PYTDX_AVAILABLE:
+                stock_df = _get_stock_basic_from_tdx()
+                if stock_df is not None:
+                    logger.info(f'[tdx] Got {len(stock_df)} stock basic records')
+            
+            if stock_df is not None:
+                df = df.merge(stock_df[['ts_code', 'name', 'industry']], on='ts_code', how='left')
+            
+            result = (df, None)
+            _moneyflow_cache[trade_date] = result
+            return result
+    except Exception as e:
+        logger.error(f'[tushare] moneyflow error: {e}')
+    
+    if not TUSHARE_AVAILABLE:
+        return None, None
+    try:
+        from config import TUSHARE_TOKEN
+        if not TUSHARE_TOKEN:
+            return None, None
+        ts.set_token(TUSHARE_TOKEN)
+        pro = ts.pro_api()
+        df = pro.moneyflow(trade_date=date_str)
+        if df is None or df.empty:
+            logger.info(f'[tushare] moneyflow returned empty for {date_str}')
+            return None, None
+        
+        daily_df = None
+        if PYTDX_AVAILABLE:
+            daily_df = _get_daily_from_tdx(trade_date)
+        
+        if daily_df is None:
+            try:
+                daily = pro.daily(trade_date=date_str)
+                if daily is not None and not daily.empty:
+                    daily_df = daily[['ts_code', 'pct_chg', 'close']].rename(columns={'pct_chg': 'pct_change'})
+            except Exception as e:
+                logger.warning(f'[tushare] daily merge warning: {e}')
+        
+        if daily_df is not None:
+            df = df.merge(daily_df[['ts_code', 'pct_change', 'close']], on='ts_code', how='left')
+        elif 'pct_chg' in df.columns:
+            df = df.rename(columns={'pct_chg': 'pct_change'})
+        
+        stock_df = None
+        try:
+            stock_basic = pro.stock_basic(exchange='', list_status='L', fields='ts_code,name,industry')
+            stock_df = stock_basic
+        except Exception as e:
+            logger.warning(f'[tushare] stock_basic 拉取失败，将降级到 pytdx: {e}')
+        
+        if stock_df is None and PYTDX_AVAILABLE:
+            stock_df = _get_stock_basic_from_tdx()
+        
+        if stock_df is not None:
+            df = df.merge(stock_df[['ts_code', 'name', 'industry']], on='ts_code', how='left')
+        
+        result = (df, pro)
+        _moneyflow_cache[trade_date] = result
+        return result
+    except Exception as e:
+        logger.error(f'[tushare] _get_moneyflow_data error: {e}')
+        return None, None
+
+
+def _em_fetch_page(url, params, pn, max_retries=5):
+    """获取东方财富单页数据（带重试），供并发调用。"""
+    for attempt in range(max_retries):
+        try:
+            resp = requests.get(url, params=params, timeout=15,
+                               headers={'User-Agent': 'Mozilla/5.0'})
+            data = resp.json().get('data', {})
+            items = data.get('diff', [])
+            if isinstance(items, dict):
+                items = list(items.values())
+            return pn, items, data.get('total', 0), None
+        except Exception as e:
+            if attempt < max_retries - 1:
+                # 并发场景下缩短退避，避免单页阻塞整体
+                time.sleep(0.1 * (2 ** attempt))
+            else:
+                return pn, [], 0, e
+    return pn, [], 0, None
+
+
+def _em_fetch_all(fs, fid='f62', po='1', fields='f12,f14,f62,f3,f66,f72,f78,f84', max_workers=8):
+    """分页获取东方财富全部数据（单页最多100条，并发请求）。
+
+    优化：先串行取第1页得到 total，再用 ThreadPoolExecutor 并发拉取后续页。
+    全市场 5000+ 只股票从串行 ~8-10s 降到 ~1.5-2.5s。
+    """
+    url = 'https://push2.eastmoney.com/api/qt/clist/get'
+    base_params = {
+        'fid': fid, 'po': po, 'pz': '100',
+        'fs': fs, 'fields': fields,
+    }
+
+    # 先取第1页，获取 total 并作为容错基准
+    _, first_items, total, err = _em_fetch_page(url, {**base_params, 'pn': '1'}, 1)
+    if err:
+        logger.error(f'[em] page 1 failed: {err}')
+        return [], None
+    if total is None:
+        total = 0
+    all_items = list(first_items)
+    if not first_items or len(first_items) < 100:
+        return all_items, total
+
+    total_pages = (total + 99) // 100
+    if total_pages <= 1:
+        return all_items, total
+
+    # 并发拉取第2页及以后
+    pages_to_fetch = [(url, {**base_params, 'pn': str(pn)}, pn) for pn in range(2, total_pages + 1)]
+    failed_pages = []
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(_em_fetch_page, u, p, pn) for u, p, pn in pages_to_fetch]
+        for future in futures:
+            try:
+                pn, items, _, page_err = future.result()
+                if page_err:
+                    failed_pages.append(pn)
+                    logger.warning(f'[em] page {pn} failed: {page_err}')
+                else:
+                    all_items.extend(items)
+            except Exception as e:
+                logger.warning(f'[em] concurrent fetch error: {e}')
+
+    if failed_pages:
+        logger.warning(f'[em] {len(failed_pages)} pages failed: {failed_pages[:10]}')
+    return all_items, total
+
+
+def _sina_fetch_sectors(fenlei=0):
+    """从新浪财经获取板块资金流向（分页）"""
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+        'Referer': 'http://vip.stock.finance.sina.com.cn/',
+    }
+    url = 'http://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/MoneyFlow.ssl_bkzj_bk'
+    all_items = []
+    for page in range(1, 10):
+        params = {'page': page, 'num': 100, 'sort': 'netamount', 'asc': 0, 'fenlei': fenlei}
+        resp = requests.get(url, params=params, timeout=10, headers=headers)
+        data = resp.json()
+        if not data:
+            break
+        all_items.extend(data)
+        if len(data) < 100:
+            break
+    return all_items
+
+
+def _dedupe_concept_flows(flows):
+    """按概念名称去重，避免上游分页重复触发同日唯一键冲突。"""
+    unique = {}
+    for flow in flows:
+        name = str(flow.get('sector') or '').strip()
+        if not name or name in unique:
+            continue
+        normalized = dict(flow)
+        normalized['sector'] = name
+        unique[name] = normalized
+    return list(unique.values())
+
+
+def get_concept_sector_money_flow(trade_date):
+    """
+    获取概念板块资金流向数据（新浪财经 fenlei=1）
+    返回格式与 get_sector_money_flow 一致
+    注意: 新浪 inamount/outamount/netamount 三字段口径不一致（in-out≠net），
+    统一以 netamount 为权威净额反推 inflow/outflow，保证 inflow-outflow=net_flow 恒等。
+    """
+    try:
+        items = _sina_fetch_sectors(fenlei=1)  # 概念板块
+        results = []
+        for item in items:
+            name = item.get('name', '')
+            if not name:
+                continue
+            net_flow = float(item.get('netamount', 0) or 0) / 10000  # 元→万元
+            rise_ratio = float(item.get('avg_changeratio', 0) or 0) * 100
+            results.append({
+                'sector': name,
+                'net_flow': net_flow,
+                'money_inflow': max(net_flow, 0),
+                'money_outflow': max(-net_flow, 0),
+                'rise_ratio': rise_ratio,
+                'avg_chg': rise_ratio,
+            })
+        unique_results = _dedupe_concept_flows(results)
+        if len(unique_results) != len(results):
+            logger.warning(
+                '[sina] Deduplicated concept sector flows: %s -> %s',
+                len(results), len(unique_results),
+            )
+        logger.info(f'[sina] Got {len(unique_results)} concept sector flows from 新浪财经')
+        return unique_results
+    except Exception as e:
+        logger.error(f'[sina] concept sector error: {e}')
+        return []
+
+
+def get_sector_money_flow(trade_date):
+    """
+    获取板块资金流向数据
+    优先级：新浪财经 → 东方财富 → Tushare
+    返回格式: [{'sector': '银行', 'money_inflow': 100000, 'money_outflow': 50000, 'net_flow': 50000, ...}, ...]
+    """
+    # === 1. 新浪财经（主数据源）===
+    # 注意: 新浪 inamount/outamount/netamount 三字段口径不一致（in-out≠net），
+    # 统一以 netamount 为权威净额反推 inflow/outflow，保证 inflow-outflow=net_flow 恒等。
+    try:
+        items = _sina_fetch_sectors(fenlei=0)  # 行业板块
+        results = []
+        for item in items:
+            name = item.get('name', '')
+            if not name:
+                continue
+            # netamount=主力净额(元), avg_changeratio=涨跌幅(小数)
+            net_flow = float(item.get('netamount', 0) or 0) / 10000  # 元→万元
+            rise_ratio = float(item.get('avg_changeratio', 0) or 0) * 100  # 小数→百分比
+            results.append({
+                'sector': name,
+                'net_flow': net_flow,
+                'money_inflow': max(net_flow, 0),
+                'money_outflow': max(-net_flow, 0),
+                'rise_ratio': rise_ratio,
+                'avg_chg': rise_ratio,  # 新浪avg_changeratio=板块平均涨幅，与rise_ratio同值
+            })
+        logger.info(f'[sina] Got {len(results)} sector flows from 新浪财经')
+        if results:
+            return results
+        logger.info('[sina] 新浪返回空数据，尝试东方财富')
+    except Exception as e:
+        logger.error(f'[sina] error: {e}, 尝试东方财富')
+
+    # === 2. 东方财富（降级）===
+    # f62=主力净流入(元), 以其为权威净额反推 inflow/outflow 保证自洽
+    try:
+        items, total = _em_fetch_all('m:90 t:2')
+        results = []
+        for item in items:
+            name = item.get('f14', '')
+            if not name:
+                continue
+            if any(suffix in name for suffix in ['Ⅱ', 'Ⅲ', 'Ⅳ', 'Ⅴ']):
+                continue
+            net_flow = float(item.get('f62', 0) or 0) / 10000
+            rise_ratio = float(item.get('f3', 0) or 0) / 100
+            results.append({
+                'sector': name,
+                'net_flow': net_flow,
+                'money_inflow': max(net_flow, 0),
+                'money_outflow': max(-net_flow, 0),
+                'rise_ratio': rise_ratio,
+            })
+        logger.info(f'[em] Got {len(results)} sector flows from 东方财富 (total raw: {total})')
+        if results:
+            return results
+        logger.info('[em] 东方财富返回空数据，降级到 Tushare')
+    except Exception as e:
+        logger.error(f'[em] error: {e}, 降级到 Tushare')
+
+    # === 3. Tushare（最终降级）===
+    return _get_sector_money_flow_tushare(trade_date)
+
+
+def _get_sector_money_flow_tushare(trade_date):
+    """Tushare 降级方案"""
+    df, _ = _get_moneyflow_data(trade_date)
+    if df is None:
+        return []
+    try:
+        # stock_basic.industry 是旧兼容字段，不能作为新的行业标准；
+        # 这里按有效日从 SW2021 归属表补齐 L2 名称后再聚合。
+        target_date = (
+            trade_date.date() if isinstance(trade_date, datetime)
+            else trade_date if hasattr(trade_date, 'year') and not isinstance(trade_date, str)
+            else datetime.strptime(str(trade_date).replace('-', ''), '%Y%m%d').date()
+        )
+        from industry_stage.registry import load_sector_map
+        with get_db_session() as db:
+            sector_map = load_sector_map(db, as_of=target_date, level='L2')
+        df = df.copy()
+        df['sw_sector'] = df['ts_code'].map(sector_map)
+        df_valid = df[df['sw_sector'].notna() & (df['sw_sector'] != '')]
+        if df_valid.empty:
+            return []
+        agg_dict = {'net_mf_amount': 'sum', 'buy_elg_amount': 'sum', 'sell_elg_amount': 'sum'}
+        if 'pct_change' in df_valid.columns:
+            agg_dict['pct_change'] = 'mean'
+        sector_group = df_valid.groupby('sw_sector').agg(agg_dict).reset_index()
+        results = []
+        for _, row in sector_group.iterrows():
+            results.append({
+                'sector': row['sw_sector'],
+                'net_flow': float(row['net_mf_amount'] or 0),
+                'money_inflow': float(row.get('buy_elg_amount', 0) or 0),
+                'money_outflow': float(row.get('sell_elg_amount', 0) or 0),
+                'rise_ratio': float(row.get('pct_change', 0) or 0) if 'pct_change' in row else 0.0,
+                'avg_chg': float(row.get('pct_change', 0) or 0) if 'pct_change' in row else 0.0,  # 个股涨跌幅mean=板块平均涨幅
+            })
+        return results
+    except Exception as e:
+        logger.error(f'[tushare] fallback error: {e}')
+        return []
+
+
+def get_stock_money_flow(trade_date):
+    """
+    获取个股资金流向数据（东方财富 API，分页获取全量）
+    返回格式: [{'ts_code': '000001.SZ', 'sector': '银行', 'net_inflow': 1000, ...}, ...]
+    """
+    try:
+        items, total = _em_fetch_all('m:0 t:6,m:0 t:80,m:1 t:2,m:1 t:23', fields='f12,f14,f62,f3,f66,f84,f2')  # 沪深A股, f2=最新价
+
+        # 股票行业归属统一从 SW2021 有效期映射读取；旧 StockFlow 仅作为
+        # Tushare 分类同步尚未完成时的显式降级，不再作为正常来源。
+        with get_db_session() as db:
+            from sqlalchemy import func as sqlfunc
+            target_date = (
+                trade_date.date() if isinstance(trade_date, datetime)
+                else trade_date if hasattr(trade_date, 'year') and not isinstance(trade_date, str)
+                else datetime.strptime(str(trade_date).replace('-', ''), '%Y%m%d').date()
+            )
+            from industry_stage.registry import load_sector_map, normalize_ts_code
+            sw_sector_map = load_sector_map(db, as_of=target_date, level='L2')
+            latest_date = db.query(sqlfunc.max(StockFlow.trade_date)).scalar()
+            stock_map = {}
+            if latest_date:
+                for sf in db.query(StockFlow).filter_by(trade_date=latest_date).all():
+                    code = sf.ts_code.replace('.SZ', '').replace('.SH', '').replace('.BJ', '')
+                    stock_map[code] = sf.sector or ''
+
+        results = []
+        for item in items:
+            code = item.get('f12', '')
+            name = item.get('f14', '')
+            if not code:
+                continue
+            # 转换为 Tushare 格式代码
+            if code.startswith(('4', '8', '92', '83', '87', '88')):
+                ts_code = f'{code}.BJ'
+            elif code.startswith(('5', '6', '9')):
+                ts_code = f'{code}.SH'
+            else:
+                ts_code = f'{code}.SZ'
+            industry = sw_sector_map.get(normalize_ts_code(ts_code)) or stock_map.get(code, '')
+            # f62=主力净流入(元,=超大单+大单), f3=涨跌幅(需/100), f66=超大单, f84=小单, f2=最新价
+            net_inflow = float(item.get('f62', 0) or 0) / 10000  # 元→万元
+            main_flow = float(item.get('f62', 0) or 0) / 10000  # 主力净流入(同 f62)
+            sm_flow = float(item.get('f84', 0) or 0) / 10000    # 小单净流入
+            rise_ratio = float(item.get('f3', 0) or 0) / 100  # 涨跌幅 /100
+            price = float(item.get('f2', 0) or 0) / 100  # 最新价 /100
+            results.append({
+                'ts_code': ts_code,
+                'name': name,
+                'sector': industry,
+                'net_inflow': net_inflow,
+                'main_force_inflow': main_flow,
+                'retail_flow': sm_flow,
+                'price_chg': rise_ratio,
+                'price': price,
+            })
+        # 去重（EM API 分页偶有重复）
+        seen = set()
+        unique_results = []
+        for r in results:
+            if r['ts_code'] not in seen:
+                seen.add(r['ts_code'])
+                unique_results.append(r)
+        results = unique_results
+
+        logger.info(f'[em] Got {len(results)} stock flows from 东方财富 (total raw: {total})')
+        if not results:
+            logger.info('[em] 东方财富返回空数据，降级到 Tushare')
+            return _get_stock_money_flow_tushare(trade_date)
+        return results
+    except Exception as e:
+        logger.error(f'[em] get_stock_money_flow error: {e}, fallback to Tushare')
+        return _get_stock_money_flow_tushare(trade_date)
+
+
+def _get_stock_money_flow_tushare(trade_date):
+    """Tushare 降级方案"""
+    df, _ = _get_moneyflow_data(trade_date)
+    if df is None:
+        return []
+    try:
+        target_date = (
+            trade_date.date() if isinstance(trade_date, datetime)
+            else trade_date if hasattr(trade_date, 'year') and not isinstance(trade_date, str)
+            else datetime.strptime(str(trade_date).replace('-', ''), '%Y%m%d').date()
+        )
+        from industry_stage.registry import load_sector_map
+        with get_db_session() as db:
+            sector_map = load_sector_map(db, as_of=target_date, level='L2')
+        results = []
+        for _, row in df.iterrows():
+            net_mf = float(row.get('net_mf_amount', 0) or 0)
+            # Tushare 主力净流入 = 超大单净流入（买入-卖出）
+            elg_buy = float(row.get('buy_elg_amount', 0) or 0)
+            elg_sell = float(row.get('sell_elg_amount', 0) or 0)
+            main_flow = elg_buy - elg_sell  # 超大单净流入（万元）
+            # 小单净流入
+            sm_flow = float(row.get('buy_sm_amount', 0) or 0) - float(row.get('sell_sm_amount', 0) or 0)
+            results.append({
+                'ts_code': row['ts_code'],
+                'name': row.get('name', '') or '',
+                'sector': sector_map.get(str(row.get('ts_code') or '').strip()) or '',
+                'net_inflow': net_mf,  # 所有资金净流入额（万元）
+                'main_force_inflow': main_flow,  # 超大单净流入（万元）
+                'retail_flow': sm_flow,  # 小单净流入（万元）
+                'price_chg': float(row.get('pct_change', 0) or 0),
+                'price': float(row.get('close', 0) or 0),
+            })
+        return results
+    except Exception as e:
+        logger.error(f'[tushare] fallback error: {e}')
+        return []
+
+
+def get_limit_up_stocks(trade_date):
+    """
+    获取涨停股列表
+    优先使用 pytdx 获取涨幅数据判断，降级使用 Tushare
+    """
+    import pandas as pd
+    date_str = trade_date.replace('-', '') if isinstance(trade_date, str) else trade_date.strftime('%Y%m%d')
+    
+    # 优先使用 pytdx 获取涨幅判断涨停
+    if PYTDX_AVAILABLE:
+        logger.info('[tdx] Detecting limit-up stocks via pytdx')
+        api, server = connect_with_retry()
+        if api:
+            try:
+                limit_ups = []
+                for market in [0, 1]:
+                    data = api.get_security_list(market, 0)
+                    if data:
+                        codes = [item['code'] for item in data[:2000]]
+                        for i in range(0, len(codes), 50):
+                            batch = codes[i:i+50]
+                            for code in batch:
+                                try:
+                                    kline = api.get_security_bars(9, market, code, 0, 1)
+                                    if kline and len(kline) > 0:
+                                        bar = kline[0]
+                                        if bar['pre_close'] > 0:
+                                            pct_change = (bar['close'] - bar['pre_close']) / bar['pre_close'] * 100
+                                            if pct_change >= 9.8:
+                                                if code.startswith(('4', '8')):
+                                                    ts_code = f'{code}.BJ'
+                                                elif market == 1:
+                                                    ts_code = f'{code}.SH'
+                                                else:
+                                                    ts_code = f'{code}.SZ'
+                                                limit_ups.append(ts_code)
+                                except Exception as e:
+                                    logger.debug(f'[tdx] 单股涨停判定失败 market={market} code={code}: {e}')
+                api.disconnect()
+                if limit_ups:
+                    logger.info(f'[tdx] Found {len(limit_ups)} limit-up stocks')
+                    return limit_ups
+            except Exception as e:
+                logger.error(f'[tdx] get_limit_up_stocks error: {e}')
+    
+    # 降级使用 Tushare limit_list_d 接口
+    try:
+        limit_data = call_tushare_mcp(
+            'limit_list_d',
+            params={'trade_date': date_str, 'limit_type': 'U'},
+            fields=['ts_code']
+        )
+        if limit_data is not None:
+            return [item['ts_code'] for item in limit_data]
+    except Exception as e:
+        logger.info(f'[tushare] limit_list_d 无权限或失败，降级到涨幅判断: {e}')
+    
+    # 最后降级使用涨幅判断
+    logger.info('[tushare] limit_list_d no permission, using pct_change >= 9.8% instead')
+    try:
+        df, _ = _get_moneyflow_data(trade_date)
+        if df is not None and not df.empty and 'pct_change' in df.columns:
+            limit_ups = df[df['pct_change'] >= 9.8]['ts_code'].tolist()
+            logger.info(f'[tushare] Found {len(limit_ups)} limit-up stocks via pct_change')
+            return limit_ups
+        else:
+            logger.info('[tushare] pct_change not available')
+    except Exception as e:
+        logger.error(f'[tushare] get_limit_up_stocks error: {e}')
+
+    # 最终降级：从已采集的 StockFlow 数据判断涨停
+    try:
+        from db.models import StockFlow
+        from sqlalchemy import func
+        with get_db_session() as db:
+            stocks = db.query(StockFlow).filter(
+                StockFlow.trade_date == trade_date,
+                StockFlow.price_chg >= 9.0
+            ).all()
+            if stocks:
+                limit_ups = [s.ts_code for s in stocks if s.price_chg and float(s.price_chg) >= 9.8]
+                logger.info(f'[stockflow] Found {len(limit_ups)} limit-up stocks from StockFlow data')
+                return limit_ups
+            else:
+                logger.info('[stockflow] No limit-up stocks found in StockFlow data')
+    except Exception as e:
+        logger.error(f'[stockflow] Error reading StockFlow: {e}')
+
+    return []
+
+
+def _build_stock_sector_aggregates(stock_rows, change_by_code, sector_map=None):
+    """用已入库个股资金流和日线生成 SW2021 L2 聚合，不填补缺失值。"""
+    groups = defaultdict(list)
+    incomplete = defaultdict(int)
+    for row in stock_rows:
+        sector = (sector_map or {}).get(row.ts_code) or str(row.sector or '').strip()
+        if not sector:
+            continue
+        groups.setdefault(sector, [])
+        net_flow = float(row.net_inflow) if row.net_inflow is not None else None
+        change_pct = change_by_code.get(row.ts_code)
+        if net_flow is None or change_pct is None:
+            incomplete[sector] += 1
+            continue
+        groups[sector].append({
+            'ts_code': row.ts_code,
+            'name': row.name,
+            'net_flow': net_flow,
+            'change_pct': float(change_pct),
+        })
+
+    aggregates = []
+    skipped = []
+    for sector, members in groups.items():
+        if incomplete.get(sector):
+            skipped.append(sector)
+            continue
+        net_flow = sum(member['net_flow'] for member in members)
+        changes = [member['change_pct'] for member in members]
+        leader = max(members, key=lambda member: member['change_pct'])
+        aggregates.append({
+            'sector': sector,
+            'money_inflow': sum(max(member['net_flow'], 0) for member in members),
+            'money_outflow': sum(max(-member['net_flow'], 0) for member in members),
+            'net_flow': net_flow,
+            'rise_ratio': sum(change > 0 for change in changes) / len(changes) * 100,
+            'avg_chg': sum(changes) / len(changes),
+            'limit_up_count': sum(change >= 9.8 for change in changes),
+            'leader_stock': leader['name'] or leader['ts_code'],
+            'leader_strength': leader['change_pct'],
+            'member_count': len(members),
+        })
+    return aggregates, sorted(skipped)
+
+
+def aggregate_stock_sector_flows(trade_date, force=False):
+    """把已入库个股数据按个股所属细行业聚合并持久化到 sector_flow。"""
+    if isinstance(trade_date, datetime):
+        target_date = trade_date.date()
+    elif hasattr(trade_date, 'year') and not isinstance(trade_date, str):
+        target_date = trade_date
+    else:
+        raw = str(trade_date or '').replace('-', '')
+        target_date = datetime.strptime(raw, '%Y%m%d').date()
+
+    with get_db_session() as db:
+        from industry_stage.registry import load_sector_map, normalize_ts_code
+        raw_sector_map = load_sector_map(db, as_of=target_date, level='L2')
+        sector_map = {
+            normalize_ts_code(ts_code): sector
+            for ts_code, sector in raw_sector_map.items()
+            if sector
+        }
+        stock_rows = db.query(StockFlow).filter(
+            StockFlow.trade_date == target_date,
+            StockFlow.sector.isnot(None),
+            StockFlow.sector != '',
+        ).all()
+        change_by_code = {
+            ts_code: float(change)
+            for ts_code, change in db.query(
+                StockDailyKline.ts_code, StockDailyKline.pct_chg,
+            ).filter(
+                StockDailyKline.trade_date == target_date,
+                StockDailyKline.pct_chg.isnot(None),
+            ).all()
+        }
+        canonical_rows = []
+        for row in stock_rows:
+            canonical = sector_map.get(normalize_ts_code(row.ts_code))
+            if canonical and row.sector != canonical:
+                # 兼容字段也保持 SW2021，后续所有旧 API 无需再猜测来源。
+                row.sector = canonical
+            canonical_rows.append(row)
+        aggregates, skipped = _build_stock_sector_aggregates(canonical_rows, change_by_code, sector_map)
+        if not aggregates:
+            return {
+                'status': 'INSUFFICIENT', 'source': 'database',
+                'data_as_of': target_date.isoformat(), 'written': 0,
+                'stock_rows': len(stock_rows), 'kline_rows': len(change_by_code),
+                'skipped_sectors': skipped,
+            }
+
+        existing = {
+            row.sector: row
+            for row in db.query(SectorFlow).filter(
+                SectorFlow.trade_date == target_date,
+                SectorFlow.sector.in_([item['sector'] for item in aggregates]),
+            ).all()
+        }
+        if not force and len(existing) == len(aggregates) and all(
+            all(getattr(row, field) is not None for field in (
+                'net_flow', 'rise_ratio', 'avg_chg', 'heat_score',
+            ))
+            for row in existing.values()
+        ):
+            return {
+                'status': 'READY', 'source': 'database',
+                'data_as_of': target_date.isoformat(), 'written': 0,
+                'sector_count': len(aggregates), 'skipped_sectors': skipped,
+            }
+
+        def normalize(values):
+            lo, hi = min(values), max(values)
+            if hi == lo:
+                return [0.5] * len(values)
+            return [(value - lo) / (hi - lo) for value in values]
+
+        net_norm = normalize([item['net_flow'] for item in aggregates])
+        limit_norm = normalize([item['limit_up_count'] for item in aggregates])
+        rise_norm = normalize([item['rise_ratio'] for item in aggregates])
+        for index, item in enumerate(aggregates):
+            item['heat_score'] = (
+                net_norm[index] * 0.4 +
+                limit_norm[index] * 0.3 +
+                rise_norm[index] * 0.3
+            ) * 100
+
+        for item in aggregates:
+            row = existing.get(item['sector'])
+            if row is None:
+                row = SectorFlow(trade_date=target_date, sector=item['sector'])
+                db.add(row)
+            for field in (
+                'money_inflow', 'money_outflow', 'net_flow', 'rise_ratio',
+                'avg_chg', 'limit_up_count', 'leader_stock',
+                'leader_strength', 'heat_score',
+            ):
+                setattr(row, field, item[field])
+        db.commit()
+        logger.info(
+            '[collect] Aggregated %s stock sectors for %s from database rows',
+            len(aggregates), target_date,
+        )
+        return {
+            'status': 'READY', 'source': 'database',
+            'data_as_of': target_date.isoformat(), 'written': len(aggregates),
+            'sector_count': len(aggregates), 'skipped_sectors': skipped,
+        }
+
+
+def synchronize_stock_flow_prices_from_kline(trade_date):
+    """用已落库日 K 修正同日 StockFlow 的收盘价与涨跌幅。
+
+    收盘后的日线是这两个字段的权威数据。资金流上游缺字段、返回盘中值或
+    全 0 时，不能让市场广度继续把它们误判成平盘；这里仅在两张数据库表之间
+    同步，不会触发任何外部请求。
+    """
+    if isinstance(trade_date, datetime):
+        target_date = trade_date.date()
+    elif hasattr(trade_date, 'year') and not isinstance(trade_date, str):
+        target_date = trade_date
+    else:
+        raw = str(trade_date or '').replace('-', '')
+        target_date = datetime.strptime(raw, '%Y%m%d').date()
+
+    with get_db_session() as db:
+        stock_flow_rows = db.query(StockFlow).filter(StockFlow.trade_date == target_date).count()
+        kline_rows = db.query(StockDailyKline).filter(
+            StockDailyKline.trade_date == target_date,
+            StockDailyKline.close.isnot(None),
+            StockDailyKline.close > 0,
+            StockDailyKline.pct_chg.isnot(None),
+        ).count()
+        if not kline_rows:
+            return {
+                'status': 'INSUFFICIENT', 'source': 'database',
+                'data_as_of': target_date.isoformat(),
+                'stock_flow_rows': stock_flow_rows, 'kline_rows': 0, 'updated': 0,
+            }
+        result = db.execute(text('''
+            UPDATE stock_flow AS flow
+               SET price = ROUND(kline.close, 2),
+                   price_chg = ROUND(kline.pct_chg, 2)
+              FROM stock_daily_kline AS kline
+             WHERE flow.trade_date = :trade_date
+               AND kline.trade_date = flow.trade_date
+               AND kline.ts_code = flow.ts_code
+               AND kline.close IS NOT NULL
+               AND kline.close > 0
+               AND kline.pct_chg IS NOT NULL
+               -- StockFlow 字段精度为两位小数，按存储精度比较，
+               -- 避免日 K 的四位 pct_chg 造成每天无效重复更新。
+               AND (flow.price IS DISTINCT FROM ROUND(kline.close, 2)
+                 OR flow.price_chg IS DISTINCT FROM ROUND(kline.pct_chg, 2))
+        '''), {'trade_date': target_date})
+        if result.rowcount:
+            db.commit()
+        return {
+            'status': 'READY', 'source': 'database',
+            'data_as_of': target_date.isoformat(),
+            'stock_flow_rows': stock_flow_rows, 'kline_rows': kline_rows,
+            'updated': result.rowcount,
+        }
+
+
+def collect_daily_data(trade_date):
+    """
+    采集单日全量数据并写入数据库
+    1. 板块资金流向 → sector_flow 表
+    2. 个股资金流向 → stock_flow 表
+    3. 涨停股识别 → leader_lifecycle 表（初始阶段）
+    """
+    logger.info(f'[collect] Starting collection for {trade_date}')
+
+    # 1. 不再把新浪/东方财富的旧行业名称直接写入 SectorFlow。
+    #    该类板块接口不是申万 2021 分类，统一在个股落库后由
+    #    aggregate_stock_sector_flows 按 SW2021 L2 重新聚合。
+    logger.info(
+        '[collect] External legacy sector flow is skipped; canonical SW2021 aggregate will be written after stocks',
+    )
+
+    # 2. 采集个股资金流向
+    stock_flows = get_stock_money_flow(trade_date)
+    logger.info(f'[collect] Got {len(stock_flows)} stock flows')
+
+    try:
+        with get_db_session() as db:
+            # 批量查询已存在的个股记录，用字典做 O(1) 查找
+            existing_stocks = {s.ts_code: s for s in db.query(StockFlow).filter_by(trade_date=trade_date).all()}
+            for sf in stock_flows:
+                existing = existing_stocks.get(sf['ts_code'])
+                if existing:
+                    existing.net_inflow = sf.get('net_inflow')
+                    existing.main_force_inflow = sf.get('main_force_inflow')
+                    existing.retail_flow = sf.get('retail_flow')
+                    existing.price_chg = sf.get('price_chg')
+                    existing.price = sf.get('price')
+                    existing.sector = sf.get('sector')
+                    existing.name = sf.get('name')
+                else:
+                    record = StockFlow(
+                        trade_date=trade_date,
+                        ts_code=sf['ts_code'],
+                        name=sf.get('name'),
+                        sector=sf.get('sector'),
+                        net_inflow=sf.get('net_inflow'),
+                        main_force_inflow=sf.get('main_force_inflow'),
+                        retail_flow=sf.get('retail_flow'),
+                        price_chg=sf.get('price_chg'),
+                        price=sf.get('price'),
+                    )
+                    db.add(record)
+            db.commit()
+            logger.info(f'[collect] Stock flows saved')
+    except Exception as e:
+        db.rollback()
+        logger.error(f'[collect] Stock flow error: {e}')
+
+    # 3. 采集涨停股
+    limit_ups = get_limit_up_stocks(trade_date)
+    logger.info(f'[collect] Got {len(limit_ups)} limit-up stocks')
+
+    try:
+        with get_db_session() as db:
+            # 批量查询涨停股的个股记录（用于获取板块/名称），只查一次
+            stock_map = {s.ts_code: s for s in db.query(StockFlow).filter_by(trade_date=trade_date).all()}
+            # 批量查询已存在的 LeaderLifecycle 记录
+            existing_leaders = {l.ts_code: l for l in db.query(LeaderLifecycle).filter_by(trade_date=trade_date).all()}
+            for ts_code in limit_ups:
+                stock = stock_map.get(ts_code)
+                sector = stock.sector if stock else None
+                stock_name = stock.name if stock else None
+                existing = existing_leaders.get(ts_code)
+                if not existing:
+                    record = LeaderLifecycle(
+                        trade_date=trade_date,
+                        ts_code=ts_code,
+                        name=stock_name,
+                        sector=sector,
+                        stage='突破',  # 涨停股初始阶段为"突破"
+                        strength=20,
+                        consecutive_days=1,
+                    )
+                    db.add(record)
+            db.commit()
+            logger.info(f'[collect] Leader lifecycle saved')
+
+            # 4. 按板块统计涨停数，更新 SectorFlow.limit_up_count
+            sector_limit_counts = {}
+            for ts_code in limit_ups:
+                stock = stock_map.get(ts_code)
+                if stock and stock.sector:
+                    sector_limit_counts[stock.sector] = sector_limit_counts.get(stock.sector, 0) + 1
+
+            # 批量查询已存在的板块记录
+            existing_sectors = {s.sector: s for s in db.query(SectorFlow).filter_by(trade_date=trade_date).all()}
+            for sector_name, count in sector_limit_counts.items():
+                sf_record = existing_sectors.get(sector_name)
+                if sf_record:
+                    sf_record.limit_up_count = count
+            db.commit()
+            logger.info(f'[collect] Updated limit_up_count for {len(sector_limit_counts)} sectors')
+    except Exception as e:
+        db.rollback()
+        logger.error(f'[collect] Leader lifecycle error: {e}')
+
+    # 5. 采集概念板块资金流向
+    try:
+        from scripts import sync_concept_sectors
+        sync_concept_sectors.sync()
+    except Exception as e:
+        logger.warning(f'[collect] Concept sector sync warning: {e}')
+
+    concept_flows = get_concept_sector_money_flow(trade_date)
+    if concept_flows:
+        try:
+            with _CONCEPT_FLOW_WRITE_LOCK:
+                with get_db_session() as db:
+                    concept_map = {c.name: c.id for c in db.query(ConceptSector).all()}
+                    existing = {
+                        r.concept_sector_id: r
+                        for r in db.query(ConceptSectorFlow).filter_by(trade_date=trade_date).all()
+                    }
+                    for cf in concept_flows:
+                        name = cf['sector']
+                        cid = concept_map.get(name)
+                        if not cid:
+                            # 如果概念板块定义表中没有，自动创建
+                            new_c = ConceptSector(name=name, source='sina', stocks='', stock_count=0)
+                            db.add(new_c)
+                            db.flush()
+                            cid = new_c.id
+                            concept_map[name] = cid
+
+                        record = existing.get(cid)
+                        if record:
+                            record.money_inflow = cf.get('money_inflow')
+                            record.money_outflow = cf.get('money_outflow')
+                            record.net_flow = cf.get('net_flow')
+                            record.rise_ratio = cf.get('rise_ratio')
+                            record.avg_chg = cf.get('avg_chg')
+                        else:
+                            record = ConceptSectorFlow(
+                                trade_date=trade_date,
+                                concept_sector_id=cid,
+                                concept_name=name,
+                                money_inflow=cf.get('money_inflow'),
+                                money_outflow=cf.get('money_outflow'),
+                                net_flow=cf.get('net_flow'),
+                                rise_ratio=cf.get('rise_ratio'),
+                                avg_chg=cf.get('avg_chg'),
+                                limit_up_count=0,
+                                heat_score=0,
+                            )
+                            db.add(record)
+                            # 即使上游意外提供同名或同 ID 的重复项目，也复用本事务
+                            # 中刚创建的记录，避免在一次批量 INSERT 中违反唯一键。
+                            existing[cid] = record
+                    db.commit()
+                logger.info(f'[collect] Concept sector flows saved: {len(concept_flows)}')
+        except Exception as e:
+            logger.error(f'[collect] Concept sector flow error: {e}')
+
+    # 6. 批量采集全市场K线（按trade_date一次获取）
+    try:
+        _batch_collect_kline(trade_date)
+    except Exception as e:
+        logger.error(f'[collect] K-line batch error: {e}')
+
+    # 7. 用已落库日 K 对齐个股资金流的收盘价/涨跌幅，再生成细行业日表。
+    try:
+        synchronize_stock_flow_prices_from_kline(trade_date)
+        aggregate_stock_sector_flows(trade_date, force=True)
+    except Exception as e:
+        logger.error(f'[collect] Stock-flow synchronization error: {e}', exc_info=True)
+
+    logger.info(f'[collect] Collection complete for {trade_date}')
+
+
+def _batch_collect_kline(trade_date: str):
+    """按trade_date批量采集全市场K线写入stock_daily_kline表"""
+    from db.models import StockDailyKline
+    td_dash = f'{trade_date[:4]}-{trade_date[4:6]}-{trade_date[6:8]}'
+    with get_db_session() as db:
+        existing = db.query(StockDailyKline.ts_code).filter(StockDailyKline.trade_date == td_dash).count()
+        if existing > 1000:
+            logger.info(f'[collect] K-line for {trade_date} already cached ({existing} rows)')
+            return
+
+    data = call_tushare_mcp(
+        'daily', {'trade_date': trade_date},
+        ['ts_code', 'trade_date', 'open', 'high', 'low', 'close', 'vol', 'amount', 'pct_chg']
+    )
+    if not data:
+        logger.warning(f'[collect] No K-line data from Tushare for {trade_date}')
+        return
+
+    from datetime import datetime as _dt
+    with get_db_session() as db:
+        existing_codes = {r[0] for r in db.query(StockDailyKline.ts_code).filter(StockDailyKline.trade_date == td_dash).all()}
+        new_rows = []
+        for item in data:
+            ts_code = item.get('ts_code', '')
+            if not ts_code or ts_code in existing_codes:
+                continue
+            try:
+                td = item.get('trade_date', '')
+                if not td:
+                    continue
+                new_rows.append(StockDailyKline(
+                    ts_code=ts_code,
+                    trade_date=_dt.strptime(td, '%Y%m%d').date(),
+                    open=float(item['open']), high=float(item['high']),
+                    low=float(item['low']), close=float(item['close']),
+                    volume=int(float(item.get('vol', 0) or 0)),
+                    amount=float(item.get('amount', 0) or 0),
+                    pct_chg=float(item.get('pct_chg', 0) or 0),
+                ))
+            except (KeyError, ValueError):
+                continue
+        if new_rows:
+            db.bulk_save_objects(new_rows)
+            db.commit()
+            logger.info(f'[collect] K-line cached {len(new_rows)} rows for {trade_date}')
+
+
+if __name__ == '__main__':
+    # 测试
+    today = datetime.now().strftime('%Y-%m-%d')
+    logger.info(f'Testing pytdx availability: {PYTDX_AVAILABLE}')
+    logger.info(f'Testing tushare availability: {TUSHARE_AVAILABLE}')
+    if PYTDX_AVAILABLE:
+        server = get_best_server()
+        logger.info(f'Best server: {server}')

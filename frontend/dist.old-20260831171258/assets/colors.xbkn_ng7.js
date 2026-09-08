@@ -1,0 +1,1 @@
+var e=`#ef4444`,t=`#22c55e`,n=`#ef4444`,r=`#ef4444`,i=`#22c55e`,a=`#84cc16`,o=`#dc2626`,s=`#16a34a`,c=(e=.1)=>`rgba(239,68,68,${e})`,l=(e=.1)=>`rgba(34,197,94,${e})`;export{a,o as c,s as i,l,r as n,i as o,t as r,e as s,n as t,c as u};

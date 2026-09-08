@@ -1,0 +1,54 @@
+{
+  "policy": "research_only_until_local_validation",
+  "repositories": [
+    {
+      "name": "qlib",
+      "url": "https://github.com/microsoft/qlib",
+      "commit": "79633dd9506ea689e5400dea0197717b5b3d74b7",
+      "license": "MIT",
+      "use": ["Alpha158 factor definitions", "IC and Rank IC workflow", "backtest references"],
+      "production": false
+    },
+    {
+      "name": "vectorbt",
+      "url": "https://github.com/polakowo/vectorbt",
+      "commit": "f9897528f675114e6b34790178dbb2ca137acb51",
+      "license": "Apache-2.0 with Commons Clause",
+      "use": ["fast parameter and portfolio research"],
+      "production": false,
+      "note": "Do not copy code into the core service without a license review."
+    },
+    {
+      "name": "rqalpha",
+      "url": "https://github.com/ricequant/rqalpha",
+      "commit": "3503ab57932540cd36bf8375134e52c6923bf0d2",
+      "license": "Apache-2.0",
+      "use": ["event-driven backtest semantics", "transaction-cost test cases"],
+      "production": false
+    },
+    {
+      "name": "zvt",
+      "url": "https://github.com/zvtvz/zvt",
+      "commit": "8509990e6608750d0c08fa748682cc997d2813cc",
+      "license": "MIT",
+      "use": ["data-factor-signal module boundary reference"],
+      "production": false
+    },
+    {
+      "name": "yfinance",
+      "url": "https://github.com/ranaroussi/yfinance",
+      "commit": "beac22d981ab37362a70c9e4e49261ac622acbe4",
+      "license": "Apache-2.0",
+      "use": ["HK/US research data adapter reference"],
+      "production": false
+    },
+    {
+      "name": "exchange_calendars",
+      "url": "https://github.com/gerrymanoim/exchange_calendars",
+      "license": "Apache-2.0",
+      "use": ["XNYS/XHKG session and timezone tests"],
+      "production": false,
+      "note": "Optional dependency; weekday fallback never fabricates market data."
+    }
+  ]
+}

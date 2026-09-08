@@ -1,0 +1,183 @@
+/**
+ * 订阅 watchlist 实时推送 (SSE)
+ *
+ * 数据源：GET /api/watchlist/realtime/stream
+ * 数据格式：{server_time, count, data: {ts_code: {current_price, pct_chg, main_force_inflow, ...}}}
+ *
+ * 转换逻辑：
+ * 1. 复用 SSE 连接，避免每只股票单独请求
+ * 2. 将 REALTIME_STATE 格式（current_price/pct_chg）映射为 SignalCard 期望的实时字段（price/price_chg）
+ * 3. 暴露 realtimeMap: secCode -> {price, price_chg, main_force_inflow, ...}
+ *
+ * 设计权衡：
+ * - EventSource 自动重连，但服务端每 5s 推送一帧，前端不要做额外节流
+ * - 组件卸载时调用 es.close() 释放连接
+ * - 非交易时段返回空 data 帧，连接保持
+ */
+import { useEffect, useState, useRef, useCallback } from 'react';
+
+import { stripCode } from '../utils/format';
+const API_KEY = (typeof window !== 'undefined' && window.__AIROBOT_API_KEY) || '';
+const STREAM_URL = '/api/watchlist/realtime/stream' + (API_KEY ? `?api_key=${encodeURIComponent(API_KEY)}` : '');
+const POLL_FALLBACK_URL = '/api/watchlist/realtime/snapshot' + (API_KEY ? `?api_key=${encodeURIComponent(API_KEY)}` : '');
+const FALLBACK_POLL_INTERVAL = 15000;  // 15s 兜底轮询（非交易时段或 SSE 失败时）
+
+function parseSnapshotTime(value) {
+  if (!value) return NaN;
+  // 兼容 "YYYY-MM-DD HH:MM:SS"（Safari 无法直接解析）与 ISO "T" 格式
+  if (typeof value === 'string' && value.includes(' ')) value = value.replace(' ', 'T');
+  return new Date(value).getTime();
+}
+
+function mapRealtimePayload(payload) {
+  if (!payload?.data) return { serverTime: payload?.server_time, byCode: {} };
+  const byCode = {};
+  for (const [tsCode, item] of Object.entries(payload.data)) {
+    const code = stripCode(tsCode);
+    if (!code) continue;
+    const mainForce = item.main_force_inflow ?? 0;
+    byCode[code] = {
+      price: item.current_price ?? 0,
+      price_chg: item.pct_chg ?? 0,
+      main_force_inflow: mainForce,
+      // 实时数据源仅提供主力净流入，总净流入不存在；散户净流按日内资金平衡估算
+      net_inflow: null,
+      retail_flow: -mainForce,
+      latest_time: item.snapshot_time,
+      source: item.source,
+      turnover_rate: item.turnover_rate,
+      large_buy_count_3s: item.large_buy_count_3s,
+      large_sell_count_3s: item.large_sell_count_3s,
+      large_order_active_ratio: item.large_order_active_ratio,
+      thousand_count_1m: item.thousand_order_count_per_min,
+      support_level: item.support_level_eval,
+      bid_price_1: item.bid_price_1,
+      bid_vol_1: item.bid_vol_1,
+      ask_price_1: item.ask_price_1,
+      ask_vol_1: item.ask_vol_1,
+      is_stale: item.snapshot_time ? (Date.now() - parseSnapshotTime(item.snapshot_time) > 300000) : true,
+    };
+  }
+  return { serverTime: payload.server_time, byCode };
+}
+
+/**
+ * 字段级对比：仅当任一字段不同时才返回新对象，否则返回原对象引用。
+ * 避免服务端推送完全相同的快照时仍新建引用，触发下游组件无谓重渲染。
+ */
+function mergeIfChanged(prev, next) {
+  if (!prev) return next;
+  let changed = false;
+  for (const k of Object.keys(next)) {
+    if (prev[k] !== next[k]) { changed = true; break; }
+  }
+  // 同时清理 prev 中存在但 next 已删除的字段（理论不会发生，但防御）
+  return changed ? { ...prev, ...next } : prev;
+}
+
+/**
+ * 主 hook：SSE + 兜底轮询
+ * - 优先用 SSE（5s 推送）
+ * - SSE 出错或不支持时降级到 15s 轮询
+ */
+export function useWatchlistRealtimeStream() {
+  const [realtimeMap, setRealtimeMap] = useState({});
+  const [serverTime, setServerTime] = useState(null);
+  const [streamStatus, setStreamStatus] = useState('connecting');  // connecting | open | fallback | closed
+  const esRef = useRef(null);
+  const pollTimerRef = useRef(null);
+
+  const applyPayload = useCallback((payload) => {
+    const { serverTime, byCode } = mapRealtimePayload(payload);
+    setServerTime(serverTime);
+    if (Object.keys(byCode).length > 0) {
+      // 字段级合并：仅对实际变化的 code 替换引用，避免 164 张卡全量重渲染
+      setRealtimeMap((prev) => {
+        let next = prev;
+        let dirty = false;
+        for (const [code, item] of Object.entries(byCode)) {
+          const merged = mergeIfChanged(prev[code], item);
+          if (merged !== prev[code]) {
+            if (!dirty) { next = { ...prev }; dirty = true; }
+            next[code] = merged;
+          }
+        }
+        return dirty ? next : prev;
+      });
+    }
+  }, []);
+
+  const startPollingFallback = useCallback(() => {
+    if (pollTimerRef.current) return;
+    setStreamStatus('fallback');
+    const tick = async () => {
+      try {
+        const res = await fetch(POLL_FALLBACK_URL);
+        if (res.ok) applyPayload(await res.json());
+      } catch { /* silent */ }
+    };
+    tick();
+    pollTimerRef.current = setInterval(tick, FALLBACK_POLL_INTERVAL);
+  }, [applyPayload]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof EventSource === 'undefined') {
+      startPollingFallback();
+      return;
+    }
+
+    let cancelled = false;
+    let reconnectTimer = null;
+
+    const connect = () => {
+      if (cancelled) return;
+      try {
+        const es = new EventSource(STREAM_URL);
+        esRef.current = es;
+
+        es.onopen = () => {
+          if (cancelled) return;
+          setStreamStatus('open');
+          if (pollTimerRef.current) {
+            clearInterval(pollTimerRef.current);
+            pollTimerRef.current = null;
+          }
+        };
+
+        es.onmessage = (evt) => {
+          if (cancelled) return;
+          try {
+            applyPayload(JSON.parse(evt.data));
+          } catch { /* ignore parse error */ }
+        };
+
+        es.onerror = () => {
+          if (cancelled) return;
+          // 仅在自己仍是当前 ES 时清空 ref，避免旧 ES 的延迟 onerror 把新 ES 的引用清掉
+          // 导致新 ES 无法被 cleanup 关闭，连接泄漏
+          es.close();
+          if (esRef.current === es) esRef.current = null;
+          setStreamStatus('fallback');
+          if (!pollTimerRef.current) startPollingFallback();
+          // 30s 后重试 SSE（先清旧定时器避免 onerror 短时多次触发导致连接堆叠）
+          if (reconnectTimer) clearTimeout(reconnectTimer);
+          reconnectTimer = setTimeout(() => { if (!cancelled) connect(); }, 30000);
+        };
+      } catch {
+        startPollingFallback();
+      }
+    };
+
+    connect();
+
+    return () => {
+      cancelled = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      if (esRef.current) { esRef.current.close(); esRef.current = null; }
+      if (pollTimerRef.current) { clearInterval(pollTimerRef.current); pollTimerRef.current = null; }
+      // 不再 setStreamStatus('closed')：组件已卸载，setState 无意义且可能触发 React 警告
+    };
+  }, [applyPayload, startPollingFallback]);
+
+  return { realtimeMap, serverTime, streamStatus };
+}

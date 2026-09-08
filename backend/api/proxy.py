@@ -1,0 +1,114 @@
+"""反向代理：将子系统 API 统一收敛到 AIROBOT 端口 9000。
+
+Hermes 子系统已并入本进程（见 backend/main.py 中 hermes_backend 路由并入），
+不再经此代理转发到 8788。此处仅保留仍独立运行的 DSA 子系统：
+
+- /api/v1/*          -> DSA   localhost:8000
+"""
+import logging
+from typing import Optional
+
+from fastapi import APIRouter, Request
+from fastapi.responses import Response
+
+logger = logging.getLogger("airobot.proxy")
+router = APIRouter()
+
+# 子系统代理目标（内部端口）
+_DSA_BASE = "http://127.0.0.1:8000"
+
+_HOP_BY_HOP_HEADERS = {
+    "connection",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailers",
+    "transfer-encoding",
+    "upgrade",
+    "content-encoding",
+}
+
+
+def _error_response(status_code: int, service: str, detail: str, hint: str) -> Response:
+    import json
+    return Response(
+        content=json.dumps({"error": f"{service} unavailable", "detail": detail, "hint": hint},
+                           ensure_ascii=False).encode(),
+        status_code=status_code,
+        media_type="application/json",
+    )
+
+
+async def _proxy_request(
+    request: Request,
+    target_base: str,
+    path: str,
+    *,
+    strip_prefix: Optional[str] = None,
+    timeout: float = 30.0,
+) -> Response:
+    """将请求转发到目标子系统后端。
+
+    :param strip_prefix: 若提供，从请求路径中去掉此前缀后再转发。
+                         例如 `/api/v1/` -> 转发到目标根路径。
+    """
+    client = request.app.state.http_client
+    original_path = request.url.path
+    if strip_prefix and original_path.startswith(strip_prefix):
+        target_path = original_path[len(strip_prefix):]
+    else:
+        target_path = original_path
+    # 保证根路径至少留一个 /
+    target_url = f"{target_base}/{target_path.lstrip('/')}"
+    if request.url.query:
+        target_url = f"{target_url}?{request.url.query}"
+
+    # 转发 headers，去掉 hop-by-hop 和 host
+    headers = {
+        k: v
+        for k, v in request.headers.items()
+        if k.lower() not in _HOP_BY_HOP_HEADERS and k.lower() != "host"
+    }
+    try:
+        body = await request.body()
+        resp = await client.request(
+            method=request.method,
+            url=target_url,
+            headers=headers,
+            content=body or None,
+            timeout=timeout,
+            follow_redirects=False,
+        )
+    except Exception as e:
+        logger.warning("Proxy error %s -> %s: %s", request.url.path, target_url, e)
+        return _error_response(
+            503,
+            "Upstream",
+            str(e),
+            "目标子系统未启动或不可达",
+        )
+
+    # 过滤响应头中的 hop-by-hop 字段
+    response_headers = {
+        k: v
+        for k, v in resp.headers.items()
+        if k.lower() not in _HOP_BY_HOP_HEADERS
+    }
+    return Response(
+        content=resp.content,
+        status_code=resp.status_code,
+        headers=response_headers,
+    )
+
+
+# ---------------------------------------------------------------------------
+# DSA API 代理：/api/v1/* 收敛到后端 8000
+# ---------------------------------------------------------------------------
+@router.api_route(
+    "/api/v1/{path:path}",
+    methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"],
+    include_in_schema=False,
+)
+async def proxy_dsa(request: Request, path: str) -> Response:
+    return await _proxy_request(request, _DSA_BASE, path)
