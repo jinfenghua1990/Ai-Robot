@@ -27,7 +27,7 @@ TMP_JSON="$(mktemp "$OUT_DIR/entries.XXXXXX")"
 PASS=0
 FAIL=0
 
-add_check() { # id desc status detail
+add_check() {
   local id="$1" desc="$2" status="$3" detail="$4"
   if [ "$status" = "pass" ]; then PASS=$((PASS+1)); else FAIL=$((FAIL+1)); fi
   detail="${detail//\\/\\\\}"
@@ -37,7 +37,7 @@ add_check() { # id desc status detail
   printf '{"id":"%s","desc":"%s","status":"%s","detail":"%s"},\n' "$id" "$desc" "$status" "$detail" >> "$TMP_JSON"
 }
 
-run_check() { # id desc fn
+run_check() {
   local id="$1" desc="$2" fn="$3"
   local out rc
   out="$($fn 2>&1)"
@@ -58,7 +58,7 @@ chk_anchor_origin(){ "$GIT_BIN" ls-remote origin "refs/heads/$ANCHOR_BRANCH" | g
 chk_backend_syntax(){ cd "$REPO" && "$PY" -m compileall -q backend/api backend/services backend/analyzers backend/strategies backend/us_quant v2_app; }
 chk_app_import()   { cd "$REPO" && "$PY" -c "import backend.main as m; assert 'AIROBOT' in m.app.title, m.app.title"; }
 chk_v2_embed()     { cd "$REPO" && "$PY" -c 'from v2_app.main import app; paths={getattr(r,"path","") for r in app.routes}; required={"/api/v2/health","/api/v2/dashboard","/api/v2/candidates","/api/v2/sectors","/api/v2/actions","/api/v2/yuzi","/api/v2/watchlist","/api/v2/watchlist/{code}","/api/v2/holdings","/api/v2/orders","/api/v2/trade/preview","/api/v2/stock/{code}","/api/v2/stock/{code}/research","/api/v2/factor-lifecycle","/api/v2/validation","/api/v2/registry","/api/v2/system/quality","/api/v2/collection/status","/api/v2/system/quality-dashboard","/api/v2/system/check","/api/v2/snapshot/persist","/api/v2/research/snapshot/persist","/api/v2/config"}; missing=sorted(required-paths); assert not missing, f"missing V2 routes: {missing}"; print(f"embedded V2 routes OK ({len(required)} required)")'; }
-chk_v2_attached()  { cd "$REPO" && "$PY" -c 'import backend.main as m; assert getattr(m,"V2_BACKEND_URL",None)=="", f"legacy V2 backend still enabled: {getattr(m,chr(86)+chr(50)+"_BACKEND_URL",None)!r}"; routes=list(m.app.router.routes); embedded=[i for i,r in enumerate(routes) if getattr(r,"path","")=="/api/v2/health" and getattr(getattr(r,"endpoint",None),"__module__","").startswith("v2_app.")]; proxy=[i for i,r in enumerate(routes) if getattr(r,"path","")=="/api/v2/{full_path:path}"]; assert embedded, "9000 main app missing embedded /api/v2/health"; assert not proxy or embedded[0] < proxy[0], f"legacy V2 proxy precedes embedded routes: embedded={embedded[0]} proxy={proxy[0]}"; print(f"9000 embedded V2 attached at route {embedded[0]}; 9001 backend disabled")'; }
+chk_v2_attached()  { cd "$REPO" && "$PY" -c 'import backend.main as m; url=getattr(m,"V2_BACKEND_URL",None); assert url=="", f"legacy V2 backend still enabled: {url!r}"; routes=list(m.app.router.routes); embedded=[i for i,r in enumerate(routes) if getattr(r,"path","")=="/api/v2/health" and getattr(getattr(r,"endpoint",None),"__module__","").startswith("v2_app.")]; proxy=[i for i,r in enumerate(routes) if getattr(r,"path","")=="/api/v2/{full_path:path}"]; assert embedded, "9000 main app missing embedded /api/v2/health"; assert not proxy or embedded[0] < proxy[0], f"legacy V2 proxy precedes embedded routes: embedded={embedded[0]} proxy={proxy[0]}"; print(f"9000 embedded V2 attached at route {embedded[0]}; 9001 backend disabled")'; }
 chk_core_import()  { cd "$REPO/backend" && "$PY" -c "import api.watchlist, api.us_quant, api.hk_strategy, services.trading_system"; }
 chk_pytest()       { cd "$REPO" && "$PY" -m pytest "$REPO/tests" -q --no-header 2>&1 | tail -1 | grep -qE '^[0-9]+ passed'; }
 chk_frontend_files(){ test -f "$REPO/frontend/package.json" && test -f "$REPO/frontend/vite.config.js" && test -f "$REPO/frontend/src/main.jsx" && test -f "$REPO/frontend/src/App.jsx"; }
