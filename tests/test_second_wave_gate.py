@@ -1,4 +1,4 @@
-from backend.api.quant_embedded import _board_stage, _stock_candidate
+from backend.api.quant_embedded import _board_stage, _stock_candidate, _trade_levels
 
 
 def _stock(rank=1, *, day=2.5, drawdown=-6.0, volume_ratio=0.9, slope=3.0, age=15, ret20=12.0):
@@ -23,6 +23,9 @@ def _stock(rank=1, *, day=2.5, drawdown=-6.0, volume_ratio=0.9, slope=3.0, age=1
             "ma20_slope": slope,
             "volume_ratio": volume_ratio,
             "last_price": 20.0,
+            "ma20": 18.8,
+            "support": 19.1,
+            "resistance": 21.6,
             "main_net": 1_000_000,
         },
     }
@@ -59,6 +62,8 @@ def test_core_leader_can_trigger_after_healthy_reset():
     assert result["leader"] == "核心龙头"
     assert result["structure"] == "二波触发"
     assert result["action"] == "买点触发"
+    assert result["levels"]["breakout_reference"] >= result["price"] * 0.995
+    assert result["levels"]["defense_reference"] < result["price"]
 
 
 def test_broken_stock_trend_cannot_be_rescued_by_board_strength():
@@ -74,3 +79,29 @@ def test_broken_stock_trend_cannot_be_rescued_by_board_strength():
     result = _stock_candidate(stock, board)
     assert result["structure"] == "结构破坏"
     assert result["action"] == "不做"
+
+
+def test_trade_levels_use_nearest_valid_defense_below_price():
+    levels = _trade_levels({
+        "last_price": 20.0,
+        "drawdown": -10.0,
+        "ma20": 18.7,
+        "support": 19.25,
+        "resistance": 22.5,
+    })
+    assert levels["defense_reference"] == 19.25
+    assert levels["defense_basis"] == "趋势支撑"
+    assert levels["breakout_reference"] >= 20.0 * 0.995
+    assert levels["distance_to_breakout_pct"] >= -0.5
+
+
+def test_trade_levels_never_use_level_above_price_as_defense():
+    levels = _trade_levels({
+        "last_price": 20.0,
+        "drawdown": -4.0,
+        "ma20": 20.5,
+        "support": 20.2,
+        "resistance": 21.2,
+    })
+    assert levels["defense_reference"] is None
+    assert levels["defense_basis"] is None
