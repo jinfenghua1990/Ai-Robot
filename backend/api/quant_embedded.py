@@ -57,6 +57,51 @@ def _ratio(stocks, predicate):
     return sum(1 for stock in stocks if predicate(stock)) / len(stocks)
 
 
+def _trade_levels(metrics):
+    """给二波页提供可解释的位置参考，不把技术位包装成机械交易指令。
+
+    突破参考使用已完成日线阶段最高收盘附近；结构防守使用当前价下方
+    MA20 / Supertrend 支撑中更靠近现价的一档。盘中仍需要板块同步与承接确认。
+    """
+    price = _n(metrics.get("last_price"))
+    drawdown = _n(metrics.get("drawdown"))
+    ma20 = _n(metrics.get("ma20"))
+    support = _n(metrics.get("support"))
+    resistance = _n(metrics.get("resistance"))
+
+    phase_high = None
+    if price and drawdown is not None and drawdown > -99.9:
+        denominator = 1 + drawdown / 100
+        if denominator > 0:
+            phase_high = price / denominator
+
+    breakout_candidates = [v for v in (phase_high, resistance) if v and price and v >= price * 0.995]
+    breakout_reference = min(breakout_candidates) if breakout_candidates else phase_high or resistance
+
+    defense_candidates = []
+    if price:
+        if ma20 and 0 < ma20 < price:
+            defense_candidates.append((ma20, "MA20"))
+        if support and 0 < support < price:
+            defense_candidates.append((support, "趋势支撑"))
+    defense_reference = max(defense_candidates, key=lambda x: x[0]) if defense_candidates else (None, None)
+
+    distance_to_breakout = None
+    if price and breakout_reference:
+        distance_to_breakout = (breakout_reference / price - 1) * 100
+
+    return {
+        "phase_high": round(phase_high, 3) if phase_high else None,
+        "breakout_reference": round(breakout_reference, 3) if breakout_reference else None,
+        "distance_to_breakout_pct": round(distance_to_breakout, 2) if distance_to_breakout is not None else None,
+        "defense_reference": round(defense_reference[0], 3) if defense_reference[0] else None,
+        "defense_basis": defense_reference[1],
+        "ma20": round(ma20, 3) if ma20 else None,
+        "support": round(support, 3) if support else None,
+        "resistance": round(resistance, 3) if resistance else None,
+    }
+
+
 def _board_metrics(stocks):
     """用板块核心资格股聚合，避免把大量弱跟风股稀释主线。"""
     if not stocks:
@@ -235,6 +280,7 @@ def _stock_candidate(stock, board):
         "main_net": m.get("main_net"),
         "days_since_first_wave": q.get("days_since_trigger"),
         "event_count": q.get("event_count"),
+        "levels": _trade_levels(m),
         "reasons": reasons[:4],
     }
 
@@ -356,7 +402,7 @@ def second_wave(limit: int = Query(12, ge=3, le=30)):
         "rules": {
             "flow": "市场 -> 板块二波 -> 龙头身份 -> 个股二波结构 -> 触发",
             "hard_veto": ["板块趋势破坏", "广度过弱", "个股跌破MA20趋势", "非板块前2核心股"],
-            "note": "因子只用于解释证据，不再用综合加分覆盖硬门槛。",
+            "note": "因子只用于解释证据，不再用综合加分覆盖硬门槛。关键价位来自已完成日线，仅作结构参考。",
         },
         "data_as_of": snapshot.get("data_as_of", {}),
     })
