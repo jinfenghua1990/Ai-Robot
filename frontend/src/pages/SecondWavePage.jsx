@@ -19,7 +19,7 @@ const tone = (v) => {
 const norm = (code) => String(code || '').split('.')[0].replace(/\D/g, '');
 
 function Badge({ children, color = 'var(--text-secondary)', bg = 'var(--bg-hover)' }) {
-  return <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-semibold" style={{ color, background: bg }}>{children}</span>;
+  return <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-semibold whitespace-nowrap" style={{ color, background: bg }}>{children}</span>;
 }
 
 function Card({ children, className = '' }) {
@@ -35,10 +35,72 @@ function stageStyle(stage) {
 }
 
 function actionStyle(action) {
-  if (/触发|持有/.test(action || '')) return { c: UP, bg: 'rgba(239,68,68,.08)' };
-  if (/等|等待/.test(action || '')) return { c: BLUE, bg: 'rgba(59,130,246,.08)' };
+  if (/买点触发|继续持有/.test(action || '')) return { c: UP, bg: 'rgba(239,68,68,.08)' };
+  if (/等转强|等待|观察/.test(action || '')) return { c: BLUE, bg: 'rgba(59,130,246,.08)' };
+  if (/不追高/.test(action || '')) return { c: AMBER, bg: 'rgba(245,158,11,.08)' };
   if (/不做|退出|减仓/.test(action || '')) return { c: DOWN, bg: 'rgba(34,197,94,.08)' };
-  return { c: AMBER, bg: 'rgba(245,158,11,.08)' };
+  return { c: 'var(--text-secondary)', bg: 'var(--bg-hover)' };
+}
+
+function CandidateCard({ item, navigate, compact = false }) {
+  const as = actionStyle(item.action);
+  const ss = stageStyle(item.board_stage);
+  return (
+    <button
+      onClick={() => navigate(`/stock-analysis?code=${encodeURIComponent(item.code)}`)}
+      className="w-full rounded-lg border text-left transition-opacity hover:opacity-90"
+      style={{ borderColor: 'var(--border-color)', background: 'var(--bg-hover)', padding: compact ? '8px' : '10px' }}
+    >
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <b className="text-sm">{item.name || item.code}</b>
+            <span className="text-[9px]" style={{ color: 'var(--text-muted)' }}>{item.code}</span>
+            <Badge color={item.leader === '核心龙头' ? UP : BLUE}>{item.leader}</Badge>
+          </div>
+          <div className="mt-1 flex items-center gap-1 flex-wrap">
+            <span className="text-[11px] font-semibold">{item.board}</span>
+            <Badge>{item.board_kind}</Badge>
+            <Badge color={ss.c} bg={ss.bg}>{item.board_stage}</Badge>
+          </div>
+        </div>
+        <Badge color={as.c} bg={as.bg}>{item.action}</Badge>
+      </div>
+
+      <div className="grid grid-cols-4 gap-1 mt-2 text-[10px]">
+        <div><span style={{ color: 'var(--text-muted)' }}>现价</span><div className="font-semibold">{n(item.price)?.toFixed(2) || '—'}</div></div>
+        <div><span style={{ color: 'var(--text-muted)' }}>日涨</span><div style={{ color: tone(item.day_change_pct) }}>{pct(item.day_change_pct)}</div></div>
+        <div><span style={{ color: 'var(--text-muted)' }}>离高点</span><div style={{ color: tone(item.drawdown) }}>{pct(item.drawdown)}</div></div>
+        <div><span style={{ color: 'var(--text-muted)' }}>量比</span><div>{n(item.volume_ratio)?.toFixed(2) || '—'}</div></div>
+      </div>
+
+      {!compact && (
+        <div className="mt-2 flex flex-wrap gap-1">
+          <Badge>{item.structure}</Badge>
+          {(item.reasons || []).slice(0, 3).map((r) => <Badge key={r}>{r}</Badge>)}
+        </div>
+      )}
+    </button>
+  );
+}
+
+function ActionColumn({ title, subtitle, items, color, empty, navigate }) {
+  return (
+    <div className="rounded-xl border overflow-hidden" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-card)' }}>
+      <div className="px-3 py-2 border-b" style={{ borderColor: 'var(--border-color)' }}>
+        <div className="flex items-center justify-between gap-2">
+          <b className="text-sm" style={{ color }}>{title}</b>
+          <Badge color={color}>{items.length}只</Badge>
+        </div>
+        <div className="text-[10px] mt-0.5" style={{ color: 'var(--text-muted)' }}>{subtitle}</div>
+      </div>
+      <div className="p-2 space-y-2 min-h-[116px]">
+        {items.length > 0 ? items.slice(0, 4).map((item) => <CandidateCard key={item.code} item={item} navigate={navigate} compact />) : (
+          <div className="h-[96px] flex items-center justify-center text-xs text-center px-3" style={{ color: 'var(--text-muted)' }}>{empty}</div>
+        )}
+      </div>
+    </div>
+  );
 }
 
 export default function SecondWavePage() {
@@ -48,11 +110,12 @@ export default function SecondWavePage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [updatedAt, setUpdatedAt] = useState(null);
+  const [selectedBoard, setSelectedBoard] = useState('');
 
   const load = useCallback(async () => {
     setLoading(true);
     const [w, p] = await Promise.all([
-      apiFetch('/api/quant/second-wave?limit=12', {}, 30000, 0),
+      apiFetch('/api/quant/second-wave?limit=30', {}, 30000, 0),
       apiFetch('/api/shared/portfolio', {}, 15000, 0),
     ]);
     if (w.ok) {
@@ -73,7 +136,15 @@ export default function SecondWavePage() {
   }, [load]);
 
   const boards = useMemo(() => (wave?.boards || []).filter((b) => b.eligible).slice(0, 8), [wave]);
-  const candidates = wave?.candidates || [];
+  const candidates = useMemo(() => wave?.candidates || [], [wave]);
+  const triggered = useMemo(() => candidates.filter((c) => c.action === '买点触发'), [candidates]);
+  const waiting = useMemo(() => candidates.filter((c) => ['等转强', '等待'].includes(c.action)), [candidates]);
+  const holdingPriority = useMemo(() => candidates.filter((c) => /持有优先|不追高/.test(c.action || '')), [candidates]);
+
+  const visibleCandidates = useMemo(() => (
+    selectedBoard ? candidates.filter((c) => c.board === selectedBoard) : candidates
+  ), [candidates, selectedBoard]);
+
   const candidateMap = useMemo(() => {
     const map = new Map();
     candidates.forEach((c) => map.set(norm(c.code), c));
@@ -89,35 +160,56 @@ export default function SecondWavePage() {
       else action = '减仓/退出检查';
     }
     return { ...p, candidate: c, action };
+  }).sort((a, b) => {
+    const risk = (x) => /退出|减仓/.test(x.action) ? 0 : /观察/.test(x.action) ? 1 : /继续持有/.test(x.action) ? 2 : 3;
+    return risk(a) - risk(b);
   }), [portfolio, candidateMap]);
 
   const market = wave?.market || {};
   const marketColor = market.state === '可做' ? UP : market.state === '等待' ? 'var(--text-muted)' : AMBER;
+  const decisiveText = triggered.length > 0
+    ? `今天有 ${triggered.length} 只核心候选达到买点触发，优先确认板块同步与盘中承接。`
+    : waiting.length > 0
+      ? `今天暂不抢，${waiting.length} 只核心候选仍在等转强。`
+      : holdingPriority.length > 0
+        ? '当前机会主要处于主升/加速段，持有优先，不追高。'
+        : '当前没有值得出手的二波核心龙头，宁可等待。';
 
   return (
     <div className="space-y-3 max-w-[1500px] mx-auto" style={{ color: 'var(--text-primary)' }}>
       <Card className="p-3">
         <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
+          <div className="min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
               <h1 className="text-xl font-bold">二波作战</h1>
               <Badge color={marketColor} bg={market.state === '可做' ? 'rgba(239,68,68,.08)' : 'rgba(245,158,11,.08)'}>{market.state || '加载中'}</Badge>
               <Badge>{wave?.trade_date || '—'} 完成交易日</Badge>
             </div>
             <div className="mt-1 text-xs" style={{ color: 'var(--text-secondary)' }}>
-              市场 → 板块二波 → 核心龙头 → 个股结构 → 买点触发。因子只解释，不再用总分凑股票。
+              只做：板块二波成立 + 核心龙头 + 上升趋势 + 买点确认。
             </div>
           </div>
           <button onClick={load} disabled={loading} className="rounded-lg border px-3 py-1.5 text-xs" style={{ borderColor: 'var(--border-color)', color: BLUE }}>
             {loading ? '刷新中…' : '↻ 刷新'}
           </button>
         </div>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mt-3">
+
+        <div className="mt-3 rounded-xl px-3 py-2.5" style={{ background: triggered.length ? 'rgba(239,68,68,.06)' : 'rgba(59,130,246,.05)', border: `1px solid ${triggered.length ? 'rgba(239,68,68,.18)' : 'rgba(59,130,246,.16)'}` }}>
+          <div className="text-[10px] font-semibold" style={{ color: 'var(--text-muted)' }}>今日作战指令</div>
+          <div className="text-sm font-bold mt-0.5" style={{ color: triggered.length ? UP : BLUE }}>{decisiveText}</div>
+          <div className="text-[10px] mt-1" style={{ color: 'var(--text-secondary)' }}>
+            市场判断：{market.reason || '正在计算'}
+            {updatedAt && <span className="ml-2" style={{ color: 'var(--text-muted)' }}>更新 {updatedAt.toLocaleTimeString('zh-CN')}</span>}
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-2 mt-3">
           {[
             ['今日环境', market.state || '—', marketColor],
             ['二波板块', market.eligible_board_count ?? 0, BLUE],
-            ['启动板块', market.startup_count ?? 0, UP],
-            ['核心候选', market.candidate_count ?? 0, AMBER],
+            ['买点触发', triggered.length, UP],
+            ['等待转强', waiting.length, BLUE],
+            ['主升不追', holdingPriority.length, AMBER],
           ].map(([label, value, color]) => (
             <div key={label} className="rounded-lg px-3 py-2" style={{ background: 'var(--bg-hover)' }}>
               <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{label}</div>
@@ -125,44 +217,56 @@ export default function SecondWavePage() {
             </div>
           ))}
         </div>
-        <div className="mt-2 rounded-lg px-3 py-2 text-xs" style={{ background: 'rgba(59,130,246,.05)', color: 'var(--text-secondary)' }}>
-          <b style={{ color: BLUE }}>系统结论：</b> {market.reason || '正在计算板块二波资格'}
-          {updatedAt && <span className="ml-2 text-[10px]" style={{ color: 'var(--text-muted)' }}>更新 {updatedAt.toLocaleTimeString('zh-CN')}</span>}
-        </div>
       </Card>
 
       {error && <div className="rounded-lg px-3 py-2 text-xs" style={{ background: 'rgba(239,68,68,.08)', color: UP }}>{error}</div>}
 
+      <div className="grid grid-cols-1 xl:grid-cols-3 gap-3">
+        <ActionColumn title="🟢 买点触发" subtitle="已经满足二波资格与重新转强，重点看盘中承接" items={triggered} color={UP} empty="今天没有真正触发买点的核心龙头" navigate={navigate} />
+        <ActionColumn title="🔵 等转强" subtitle="结构还在，但没有触发；不要提前抢" items={waiting} color={BLUE} empty="当前没有等待转强的核心候选" navigate={navigate} />
+        <ActionColumn title="🟠 主升不追" subtitle="强是强，但位置偏高；有仓持有，无仓等回踩" items={holdingPriority} color={AMBER} empty="当前没有进入主升加速段的核心候选" navigate={navigate} />
+      </div>
+
       <Card>
-        <div className="px-3 py-2 border-b flex items-center justify-between" style={{ borderColor: 'var(--border-color)' }}>
+        <div className="px-3 py-2 border-b flex items-center justify-between gap-2 flex-wrap" style={{ borderColor: 'var(--border-color)' }}>
           <div>
-            <b className="text-sm">① 板块二波</b>
-            <span className="ml-2 text-[10px]" style={{ color: 'var(--text-muted)' }}>主题优先，行业确认；只显示有二波资格的板块</span>
+            <b className="text-sm">① 板块二波雷达</b>
+            <span className="ml-2 text-[10px]" style={{ color: 'var(--text-muted)' }}>点击板块可直接筛选下方核心龙头</span>
           </div>
-          <button onClick={() => navigate('/trading/sector-rotation')} className="text-[10px]" style={{ color: BLUE }}>看完整板块研究 →</button>
+          <div className="flex items-center gap-2">
+            {selectedBoard && <button onClick={() => setSelectedBoard('')} className="text-[10px]" style={{ color: AMBER }}>清除筛选</button>}
+            <button onClick={() => navigate('/trading/sector-rotation')} className="text-[10px]" style={{ color: BLUE }}>完整板块研究 →</button>
+          </div>
         </div>
         {boards.length === 0 ? (
           <div className="p-8 text-center text-sm" style={{ color: 'var(--text-muted)' }}>当前没有通过二波硬门槛的板块，宁可空着，不凑数。</div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-2 p-2">
-            {boards.map((b) => {
+          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-2 p-2">
+            {boards.map((b, index) => {
               const s = stageStyle(b.stage);
+              const active = selectedBoard === b.name;
               return (
-                <div key={`${b.kind}-${b.name}`} className="rounded-lg border p-2.5" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-hover)' }}>
+                <button
+                  key={`${b.kind}-${b.name}`}
+                  onClick={() => setSelectedBoard(active ? '' : b.name)}
+                  className="rounded-lg border p-2.5 text-left transition-opacity hover:opacity-90"
+                  style={{ borderColor: active ? s.c : 'var(--border-color)', background: active ? s.bg : 'var(--bg-hover)' }}
+                >
                   <div className="flex items-center justify-between gap-2">
-                    <div className="font-bold text-sm truncate">{b.name}</div>
+                    <div className="flex items-center gap-1.5 min-w-0"><span className="text-[10px] font-bold" style={{ color: 'var(--text-muted)' }}>#{index + 1}</span><div className="font-bold text-sm truncate">{b.name}</div></div>
                     <Badge color={s.c} bg={s.bg}>{b.stage}</Badge>
                   </div>
-                  <div className="flex gap-1 mt-1.5"><Badge>{b.kind}</Badge><Badge color={b.grade === 'A' ? UP : BLUE}>结构 {b.grade}</Badge><Badge>置信 {b.confidence}%</Badge></div>
-                  <div className="grid grid-cols-3 gap-1 mt-2 text-[10px]">
+                  <div className="flex gap-1 mt-1.5 flex-wrap"><Badge>{b.kind}</Badge><Badge color={b.grade === 'A' ? UP : BLUE}>结构 {b.grade}</Badge><Badge>置信 {b.confidence}%</Badge><Badge>核心 {b.core_count || 0}</Badge></div>
+                  <div className="grid grid-cols-4 gap-1 mt-2 text-[10px]">
                     <div><span style={{ color: 'var(--text-muted)' }}>5日</span><div style={{ color: tone(b.metrics?.ret_5d) }}>{pct(b.metrics?.ret_5d)}</div></div>
+                    <div><span style={{ color: 'var(--text-muted)' }}>20日</span><div style={{ color: tone(b.metrics?.ret_20d) }}>{pct(b.metrics?.ret_20d)}</div></div>
                     <div><span style={{ color: 'var(--text-muted)' }}>趋势股</span><div>{pct(b.metrics?.trend_share)}</div></div>
                     <div><span style={{ color: 'var(--text-muted)' }}>广度</span><div>{pct(b.metrics?.breadth)}</div></div>
                   </div>
                   <div className="mt-2 space-y-0.5 text-[10px]" style={{ color: 'var(--text-secondary)' }}>
                     {(b.reasons || []).slice(0, 3).map((r) => <div key={r}>✓ {r}</div>)}
                   </div>
-                </div>
+                </button>
               );
             })}
           </div>
@@ -170,33 +274,37 @@ export default function SecondWavePage() {
       </Card>
 
       <Card>
-        <div className="px-3 py-2 border-b flex items-center justify-between" style={{ borderColor: 'var(--border-color)' }}>
-          <div><b className="text-sm">② 龙头个股</b><span className="ml-2 text-[10px]" style={{ color: 'var(--text-muted)' }}>每个二波板块最多核心龙头 + 强次龙，不展示跟风</span></div>
+        <div className="px-3 py-2 border-b flex items-center justify-between gap-2 flex-wrap" style={{ borderColor: 'var(--border-color)' }}>
+          <div>
+            <b className="text-sm">② 核心龙头</b>
+            <span className="ml-2 text-[10px]" style={{ color: 'var(--text-muted)' }}>
+              {selectedBoard ? `只看 ${selectedBoard}` : '每个二波板块最多核心龙头 + 强次龙，不展示跟风'}
+            </span>
+          </div>
           <button onClick={() => navigate('/stock-analysis')} className="text-[10px]" style={{ color: BLUE }}>个股分析 →</button>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-xs">
             <thead><tr style={{ color: 'var(--text-muted)', background: 'var(--bg-hover)' }}>
-              {['股票', '板块', '身份', '板块状态', '个股结构', '现价/日涨', '回撤', '量比', '动作', '证据'].map((h) => <th key={h} className="px-2 py-2 text-left whitespace-nowrap">{h}</th>)}
+              {['股票', '板块 / 阶段', '身份', '结构', '现价 / 日涨', '离高点', '量比', '动作', '为什么入选'].map((h) => <th key={h} className="px-2 py-2 text-left whitespace-nowrap">{h}</th>)}
             </tr></thead>
             <tbody>
-              {candidates.map((c) => {
+              {visibleCandidates.map((c) => {
                 const as = actionStyle(c.action);
                 const ss = stageStyle(c.board_stage);
                 return <tr key={c.code} className="border-t hover:opacity-90 cursor-pointer" style={{ borderColor: 'var(--border-light)' }} onClick={() => navigate(`/stock-analysis?code=${encodeURIComponent(c.code)}`)}>
                   <td className="px-2 py-2 whitespace-nowrap"><b>{c.name || c.code}</b><div className="text-[9px]" style={{ color: 'var(--text-muted)' }}>{c.code}</div></td>
-                  <td className="px-2 py-2 whitespace-nowrap"><b>{c.board}</b><div className="text-[9px]" style={{ color: 'var(--text-muted)' }}>{c.board_kind}</div></td>
+                  <td className="px-2 py-2 whitespace-nowrap"><b>{c.board}</b><div className="mt-0.5"><Badge color={ss.c} bg={ss.bg}>{c.board_stage}</Badge></div></td>
                   <td className="px-2 py-2 whitespace-nowrap"><Badge color={c.leader === '核心龙头' ? UP : BLUE}>{c.leader}</Badge></td>
-                  <td className="px-2 py-2 whitespace-nowrap"><Badge color={ss.c} bg={ss.bg}>{c.board_stage}</Badge></td>
                   <td className="px-2 py-2 whitespace-nowrap">{c.structure}</td>
                   <td className="px-2 py-2 whitespace-nowrap"><b>{n(c.price)?.toFixed(2) || '—'}</b><div style={{ color: tone(c.day_change_pct) }}>{pct(c.day_change_pct)}</div></td>
                   <td className="px-2 py-2 whitespace-nowrap" style={{ color: tone(c.drawdown) }}>{pct(c.drawdown)}</td>
                   <td className="px-2 py-2 whitespace-nowrap">{n(c.volume_ratio)?.toFixed(2) || '—'}</td>
                   <td className="px-2 py-2 whitespace-nowrap"><Badge color={as.c} bg={as.bg}>{c.action}</Badge></td>
-                  <td className="px-2 py-2 min-w-56"><div className="flex flex-wrap gap-1">{(c.reasons || []).slice(0, 3).map((r) => <Badge key={r}>{r}</Badge>)}</div></td>
+                  <td className="px-2 py-2 min-w-60"><div className="flex flex-wrap gap-1">{(c.reasons || []).slice(0, 4).map((r) => <Badge key={r}>{r}</Badge>)}</div></td>
                 </tr>;
               })}
-              {!loading && candidates.length === 0 && <tr><td colSpan="10" className="p-8 text-center" style={{ color: 'var(--text-muted)' }}>没有满足“板块二波 + 龙头 + 上升趋势”的股票，今天不凑票。</td></tr>}
+              {!loading && visibleCandidates.length === 0 && <tr><td colSpan="9" className="p-8 text-center" style={{ color: 'var(--text-muted)' }}>没有满足当前筛选条件的“板块二波 + 龙头 + 上升趋势”股票。</td></tr>}
             </tbody>
           </table>
         </div>
@@ -204,7 +312,7 @@ export default function SecondWavePage() {
 
       <Card>
         <div className="px-3 py-2 border-b flex items-center justify-between" style={{ borderColor: 'var(--border-color)' }}>
-          <div><b className="text-sm">③ 我的持仓</b><span className="ml-2 text-[10px]" style={{ color: 'var(--text-muted)' }}>持仓保留独立管理页，这里只叠加二波状态给动作</span></div>
+          <div><b className="text-sm">③ 我的持仓</b><span className="ml-2 text-[10px]" style={{ color: 'var(--text-muted)' }}>风险动作优先排在前面；这里看结论，完整配置仍在持仓页</span></div>
           <button onClick={() => navigate('/portfolio')} className="text-[10px]" style={{ color: BLUE }}>完整持仓管理 →</button>
         </div>
         {holdings.length === 0 ? <div className="p-8 text-center text-sm" style={{ color: 'var(--text-muted)' }}>当前没有持仓</div> : (
@@ -213,7 +321,7 @@ export default function SecondWavePage() {
               const c = h.candidate;
               const a = actionStyle(h.action);
               const pnl = n(h.unrealized_pnl_pct ?? h.profit_pct ?? h.pnl_pct);
-              return <div key={h.symbol} className="rounded-lg border p-2.5 cursor-pointer" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-hover)' }} onClick={() => navigate(`/stock-analysis?code=${encodeURIComponent(h.symbol)}`)}>
+              return <button key={h.symbol} className="rounded-lg border p-2.5 text-left" style={{ borderColor: /退出|减仓/.test(h.action) ? 'rgba(34,197,94,.35)' : 'var(--border-color)', background: 'var(--bg-hover)' }} onClick={() => navigate(`/stock-analysis?code=${encodeURIComponent(h.symbol)}`)}>
                 <div className="flex items-center justify-between gap-2"><div><b>{h.name || h.symbol}</b><span className="ml-1 text-[10px]" style={{ color: 'var(--text-muted)' }}>{h.symbol}</span></div><Badge color={a.c} bg={a.bg}>{h.action}</Badge></div>
                 <div className="grid grid-cols-3 gap-2 mt-2 text-[10px]">
                   <div><span style={{ color: 'var(--text-muted)' }}>成本</span><div>{n(h.avg_cost)?.toFixed(2) || '—'}</div></div>
@@ -221,16 +329,16 @@ export default function SecondWavePage() {
                   <div><span style={{ color: 'var(--text-muted)' }}>盈亏</span><div style={{ color: tone(pnl) }}>{pct(pnl)}</div></div>
                 </div>
                 <div className="mt-2 text-[10px]" style={{ color: 'var(--text-secondary)' }}>
-                  {c ? <><span>{c.board} · {c.leader}</span><span className="mx-1">·</span><b>{c.structure}</b></> : '当前不在二波核心候选池，按持仓页的成本/止损/趋势单独管理。'}
+                  {c ? <><span>{c.board} · {c.leader}</span><span className="mx-1">·</span><b>{c.structure}</b></> : '当前不在二波核心池，按成本、止损和趋势单独管理。'}
                 </div>
-              </div>;
+              </button>;
             })}
           </div>
         )}
       </Card>
 
       <div className="rounded-lg px-3 py-2 text-[10px]" style={{ color: 'var(--text-muted)', background: 'var(--bg-hover)' }}>
-        硬门槛：板块趋势破坏、广度过弱、个股跌破 MA20 上升趋势、非板块前2核心股，任一出现都不能靠其他因子加分补回来。二波页面使用已完成交易日日线做资格筛选，盘中买点仍以实时转强确认。
+        硬门槛：板块趋势破坏、广度过弱、个股跌破 MA20 上升趋势、非板块前2核心股，任一出现都不能靠其他因子加分补回来。资格筛选使用已完成交易日日线；“买点触发”仍需盘中确认板块同步、承接和量价，不等于机械下单指令。
       </div>
     </div>
   );
